@@ -5,14 +5,28 @@ use std::{collections::HashMap, rc::Rc};
 
 use super::formula::*;
 
-pub type Effects = HashMap<Action, Box<dyn Fn(&mut Eval)>>;
+// Use of "Newtype" pattern to define different types of indexes.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct Location(usize);
 
-pub type Transitions = HashMap<Location, HashMap<(Action, Location), Formula>>;
+// Use of "Newtype" pattern to define different types of indexes.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct Action(usize);
+
+type Effect = Box<dyn Fn(&mut Eval)>;
+
+type Transitions = Vec<HashMap<(Action, Location), Formula>>;
+
+#[derive(Debug)]
+pub enum PgErr {
+    MissingAction(Action),
+    MissingLocation(Location),
+}
 
 pub struct ProgramGraph {
     // `Hashmap`s (and thus `Eval`) is not hashable,
     // so we need to use a lambda to represent the inner function type.
-    effects: Effects,
+    effects: Vec<Effect>,
     // We can assume there is at most one condition by logical disjunction
     transitions: Transitions,
 }
@@ -26,18 +40,23 @@ impl Default for ProgramGraph {
 impl ProgramGraph {
     pub fn new() -> Self {
         Self {
-            effects: HashMap::new(),
-            transitions: HashMap::new(),
+            effects: Vec::new(),
+            transitions: Vec::new(),
         }
     }
 
-    pub fn add_effect(&mut self, action: Action, effect: impl Fn(&mut Eval) + 'static) {
-        self.effects.insert(action, Box::new(effect));
+    pub fn new_action(&mut self, effect: impl Fn(&mut Eval) + 'static) -> Action {
+        // Actions are indexed progressively
+        let idx = self.effects.len();
+        self.effects.push(Box::new(effect));
+        Action(idx)
     }
 
-    pub fn with_effect(mut self, action: Action, effect: impl Fn(&mut Eval) + 'static) -> Self {
-        self.add_effect(action, Box::new(effect));
-        self
+    pub fn new_location(&mut self) -> Location {
+        // Locations are indexed progressively
+        let idx = self.transitions.len();
+        self.transitions.push(HashMap::new());
+        Location(idx)
     }
 
     pub fn add_transition(
@@ -46,39 +65,20 @@ impl ProgramGraph {
         action: Action,
         post: Location,
         guard: Formula,
-    ) {
-        let map = self.transitions.entry(pre).or_default();
-        let _ = map.insert((action, post), guard);
+    ) -> Result<(), PgErr> {
+        let _ = self
+            .transitions
+            .get_mut(pre.0)
+            .ok_or(PgErr::MissingLocation(pre))?
+            .entry((action, post))
+            .and_modify(|previous_guard| {
+                *previous_guard =
+                    Formula::Or(Box::new(previous_guard.clone()), Box::new(guard.clone()));
+            })
+            .or_insert(guard);
+        Ok(())
     }
-
-    pub fn with_transition(
-        mut self,
-        pre: Location,
-        action: Action,
-        post: Location,
-        guard: Formula,
-    ) -> Self {
-        self.add_transition(pre, action, post, guard);
-        self
-    }
-
-    // pub fn build(self) -> ProgramGraph {
-    //     ProgramGraph {
-    //         // current_location: initial_location,
-    //         // vars: Eval::new(),
-    //         effects: self.effects,
-    //         transitions: self.transitions,
-    //     }
-    // }
 }
-
-// Use of "Newtype" pattern to define different types of indexes.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Location(pub usize);
-
-// Use of "Newtype" pattern to define different types of indexes.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Action(pub usize);
 
 #[derive(Debug)]
 pub enum ExecutionErr {
@@ -106,7 +106,7 @@ impl Execution {
     pub fn possible_transitions(&self) -> Result<Vec<(Action, Location)>, TypeErr> {
         self.pg
             .transitions
-            .get(&self.current_location)
+            .get(self.current_location.0)
             .unwrap_or(&HashMap::new())
             .iter()
             .filter_map(|((action, post), guard)| match guard.eval(&self.vars) {
@@ -121,7 +121,7 @@ impl Execution {
         let guard = self
             .pg
             .transitions
-            .get(&self.current_location)
+            .get(self.current_location.0)
             .ok_or(ExecutionErr::NoTransition)?
             .get(&(action, post_state))
             .ok_or(ExecutionErr::NoTransition)?;
@@ -129,7 +129,7 @@ impl Execution {
             let effect = self
                 .pg
                 .effects
-                .get(&action)
+                .get(action.0)
                 .ok_or(ExecutionErr::UndefinedEffect)?;
             effect(&mut self.vars);
             self.current_location = post_state;
