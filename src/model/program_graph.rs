@@ -50,9 +50,18 @@ pub enum Formula {
 }
 
 #[derive(Debug, Clone)]
-pub enum Effect {
-    Bool(Formula),
+pub enum Expression {
+    Boolean(Formula),
     Integer(IntExpr),
+}
+
+impl From<&Expression> for VarType {
+    fn from(value: &Expression) -> Self {
+        match value {
+            Expression::Boolean(_) => VarType::Boolean,
+            Expression::Integer(_) => VarType::Integer,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -90,9 +99,10 @@ impl fmt::Display for PgError {
 
 impl Error for PgError {}
 
+#[derive(Debug)]
 pub struct ProgramGraphBuilder {
     // Effects are indexed by actions
-    effects: Vec<Vec<(Var, Effect)>>,
+    effects: Vec<Vec<(Var, Expression)>>,
     // Transitions are indexed by locations
     // We can assume there is at most one condition by logical disjunction
     transitions: Vec<HashMap<(Action, Location), Formula>>,
@@ -121,6 +131,13 @@ impl ProgramGraphBuilder {
         pgb
     }
 
+    pub fn var_type(&self, var: Var) -> Result<VarType, PgError> {
+        self.vars
+            .get(var.0)
+            .ok_or(PgError::NonExistingVar(var))
+            .cloned()
+    }
+
     pub fn new_var(&mut self, var_type: VarType) -> Var {
         let idx = self.vars.len();
         self.vars.push(var_type);
@@ -134,10 +151,19 @@ impl ProgramGraphBuilder {
         Action(idx)
     }
 
-    pub fn add_effect(&mut self, action: Action, var: Var, effect: Effect) -> Result<(), PgError> {
+    pub fn add_effect(
+        &mut self,
+        action: Action,
+        var: Var,
+        effect: Expression,
+    ) -> Result<(), PgError> {
         match self.vars.get(var.0).ok_or(PgError::NonExistingVar(var))? {
-            VarType::Boolean if !matches!(effect, Effect::Bool(_)) => Err(PgError::Mismatched),
-            VarType::Integer if !matches!(effect, Effect::Integer(_)) => Err(PgError::Mismatched),
+            VarType::Boolean if !matches!(effect, Expression::Boolean(_)) => {
+                Err(PgError::Mismatched)
+            }
+            VarType::Integer if !matches!(effect, Expression::Integer(_)) => {
+                Err(PgError::Mismatched)
+            }
             _ => self
                 .effects
                 .get_mut(action.0)
@@ -263,7 +289,7 @@ impl ProgramGraphBuilder {
 pub struct ProgramGraph {
     current_location: Location,
     vars: Vec<Val>,
-    effects: Rc<Vec<Vec<(Var, Effect)>>>,
+    effects: Rc<Vec<Vec<(Var, Expression)>>>,
     transitions: Rc<Vec<HashMap<(Action, Location), Formula>>>,
 }
 
@@ -311,10 +337,10 @@ impl ProgramGraph {
         }
     }
 
-    pub(super) fn eval(&self, effect: &Effect) -> Val {
+    pub(super) fn eval(&self, effect: &Expression) -> Val {
         match effect {
-            Effect::Bool(formula) => Val::Boolean(self.eval_formula(formula)),
-            Effect::Integer(expr) => Val::Integer(self.eval_expr(expr)),
+            Expression::Boolean(formula) => Val::Boolean(self.eval_formula(formula)),
+            Expression::Integer(expr) => Val::Integer(self.eval_expr(expr)),
         }
     }
 
@@ -397,12 +423,12 @@ mod tests {
         let right = builder.new_location();
         // Actions
         let initialize = builder.new_action();
-        builder.add_effect(initialize, battery, Effect::Integer(IntExpr::Const(3)))?;
+        builder.add_effect(initialize, battery, Expression::Integer(IntExpr::Const(3)))?;
         let move_left = builder.new_action();
         builder.add_effect(
             move_left,
             battery,
-            Effect::Integer(IntExpr::Sum(
+            Expression::Integer(IntExpr::Sum(
                 Box::new(IntExpr::Var(battery)),
                 Box::new(IntExpr::Opposite(Box::new(IntExpr::Const(1)))),
             )),
@@ -411,7 +437,7 @@ mod tests {
         builder.add_effect(
             move_right,
             battery,
-            Effect::Integer(IntExpr::Sum(
+            Expression::Integer(IntExpr::Sum(
                 Box::new(IntExpr::Var(battery)),
                 Box::new(IntExpr::Opposite(Box::new(IntExpr::Const(1)))),
             )),
