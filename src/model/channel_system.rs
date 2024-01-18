@@ -229,12 +229,20 @@ impl ChannelSystemBuilder {
         Self::default()
     }
 
-    pub fn new_program_graph(&mut self) -> (PgId, CsLocation) {
+    pub fn new_program_graph(&mut self) -> PgId {
         let pg_id = PgId(self.program_graphs.len());
         let pg = ProgramGraphBuilder::new();
-        let initial = CsLocation(pg_id, pg.initial_location());
         self.program_graphs.push(pg);
-        (pg_id, initial)
+        pg_id
+    }
+
+    pub fn initial_location(&mut self, pg_id: PgId) -> Result<CsLocation, CsError> {
+        let pg = self
+            .program_graphs
+            .get(pg_id.0)
+            .ok_or(CsError::MissingPg(pg_id))?;
+        let initial = CsLocation(pg_id, pg.initial_location());
+        Ok(initial)
     }
 
     pub fn new_var(&mut self, pg_id: PgId, var_type: VarType) -> Result<CsVar, CsError> {
@@ -510,7 +518,7 @@ mod tests {
     #[test]
     fn new_action() -> Result<(), CsError> {
         let mut cs = ChannelSystemBuilder::new();
-        let (pg, _initial) = cs.new_program_graph();
+        let pg = cs.new_program_graph();
         let _action = cs.new_action(pg)?;
         Ok(())
     }
@@ -518,7 +526,7 @@ mod tests {
     #[test]
     fn new_var() -> Result<(), CsError> {
         let mut cs = ChannelSystemBuilder::new();
-        let (pg, _initial) = cs.new_program_graph();
+        let pg = cs.new_program_graph();
         let _var1 = cs.new_var(pg, VarType::Boolean)?;
         let _var2 = cs.new_var(pg, VarType::Integer)?;
         Ok(())
@@ -527,7 +535,7 @@ mod tests {
     #[test]
     fn add_effect() -> Result<(), CsError> {
         let mut cs = ChannelSystemBuilder::new();
-        let (pg, _initial) = cs.new_program_graph();
+        let pg = cs.new_program_graph();
         let action = cs.new_action(pg)?;
         let var1 = cs.new_var(pg, VarType::Boolean)?;
         let var2 = cs.new_var(pg, VarType::Integer)?;
@@ -545,7 +553,8 @@ mod tests {
     #[test]
     fn new_location() -> Result<(), CsError> {
         let mut cs = ChannelSystemBuilder::new();
-        let (pg, initial) = cs.new_program_graph();
+        let pg = cs.new_program_graph();
+        let initial = cs.initial_location(pg)?;
         let location = cs.new_location(pg)?;
         assert_ne!(initial, location);
         Ok(())
@@ -554,7 +563,8 @@ mod tests {
     #[test]
     fn add_transition() -> Result<(), CsError> {
         let mut cs = ChannelSystemBuilder::new();
-        let (pg, initial) = cs.new_program_graph();
+        let pg = cs.new_program_graph();
+        let initial = cs.initial_location(pg)?;
         let action = cs.new_action(pg)?;
         let var1 = cs.new_var(pg, VarType::Boolean)?;
         let var2 = cs.new_var(pg, VarType::Integer)?;
@@ -573,7 +583,8 @@ mod tests {
         let mut cs = ChannelSystemBuilder::new();
         let ch = cs.new_channel(VarType::Boolean, 1);
 
-        let (pg1, initial1) = cs.new_program_graph();
+        let pg1 = cs.new_program_graph();
+        let initial1 = cs.initial_location(pg1)?;
         let post1 = cs.new_location(pg1)?;
         let guard1 = CsFormula::new_true(pg1);
         let effect = CsExpr::from_formula(guard1.clone());
@@ -586,7 +597,8 @@ mod tests {
         cs.add_effect(pg1, send, var1, effect)
             .expect_err("send is a message so it cannot have effects");
 
-        let (pg2, initial2) = cs.new_program_graph();
+        let pg2 = cs.new_program_graph();
+        let initial2 = cs.initial_location(pg2)?;
         let post2 = cs.new_location(pg2)?;
         let var2 = cs.new_var(pg2, VarType::Boolean)?;
         let msg = Message::Receive(var2);
