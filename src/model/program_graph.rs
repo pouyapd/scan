@@ -99,7 +99,7 @@ impl fmt::Display for PgError {
 
 impl Error for PgError {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProgramGraphBuilder {
     // Effects are indexed by actions
     effects: Vec<Vec<(Var, Expression)>>,
@@ -286,6 +286,7 @@ impl ProgramGraphBuilder {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ProgramGraph {
     current_location: Location,
     vars: Vec<Val>,

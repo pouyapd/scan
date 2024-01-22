@@ -39,9 +39,28 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match &cli.command {
         Commands::Verify { runs } => {
-            info!("verifying model ({runs} runs)");
-            error!("unimplemented functionality");
-            todo!();
+            println!("Validating model");
+
+            info!("creating reader from file {0}", cli.model.display());
+            let mut reader = Reader::from_file(cli.model)?;
+
+            info!("parsing model");
+            let model = Parser::parse(&mut reader)?;
+            println!("{model:#?}");
+
+            println!("Model successfully validated");
+
+            for run in 0..*runs {
+                info!("verify model, run {run}");
+                let mut model = model.clone();
+                while let Some((pg_id, action, post)) = model.possible_transitions().first() {
+                    model
+                        .transition(*pg_id, *action, *post)
+                        .expect("transition possible");
+                    println!("{model:#?}");
+                }
+                info!("model verified");
+            }
         }
         Commands::Validate => {
             println!("Validating model");
@@ -50,7 +69,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut reader = Reader::from_file(cli.model)?;
 
             info!("parsing model");
-            let _model = Parser::parse(&mut reader)?;
+            let model = Parser::parse(&mut reader)?;
+            println!("{model:#?}");
 
             println!("Model successfully validated");
         }

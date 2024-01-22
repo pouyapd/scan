@@ -217,7 +217,7 @@ impl Error for CsError {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ChannelSystemBuilder {
     program_graphs: Vec<ProgramGraphBuilder>,
     channels: Vec<(VarType, usize)>,
@@ -384,6 +384,7 @@ impl ChannelSystemBuilder {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ChannelSystem {
     program_graphs: Vec<ProgramGraph>,
     channels: Rc<Vec<(VarType, usize)>>,
