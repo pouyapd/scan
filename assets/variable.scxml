@@ -1,0 +1,20 @@
+<scxml 
+  initial="idle" 
+  version="1.0" 
+  name="variable"
+  xmlns="http://www.w3.org/2005/07/scxml">
+	<datamodel>
+		<data id="prop" type="bool"/>
+		<data id="n" type="int"/>
+		<data id="unit" type="unit"/>
+	</datamodel>
+
+    <state id="idle">
+		<onentry>
+			<assign location="prop" expr="true"/>
+			<assign location="n" expr="1"/>
+			<assign location="unit" expr="unit"/>
+		</onentry>
+    </state>
+</scxml>
+

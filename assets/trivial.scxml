@@ -1,0 +1,10 @@
+<scxml 
+	initial="idle" 
+	version="1.0" 
+	name="TestSkill"
+	xmlns="http://www.w3.org/2005/07/scxml">
+
+    <state id="idle">
+    </state>
+</scxml>
+

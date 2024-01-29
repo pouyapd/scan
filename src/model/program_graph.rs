@@ -14,6 +14,7 @@ pub struct Var(usize);
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum VarType {
+    Unit,
     Boolean,
     Integer,
 }
@@ -22,6 +23,7 @@ pub type Integer = i32;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum Val {
+    Unit,
     Boolean(bool),
     Integer(Integer),
 }
@@ -51,6 +53,7 @@ pub enum Formula {
 
 #[derive(Debug, Clone)]
 pub enum Expression {
+    Unit,
     Boolean(Formula),
     Integer(IntExpr),
 }
@@ -60,6 +63,7 @@ impl From<&Expression> for VarType {
         match value {
             Expression::Boolean(_) => VarType::Boolean,
             Expression::Integer(_) => VarType::Integer,
+            Expression::Unit => VarType::Unit,
         }
     }
 }
@@ -274,6 +278,7 @@ impl ProgramGraphBuilder {
                 .map(|var_type| match var_type {
                     VarType::Boolean => Val::Boolean(false),
                     VarType::Integer => Val::Integer(0),
+                    VarType::Unit => Val::Unit,
                 })
                 .collect(),
             effects: Rc::new(self.effects),
@@ -342,6 +347,7 @@ impl ProgramGraph {
         match effect {
             Expression::Boolean(formula) => Val::Boolean(self.eval_formula(formula)),
             Expression::Integer(expr) => Val::Integer(self.eval_expr(expr)),
+            Expression::Unit => Val::Unit,
         }
     }
 

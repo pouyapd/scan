@@ -70,8 +70,12 @@ impl CsFormula {
         Self(pg_id, Formula::False)
     }
 
-    pub fn new(pg_id: PgId, var: Var) -> Self {
-        Self(pg_id, Formula::Prop(var))
+    pub fn new(pg_id: PgId, var: CsVar) -> Result<Self, CsError> {
+        if var.0 != pg_id {
+            Err(CsError::DifferentPgs(var.0, pg_id))
+        } else {
+            Ok(Self(pg_id, Formula::Prop(var.1)))
+        }
     }
 
     pub fn negation(self) -> Self {

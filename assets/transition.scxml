@@ -1,0 +1,17 @@
+<scxml 
+	initial="initial"
+	version="1.0" 
+	name="transition"
+	xmlns="http://www.w3.org/2005/07/scxml">
+
+    <state id="initial">
+		<onentry>
+			<raise event="OK"/>
+		</onentry>
+    	<transition event="OK" target="terminal"/>
+	</state>
+	
+    <state id="terminal">
+    </state>
+</scxml>
+

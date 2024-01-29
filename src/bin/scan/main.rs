@@ -1,10 +1,7 @@
-mod parser;
-
-use crate::parser::Parser;
-
 use clap::{Parser as ClapParser, Subcommand};
-use log::{debug, error, info, trace, warn};
+use log::info;
 use quick_xml::Reader;
+use scan::Parser;
 use std::{error::Error, path::PathBuf};
 
 #[derive(ClapParser)]
