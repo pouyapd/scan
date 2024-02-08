@@ -1,11 +1,15 @@
+mod bt;
+mod fsm;
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::io::BufRead;
+use std::path::PathBuf;
 use std::str;
 use std::str::Utf8Error;
 
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use quick_xml::events::attributes::{AttrError, Attribute};
 use quick_xml::{events, Error as XmlError};
 use quick_xml::{events::Event, Reader};
@@ -27,6 +31,8 @@ pub enum ParserErrorType {
     MissingLocation,
     UnknownVar(String),
     MissingExpr,
+    UnexpectedStartTag(String),
+    MissingAttr(String),
 }
 
 impl fmt::Display for ParserErrorType {
@@ -38,10 +44,12 @@ impl fmt::Display for ParserErrorType {
             ParserErrorType::Utf8(err) => err.fmt(f),
             ParserErrorType::UnknownKey(_) => write!(f, "self:#?"),
             ParserErrorType::Cs(err) => err.fmt(f),
+            ParserErrorType::UnexpectedStartTag(_) => todo!(),
             ParserErrorType::UnexpectedEndTag(_) => write!(f, "self:#?"),
             ParserErrorType::MissingLocation => todo!(),
             ParserErrorType::UnknownVar(_) => todo!(),
             ParserErrorType::MissingExpr => todo!(),
+            ParserErrorType::MissingAttr(_) => todo!(),
         }
     }
 }
@@ -58,7 +66,7 @@ impl Error for ParserErrorType {
 }
 
 #[derive(Debug)]
-pub struct ParserError(usize, ParserErrorType);
+pub struct ParserError(pub(crate) usize, pub(crate) ParserErrorType);
 
 impl fmt::Display for ParserError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -76,20 +84,85 @@ impl Error for ParserError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConvinceTag {
+    Specification,
+    Model,
+    Properties,
+    Scxml,
+    ComponentList,
+    BlackBoard,
+    SkillList,
+    BtToSkillInterface,
+    Bt,
+    Component,
+    SkillDeclaration,
+    SkillDefinition,
+    StructList,
+    Enumeration,
+    Service,
+    Struct,
+    StructData,
+    Enum,
+    Function,
+}
+
+impl From<ConvinceTag> for &str {
+    fn from(value: ConvinceTag) -> Self {
+        match value {
+            ConvinceTag::Specification => "specification",
+            ConvinceTag::Model => "model",
+            ConvinceTag::Properties => "properties",
+            ConvinceTag::Scxml => "scxml",
+            ConvinceTag::ComponentList => "componentList",
+            ConvinceTag::BlackBoard => "blackBoard",
+            ConvinceTag::SkillList => "skillList",
+            ConvinceTag::BtToSkillInterface => "btBoSkillInterface",
+            ConvinceTag::Bt => "bt",
+            ConvinceTag::Component => "component",
+            ConvinceTag::SkillDeclaration => "skillDeclaration",
+            ConvinceTag::SkillDefinition => "skillDefinition",
+            ConvinceTag::StructList => "stuctList",
+            ConvinceTag::Enumeration => "enumeration",
+            ConvinceTag::Service => "service",
+            ConvinceTag::Struct => "struct",
+            ConvinceTag::StructData => "struct_data",
+            ConvinceTag::Enum => "enum",
+            ConvinceTag::Function => "function",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Parser {
     model: ChannelSystemBuilder,
-    program_graphs: HashMap<String, PgId>,
+    skills: HashMap<String, PgId>,
     states: HashMap<String, CsLocation>,
     events: HashMap<String, CsAction>,
     vars: HashMap<String, CsVar>,
 }
 
 impl Parser {
+    const SPECIFICATION: &'static str = "specification";
+    const MODEL: &'static str = "model";
+    const PROPERTIES: &'static str = "properties";
+    const COMPONENT_LIST: &'static str = "componentList";
+    const BLACK_BOARD: &'static str = "blackBoard";
+    const SKILL_LIST: &'static str = "skillList";
+    const BT_TO_SKILL_INTERFACE: &'static str = "btToSkillInterface";
+    const BT: &'static str = "bt";
+    const COMPONENT: &'static str = "component";
+    const SKILL_DECLARATION: &'static str = "skillDeclaration";
+    const SKILL_DEFINITION: &'static str = "skillDefinition";
+    const FILE: &'static str = "file";
     const STATE: &'static str = "state";
     const SCXML: &'static str = "scxml";
     const INITIAL: &'static str = "initial";
     const ID: &'static str = "id";
+    const MOC: &'static str = "moc";
+    const PATH: &'static str = "path";
+    const FSM: &'static str = "fsm";
+    const INTERFACE: &'static str = "interface";
     const VERSION: &'static str = "version";
     const NAME: &'static str = "name";
     const XMLNS: &'static str = "xmlns";
@@ -111,41 +184,148 @@ impl Parser {
     const LOCATION: &'static str = "location";
     const EXPR: &'static str = "expr";
     const RAISE: &'static str = "raise";
+    const STRUCT_LIST: &'static str = "structList";
+    const ENUMERATION: &'static str = "enumeration";
+    const SERVICE: &'static str = "service";
+    const STRUCT: &'static str = "struct";
+    const STRUCT_DATA: &'static str = "structData";
+    const FIELD_ID: &'static str = "fieldId";
+    const ENUM: &'static str = "enum";
+    const FUNCTION: &'static str = "function";
 
-    pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> Result<ChannelSystem, ParserError> {
+    pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<ChannelSystem> {
         let mut parser = Self {
             model: ChannelSystemBuilder::default(),
-            program_graphs: HashMap::default(),
+            skills: HashMap::default(),
             states: HashMap::default(),
             events: HashMap::default(),
             vars: HashMap::default(),
         };
         let mut buf = Vec::new();
+        let mut stack = Vec::new();
         info!("begin parsing");
         loop {
-            info!("processing new event");
-            match reader.read_event_into(&mut buf).map_err(|err| {
-                ParserError(reader.buffer_position(), ParserErrorType::Reader(err))
-            })? {
+            match reader.read_event_into(&mut buf)? {
                 Event::Start(tag) => {
-                    match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                        ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                    })? {
-                        Self::SCXML => {
-                            info!("found new scxml open tag");
-                            parser.parse_scxml(&tag, reader)?;
+                    let tag_name: String = String::from_utf8(tag.name().as_ref().to_vec())?;
+                    trace!("'{tag_name}' open tag");
+                    match tag_name.as_str() {
+                        Self::SPECIFICATION if stack.is_empty() => {
+                            stack.push(ConvinceTag::Specification);
+                        }
+                        Self::MODEL
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::Specification) =>
+                        {
+                            stack.push(ConvinceTag::Model);
+                        }
+                        Self::PROPERTIES
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::Specification) =>
+                        {
+                            stack.push(ConvinceTag::Properties);
+                        }
+                        Self::COMPONENT_LIST
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
+                        {
+                            stack.push(ConvinceTag::ComponentList);
+                        }
+                        Self::BLACK_BOARD
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
+                        {
+                            stack.push(ConvinceTag::BlackBoard);
+                        }
+                        Self::SKILL_LIST
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
+                        {
+                            stack.push(ConvinceTag::SkillList);
+                        }
+                        Self::SKILL_DECLARATION
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::SkillList) =>
+                        {
+                            parser.parse_skill_declaration(tag, reader)?;
+                            stack.push(ConvinceTag::SkillDeclaration);
+                        }
+                        Self::SKILL_DEFINITION
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::SkillDeclaration) =>
+                        {
+                            parser.parse_skill_definition(tag, reader)?;
+                            stack.push(ConvinceTag::SkillDefinition);
+                        }
+                        Self::BT_TO_SKILL_INTERFACE
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
+                        {
+                            stack.push(ConvinceTag::BtToSkillInterface);
+                        }
+                        Self::BT if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) => {
+                            parser.parse_bt(tag)?;
+                            stack.push(ConvinceTag::Bt);
+                        }
+                        Self::COMPONENT
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::ComponentList) =>
+                        {
+                            parser.parse_component(tag)?;
+                            stack.push(ConvinceTag::Component);
+                        }
+                        Self::STRUCT_LIST
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::Component) =>
+                        {
+                            stack.push(ConvinceTag::StructList);
+                        }
+                        Self::ENUMERATION
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::Component) =>
+                        {
+                            stack.push(ConvinceTag::Enumeration);
+                        }
+                        Self::SERVICE
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::Component) =>
+                        {
+                            stack.push(ConvinceTag::Service);
+                        }
+                        Self::STRUCT
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::StructList) =>
+                        {
+                            parser.parse_struct(tag)?;
+                            stack.push(ConvinceTag::Struct);
+                        }
+                        Self::STRUCT_DATA
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Struct) =>
+                        {
+                            parser.parse_structdata(tag)?;
+                            stack.push(ConvinceTag::StructData);
+                        }
+                        Self::ENUM
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::Enumeration) =>
+                        {
+                            stack.push(ConvinceTag::Enum);
+                        }
+                        Self::FUNCTION
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Service) =>
+                        {
+                            stack.push(ConvinceTag::Function);
                         }
                         // Unknown tag: skip till maching end tag
                         tag_name => {
-                            warn!("found unknown tag {tag_name}, skipping");
-                            reader
-                                .read_to_end_into(tag.to_end().into_owned().name(), &mut buf)
-                                .map_err(|err| {
-                                    ParserError(
-                                        reader.buffer_position(),
-                                        ParserErrorType::Reader(err),
-                                    )
-                                })?;
+                            warn!("unknown or unexpected tag {tag_name}, skipping");
+                            reader.read_to_end_into(tag.to_end().into_owned().name(), &mut buf)?;
                         }
                     }
                 }
@@ -156,22 +336,23 @@ impl Parser {
                     return Ok(model);
                 }
                 Event::End(tag) => {
-                    let name = str::from_utf8(tag.name().as_ref())
-                        .map_err(|err| {
-                            ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                        })?
-                        .to_string();
-                    error!("unexpected end tag {name}");
-                    return Err(ParserError(
-                        reader.buffer_position(),
-                        ParserErrorType::UnexpectedEndTag(name),
-                    ));
+                    let name = tag.name();
+                    let name = str::from_utf8(name.as_ref())?;
+                    if stack.pop().is_some_and(|tag| <&str>::from(tag) == name) {
+                        trace!("'{name}' end tag");
+                    } else {
+                        error!("unexpected end tag {name}");
+                        return Err(anyhow::Error::new(ParserError(
+                            reader.buffer_position(),
+                            ParserErrorType::UnexpectedEndTag(name.to_string()),
+                        )));
+                    }
                 }
-                Event::Empty(_) => todo!(),
+                Event::Empty(tag) => warn!("skipping empty tag"),
                 Event::Text(_) => warn!("skipping text"),
                 Event::Comment(_) => warn!("skipping comment"),
                 Event::CData(_) => todo!(),
-                Event::Decl(_) => todo!(),
+                Event::Decl(tag) => parser.parse_xml_declaration(tag)?,
                 Event::PI(_) => todo!(),
                 Event::DocType(_) => todo!(),
             }
@@ -180,301 +361,108 @@ impl Parser {
         }
     }
 
-    fn parse_scxml<R: BufRead>(
+    fn parse_xml_declaration(&self, tag: events::BytesDecl<'_>) -> Result<(), ParserError> {
+        // TODO: parse attributes
+        Ok(())
+    }
+
+    fn parse_skill_declaration<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart,
+        reader: &Reader<R>,
+    ) -> anyhow::Result<()> {
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                Self::ID => {
+                    let skill_id = str::from_utf8(attr.value.as_ref())?;
+                    if !self.skills.contains_key(skill_id) {
+                        let pg_id = self.model.new_program_graph();
+                        self.skills.insert(skill_id.to_string(), pg_id);
+                    }
+                }
+                Self::INTERFACE => warn!("ignoring interface for now"),
+                key => {
+                    error!(
+                        "found unknown attribute {key} in {}",
+                        Self::SKILL_DECLARATION
+                    );
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_skill_definition<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart,
+        reader: &Reader<R>,
+    ) -> anyhow::Result<()> {
+        let mut moc = None;
+        let mut path = None;
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                Self::TYPE => {
+                    todo!()
+                }
+                Self::MOC => moc = Some(String::from_utf8(attr.value.into_owned())?),
+                Self::PATH => {
+                    path = Some(PathBuf::try_from(String::from_utf8(
+                        attr.value.into_owned(),
+                    )?)?)
+                }
+                key => {
+                    error!(
+                        "found unknown attribute {key} in {}",
+                        Self::SKILL_DECLARATION
+                    );
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let path = path.ok_or(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(Self::PATH.to_string()),
+        ))?;
+        info!("creating reader from file {path:?}");
+        let mut reader = Reader::from_file(path)?;
+        match moc.as_deref() {
+            Some(Self::FSM) => {
+                self.parse_skill(&mut reader)?;
+            }
+            Some(Self::BT) => {
+                self.parse_skill(&mut reader)?;
+            }
+            Some(_) => {
+                error!("unrecognized moc");
+            }
+            None => {
+                error!("missing attribute moc");
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_properties<R: BufRead>(
         &mut self,
         tag: &events::BytesStart,
         reader: &mut Reader<R>,
     ) -> Result<(), ParserError> {
-        // let mut initial = None;
-        // let mut name = None;
-        let mut xmlns = None;
-        let mut version = None;
-        let mut datamodel = None;
-        let mut binding = None;
-        let pg_id = self.model.new_program_graph();
-        for attr in tag
-            .attributes()
-            .into_iter()
-            .collect::<Result<Vec<Attribute>, AttrError>>()
-            .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Attr(err)))?
-        {
-            // match attr.key.as_ref() {
-            match str::from_utf8(attr.key.as_ref())
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Utf8(err)))?
-            {
-                Self::INITIAL => {
-                    // initial = Some(attr.value.as_ref());
-                    let cs_id = self.model.initial_location(pg_id).expect("pg_id exists");
-                    let id = str::from_utf8(attr.value.as_ref()).map_err(|err| {
-                        ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                    })?;
-                    self.states.insert(id.to_owned(), cs_id);
-                }
-                Self::VERSION => version = Some(attr.value.as_ref()),
-                Self::XMLNS => xmlns = Some(attr.value.as_ref()),
-                Self::DATAMODEL => datamodel = Some(attr.value.as_ref()),
-                Self::BINDING => binding = Some(attr.value.as_ref()),
-                Self::NAME => {
-                    let name = str::from_utf8(attr.value.as_ref()).map_err(|err| {
-                        ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                    })?;
-                    self.program_graphs.insert(name.to_owned(), pg_id);
-                }
-                key => {
-                    return Err(ParserError(
-                        reader.buffer_position(),
-                        ParserErrorType::UnknownKey(key.to_owned()),
-                    ));
-                }
-            }
-        }
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf).map_err(|err| {
-                ParserError(reader.buffer_position(), ParserErrorType::Reader(err))
-            })? {
-                Event::Empty(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    _ => continue,
-                },
-                Event::Start(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    Self::STATE => {
-                        self.parse_state(tag, reader, pg_id)?;
-                    }
-                    Self::DATAMODEL => {
-                        self.parse_datamodel(&tag, reader, pg_id)?;
-                    }
-                    // Unknown tag: skip till maching end tag
-                    tag_name => {
-                        warn!("unknown tag {tag_name}, skipping");
-                        reader
-                            .read_to_end_into(tag.to_end().into_owned().name(), &mut buf)
-                            .map_err(|err| {
-                                ParserError(reader.buffer_position(), ParserErrorType::Reader(err))
-                            })?;
-                    }
-                },
-                Event::End(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    // Self::STATE => return Ok(()),
-                    Self::SCXML => {
-                        info!("done parsing scxml");
-                        return Ok(());
-                    }
-                    name => {
-                        error!("unexpected end tag {name}");
-                        return Err(ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::UnexpectedEndTag(name.to_string()),
-                        ));
-                    }
-                },
-                // exits the loop when reaching end of file
-                Event::Eof => todo!(),
-                Event::Text(_) => warn!("skipping text"),
-                Event::Comment(_) => warn!("skipping comment"),
-                Event::CData(_) => todo!(),
-                Event::Decl(_) => todo!(),
-                Event::PI(_) => todo!(),
-                Event::DocType(_) => todo!(),
-            }
-            // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
-            buf.clear();
-        }
-    }
-
-    fn parse_state<R: BufRead>(
-        &mut self,
-        tag: events::BytesStart,
-        reader: &mut Reader<R>,
-        pg_id: PgId,
-    ) -> Result<(), ParserError> {
-        let mut location = None;
-        for attr in tag.attributes() {
-            let attr = attr
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Attr(err)))?;
-            match str::from_utf8(attr.key.as_ref())
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Utf8(err)))?
-            {
-                Self::ID => {
-                    let state_id = str::from_utf8(attr.value.as_ref()).map_err(|err| {
-                        ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                    })?;
-                    if let Some(state) = self.states.get(state_id) {
-                        location = Some(*state);
-                    } else {
-                        let state = self.model.new_location(pg_id).map_err(|err| {
-                            ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                        })?;
-                        location = Some(state);
-                        let previous = self.states.insert(state_id.to_owned(), state);
-                        assert!(previous.is_none(), "states did not contain the key");
-                    }
-                }
-                name => warn!("unknown attribute {name}, ignoring"),
-            }
-        }
-        if location.is_none() {
-            location =
-                Some(self.model.new_location(pg_id).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                })?);
-        }
-        let mut location = location.expect("assigned some value");
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf).map_err(|err| {
-                ParserError(reader.buffer_position(), ParserErrorType::Reader(err))
-            })? {
-                Event::Empty(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    Self::TRANSITION => self.parse_transition(tag, reader, pg_id, location)?,
-                    tag_name => warn!("unknown empty tag {tag_name}, skipping"),
-                },
-                Event::Start(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    Self::ON_ENTRY | Self::ON_EXIT => {
-                        // 'on_entry' and 'on_exit' do the same thing:
-                        // extending the location with transitions applying the entry/exit procedures.
-                        // An 'on_entry' script is interpreted as a transition between the current location
-                        // and a new location created for the purpose.
-                        // Then, we proceed parsing from the new location.
-                        // Open questions:
-                        // - What if 'on_exit' is parsed before 'on_entry'?
-                        location = self.parse_on_entry_exit(tag, reader, pg_id, location)?
-                    }
-                    // Self::SCRIPT => self.parse_script(tag, reader, pg_id)?,
-                    // Unknown tag: skip till maching end tag
-                    tag_name => {
-                        warn!("unknown tag {tag_name}, skipping");
-                        reader
-                            .read_to_end_into(tag.to_end().into_owned().name(), &mut buf)
-                            .map_err(|err| {
-                                ParserError(reader.buffer_position(), ParserErrorType::Reader(err))
-                            })?;
-                    }
-                },
-                Event::End(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    Self::STATE => return Ok(()),
-                    name => {
-                        error!("unexpected end tag {name}");
-                        return Err(ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::UnexpectedEndTag(name.to_string()),
-                        ));
-                    }
-                },
-                Event::Text(_) | Event::Comment(_) => continue,
-                // exits the loop when reaching end of file
-                Event::Eof => todo!(),
-                event => {
-                    return Err(ParserError(
-                        reader.buffer_position(),
-                        ParserErrorType::UnknownEvent(event.into_owned()),
-                    ))
-                }
-            }
-            // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
-            buf.clear();
-        }
-    }
-
-    fn parse_transition<R: BufRead>(
-        &mut self,
-        tag: events::BytesStart,
-        reader: &mut Reader<R>,
-        pg_id: PgId,
-        state_id: CsLocation,
-    ) -> Result<(), ParserError> {
-        let mut event = None;
-        let mut target = None;
-        for attr in tag.attributes() {
-            let attr = attr
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Attr(err)))?;
-            match str::from_utf8(attr.key.as_ref())
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Utf8(err)))?
-            {
-                Self::EVENT => {
-                    event = Some(String::from_utf8(attr.value.to_vec()).map_err(|err| {
-                        ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::Utf8(err.utf8_error()),
-                        )
-                    })?);
-                }
-                Self::TARGET => {
-                    target = Some(String::from_utf8(attr.value.to_vec()).map_err(|err| {
-                        ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::Utf8(err.utf8_error()),
-                        )
-                    })?);
-                }
-                name => warn!("unknown attribute {name}, ignoring"),
-            }
-        }
-
-        // If event is unspecified, the default is the NULL event
-        let event = event.unwrap_or(Self::NULL.to_string());
-        let action = match self.events.get(&event) {
-            Some(action) => *action,
-            None => {
-                info!("new event {event}");
-                self.model.new_action(pg_id).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                })?
-            }
-        };
-        // make sure event is associated to action
-        let a = self.events.entry(event.clone()).or_insert(action);
-        assert_eq!(*a, action);
-        // check event has an associated activation variable
-        let raised = if let Some(raised) = self.vars.get(&event) {
-            *raised
-        } else {
-            // By default the variable is instantiated as false
-            self.model
-                .new_var(pg_id, VarType::Boolean)
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Cs(err)))?
-        };
-
-        if let Some(target) = target {
-            let post = match self.states.get(&target) {
-                Some(post) => *post,
-                None => self.model.new_location(pg_id).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                })?,
-            };
-            // make sure target is associated to post
-            let p = self.states.entry(target).or_insert(post);
-            assert_eq!(*p, post);
-
-            // finally add transition
-            let guard = CsFormula::new(pg_id, raised)
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Cs(err)))?;
-            self.model
-                .add_effect(
-                    pg_id,
-                    action,
-                    raised,
-                    CsExpr::from_formula(CsFormula::new_false(pg_id)),
-                )
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Cs(err)))?;
-            self.model
-                .add_transition(pg_id, state_id, action, post, guard)
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Cs(err)))
-        } else {
-            warn!("transition with no target state, ignored");
-            Ok(())
-        }
+        todo!()
     }
 
     fn parse_datamodel<R: BufRead>(
@@ -589,209 +577,65 @@ impl Parser {
     //     todo!()
     // }
 
-    fn parse_on_entry_exit<R: BufRead>(
-        &mut self,
+    fn parse_bt(
+        &self,
+        // reader: &mut Reader<R>,
         tag: events::BytesStart<'_>,
-        reader: &mut Reader<R>,
-        pg_id: PgId,
-        state_cs_id: CsLocation,
-    ) -> Result<CsLocation, ParserError> {
-        let mut buf = Vec::new();
-        let mut post = state_cs_id;
-
-        if tag.attributes().last().is_some() {
-            error!("tag 'onentry' does not support any attribute, ignoring");
-        }
-
-        loop {
-            match reader.read_event_into(&mut buf).map_err(|err| {
-                ParserError(reader.buffer_position(), ParserErrorType::Reader(err))
-            })? {
-                Event::Empty(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    Self::ASSIGN => {
-                        // Parsing 'assign' can create a new state
-                        post = self.parse_assign(reader, &tag, pg_id, post)?;
-                    }
-                    Self::RAISE => {
-                        post = self.parse_raise(reader, &tag, pg_id, post)?;
-                    }
-                    tag_name => error!("unknown empty tag {tag_name}, skipping"),
-                },
-                Event::Start(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    // Unknown tag: skip till maching end tag
-                    tag_name => {
-                        error!("unknown tag {tag_name}, skipping");
-                        reader
-                            .read_to_end_into(tag.to_end().into_owned().name(), &mut buf)
-                            .map_err(|err| {
-                                ParserError(reader.buffer_position(), ParserErrorType::Reader(err))
-                            })?;
-                    }
-                },
-                Event::End(tag) => match str::from_utf8(tag.name().as_ref()).map_err(|err| {
-                    ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                })? {
-                    Self::ON_ENTRY => return Ok(post),
-                    name => {
-                        error!("unexpected end tag {name}");
-                        return Err(ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::UnexpectedEndTag(name.to_string()),
-                        ));
-                    }
-                },
-                Event::Eof => todo!(),
-                Event::Text(_) => warn!("skipping text"),
-                Event::Comment(_) => warn!("skipping comment"),
-                Event::CData(_) => todo!(),
-                Event::Decl(_) => todo!(),
-                Event::PI(_) => todo!(),
-                Event::DocType(_) => todo!(),
-            }
-            // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
-            buf.clear();
-        }
-    }
-
-    fn parse_assign<R: BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        tag: &events::BytesStart<'_>,
-        pg_id: PgId,
-        pre: CsLocation,
-    ) -> Result<CsLocation, ParserError> {
-        // This is a 'location' in the sense of scxml, i.e., a variable
-        let mut location = None;
-        let mut expr = None;
+    ) -> anyhow::Result<()> {
         for attr in tag.attributes() {
-            let attr = attr
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Attr(err)))?;
-            match str::from_utf8(attr.key.as_ref())
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Utf8(err)))?
-            {
-                Self::LOCATION => {
-                    location = Some(String::from_utf8(attr.value.to_vec()).map_err(|err| {
-                        ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::Utf8(err.utf8_error()),
-                        )
-                    })?);
-                }
-                Self::EXPR => {
-                    expr = Some(String::from_utf8(attr.value.to_vec()).map_err(|err| {
-                        ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::Utf8(err.utf8_error()),
-                        )
-                    })?);
+            let attr = attr?;
+            match str::from_utf8(attr.key.as_ref())? {
+                Self::FILE => {
+                    let file = str::from_utf8(attr.value.as_ref())?;
+                    let file = PathBuf::try_from(file)?;
+                    todo!()
                 }
                 name => error!("unknown attribute {name}, ignoring"),
             }
         }
-        let location = location.ok_or(ParserError(
-            reader.buffer_position(),
-            ParserErrorType::MissingLocation,
-        ))?;
-        let var_id = self.vars.get(&location).ok_or(ParserError(
-            reader.buffer_position(),
-            ParserErrorType::UnknownVar(location),
-        ))?;
-        let expr = expr.ok_or(ParserError(
-            reader.buffer_position(),
-            ParserErrorType::MissingExpr,
-        ))?;
-        let effect: CsExpr = self.parse_expr(pg_id, expr)?;
-        // To assign the expression to the variable,
-        // we create a new 'assign' action
-        // and a new 'post' channel system location,
-        // then we add a transition that perform the assignment.
-        let assign = self
-            .model
-            .new_action(pg_id)
-            .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Cs(err)))?;
-        self.model
-            .add_effect(pg_id, assign, *var_id, effect)
-            .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Cs(err)))?;
-        let post = self
-            .model
-            .new_location(pg_id)
-            .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Cs(err)))?;
-        self.model
-            .add_transition(pg_id, pre, assign, post, CsFormula::new_true(pg_id))
-            .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Cs(err)))?;
-        Ok(post)
+        Ok(())
     }
 
-    fn parse_expr(&self, pg_id: PgId, expr: String) -> Result<CsExpr, ParserError> {
-        // todo!()
-        Ok(CsExpr::from_formula(CsFormula::new_true(pg_id)))
-    }
-
-    fn parse_raise<R: BufRead>(
-        &mut self,
-        reader: &mut Reader<R>,
-        tag: &events::BytesStart<'_>,
-        pg_id: PgId,
-        post: CsLocation,
-    ) -> Result<CsLocation, ParserError> {
-        let mut post = post;
+    fn parse_component(&self, tag: events::BytesStart<'_>) -> anyhow::Result<()> {
         for attr in tag.attributes() {
-            let attr = attr
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Attr(err)))?;
-            match str::from_utf8(attr.key.as_ref())
-                .map_err(|err| ParserError(reader.buffer_position(), ParserErrorType::Utf8(err)))?
-            {
-                Self::EVENT => {
-                    // To raise an event, we create a new Boolean variable associated to the name of the event
-                    // (unless such a variable exists already),
-                    // and an (anonymous) action triggering a transition to a next state
-                    // that sets the variable to true.
-                    // The raised event will then be interpreted as a transition
-                    // that has the associated variable as guard,
-                    // and setting the variable to false as an effect.
-                    let event = str::from_utf8(attr.value.as_ref()).map_err(|err| {
-                        ParserError(reader.buffer_position(), ParserErrorType::Utf8(err))
-                    })?;
-                    let raised = if let Some(raised) = self.vars.get(event) {
-                        *raised
-                    } else {
-                        self.model.new_var(pg_id, VarType::Boolean).map_err(|err| {
-                            ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                        })?
-                    };
-                    // Either 'event' was associated to no variable
-                    // or it was associated to 'raised' already.
-                    let _ = self.vars.insert(event.to_string(), raised);
-                    let raise = self.model.new_action(pg_id).map_err(|err| {
-                        ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                    })?;
-                    let after_raise = self.model.new_location(pg_id).map_err(|err| {
-                        ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                    })?;
-                    self.model
-                        .add_effect(
-                            pg_id,
-                            raise,
-                            raised,
-                            CsExpr::from_formula(CsFormula::new_true(pg_id)),
-                        )
-                        .map_err(|err| {
-                            ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                        })?;
-                    self.model
-                        .add_transition(pg_id, post, raise, after_raise, CsFormula::new_true(pg_id))
-                        .map_err(|err| {
-                            ParserError(reader.buffer_position(), ParserErrorType::Cs(err))
-                        })?;
-                    post = after_raise;
+            let attr = attr?;
+            match str::from_utf8(attr.key.as_ref())? {
+                Self::ID => {
+                    let id = str::from_utf8(attr.value.as_ref())?;
+                    todo!()
                 }
                 name => error!("unknown attribute {name}, ignoring"),
             }
         }
-        Ok(post)
+        Ok(())
+    }
+
+    fn parse_struct(&self, tag: events::BytesStart<'_>) -> anyhow::Result<()> {
+        for attr in tag.attributes() {
+            let attr = attr?;
+            match str::from_utf8(attr.key.as_ref())? {
+                Self::ID => {
+                    let id = str::from_utf8(attr.value.as_ref())?;
+                    todo!()
+                }
+                name => error!("unknown attribute {name}, ignoring"),
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_structdata(&self, tag: events::BytesStart<'_>) -> anyhow::Result<()> {
+        for attr in tag.attributes() {
+            let attr = attr?;
+            match str::from_utf8(attr.key.as_ref())? {
+                Self::FIELD_ID => {
+                    let field_id = str::from_utf8(attr.value.as_ref())?;
+                    let field_id = field_id.parse::<usize>()?;
+                    todo!()
+                }
+                name => error!("unknown attribute {name}, ignoring"),
+            }
+        }
+        Ok(())
     }
 }

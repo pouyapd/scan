@@ -1,0 +1,24 @@
+<scxml 
+  initial="idle" 
+  version="1.0" 
+  name="TestSkill"
+  xmlns="http://www.w3.org/2005/07/scxml">
+	<datamodel>
+		<data id="var" type="bool"/>
+	</datamodel>
+
+    <state id="idle">
+		<onentry>
+			<raise event="CMD_START"/>
+		</onentry>
+    	<transition event="CMD_START" target="alarm" />
+    </state>
+
+
+    <state id="alarm">
+		<onentry>
+			<assign location="var" expr="true"/>
+		</onentry>
+    </state>
+</scxml>
+
