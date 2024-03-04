@@ -1,7 +1,7 @@
 use clap::{Parser as ClapParser, Subcommand};
 use log::info;
 use quick_xml::Reader;
-use scan::Parser;
+use scan::{Parser, Specification};
 use std::{error::Error, path::PathBuf};
 
 #[derive(ClapParser)]
@@ -66,8 +66,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut reader = Reader::from_file(cli.model)?;
 
             info!("parsing model");
-            let model = Parser::parse(&mut reader)?;
-            println!("{model:#?}");
+            let spec = Specification::parse(&mut reader)?;
+            println!("{spec:#?}");
 
             println!("Model successfully validated");
         }

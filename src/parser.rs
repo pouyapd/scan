@@ -9,14 +9,14 @@ use std::path::PathBuf;
 use std::str;
 use std::str::Utf8Error;
 
+use anyhow::anyhow;
 use log::{error, info, trace, warn};
 use quick_xml::events::attributes::{AttrError, Attribute};
 use quick_xml::{events, Error as XmlError};
 use quick_xml::{events::Event, Reader};
 
 use crate::model::{
-    ChannelSystem, ChannelSystemBuilder, CsAction, CsError, CsExpr, CsFormula, CsLocation, CsVar,
-    PgId, VarType,
+    ChannelSystem, ChannelSystemBuilder, CsAction, CsError, CsLocation, CsVar, PgId, VarType,
 };
 
 #[derive(Debug)]
@@ -33,6 +33,376 @@ pub enum ParserErrorType {
     MissingExpr,
     UnexpectedStartTag(String),
     MissingAttr(String),
+    MissingSkill(SkillId),
+    UnclosedTags,
+    AlreadyDeclared(String),
+    UnknownMoC(String),
+    UnknownSkillType(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillId(usize);
+// pub struct ComponentId(usize);
+// pub struct PropertyId(usize);
+
+#[derive(Debug)]
+pub struct Specification {
+    task_plan: Option<SkillId>,
+    skill_list: Vec<(String, Option<SkillDeclaration>)>,
+    skill_id: HashMap<String, SkillId>,
+    // blackboard: Blackboard,
+    // component_list: Vec<Component>,
+    // component_id: HashMap<String, ComponentId>,
+    // interface_list: Vec<Interface>,
+    // interface_id: HashMap<String, InterfaceId>,
+    // properties: Vec<Property>,
+    // property_id: HashMap<String, PropertyId>,
+}
+
+#[derive(Debug)]
+pub enum SkillType {
+    Action,
+    Condition,
+}
+
+impl TryFrom<String> for SkillType {
+    type Error = ParserErrorType;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "action" => Ok(SkillType::Action),
+            "condition" => Ok(SkillType::Condition),
+            _ => Err(ParserErrorType::UnknownSkillType(value)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum MoC {
+    Fsm,
+    Bt,
+}
+
+impl TryFrom<String> for MoC {
+    type Error = ParserErrorType;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "fsm" => Ok(MoC::Fsm),
+            "bt" => Ok(MoC::Bt),
+            _ => Err(ParserErrorType::UnknownMoC(value)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct SkillDeclaration {
+    // interface: InterfaceId,
+    skill_type: SkillType,
+    moc: MoC,
+    path: PathBuf,
+}
+
+impl Specification {
+    pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Specification> {
+        let mut spec = Specification {
+            task_plan: None,
+            skill_list: Vec::new(),
+            skill_id: HashMap::new(),
+        };
+        let mut buf = Vec::new();
+        let mut stack = Vec::new();
+        info!("begin parsing");
+        loop {
+            match reader.read_event_into(&mut buf)? {
+                Event::Start(tag) => {
+                    let tag_name: String = String::from_utf8(tag.name().as_ref().to_vec())?;
+                    trace!("'{tag_name}' open tag");
+                    let tag_name = ConvinceTag::from(tag_name.as_str());
+                    match tag_name {
+                        ConvinceTag::Specification if stack.is_empty() => {
+                            stack.push(ConvinceTag::Specification);
+                        }
+                        ConvinceTag::Model
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::Specification) =>
+                        {
+                            stack.push(ConvinceTag::Model);
+                        }
+                        ConvinceTag::SkillList
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
+                        {
+                            spec.parse_skill_list(tag, reader)?;
+                            stack.push(ConvinceTag::SkillList);
+                        }
+                        ConvinceTag::SkillDeclaration
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::SkillList) =>
+                        {
+                            spec.parse_skill_declaration(tag, reader)?;
+                            stack.push(ConvinceTag::SkillDeclaration);
+                        }
+                        ConvinceTag::SkillDefinition
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::SkillDeclaration) =>
+                        {
+                            // spec.parse_skill_definition(tag, reader)?;
+                            stack.push(ConvinceTag::SkillDefinition);
+                        }
+                        ConvinceTag::Properties
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::Specification) =>
+                        {
+                            stack.push(ConvinceTag::Properties);
+                        }
+                        ConvinceTag::ComponentList
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
+                        {
+                            stack.push(ConvinceTag::ComponentList);
+                        }
+                        ConvinceTag::Component
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::ComponentList) =>
+                        {
+                            // spec.parse_component(tag)?;
+                            stack.push(ConvinceTag::Component);
+                        }
+                        ConvinceTag::Function
+                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Service) =>
+                        {
+                            stack.push(ConvinceTag::Function);
+                        }
+                        // Unknown tag: skip till maching end tag
+                        ConvinceTag::Unknown(_) | _ => {
+                            // warn!("unknown or unexpected tag {tag_name}, skipping");
+                            reader.read_to_end_into(tag.to_end().into_owned().name(), &mut buf)?;
+                        }
+                    }
+                }
+                // exits the loop when reaching end of file
+                Event::Eof => {
+                    info!("parsing completed");
+                    if !stack.is_empty() {
+                        return Err(anyhow!(ParserError(
+                            reader.buffer_position(),
+                            ParserErrorType::UnclosedTags,
+                        )));
+                    }
+                    // let model = parser.model.build();
+                    // return Ok(model);
+                    break;
+                }
+                Event::End(tag) => {
+                    let name = tag.name();
+                    let name = str::from_utf8(name.as_ref())?;
+                    if stack.pop().is_some_and(|tag| <String>::from(tag) == name) {
+                        trace!("'{name}' end tag");
+                    } else {
+                        error!("unexpected end tag {name}");
+                        return Err(anyhow::Error::new(ParserError(
+                            reader.buffer_position(),
+                            ParserErrorType::UnexpectedEndTag(name.to_string()),
+                        )));
+                    }
+                }
+                Event::Empty(tag) => warn!("skipping empty tag"),
+                Event::Text(_) => warn!("skipping text"),
+                Event::Comment(_) => warn!("skipping comment"),
+                Event::CData(_) => todo!(),
+                Event::Decl(tag) => todo!(), // parser.parse_xml_declaration(tag)?,
+                Event::PI(_) => todo!(),
+                Event::DocType(_) => todo!(),
+            }
+            // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
+            buf.clear();
+        }
+        Ok(spec)
+    }
+
+    pub fn build_model(self) -> ChannelSystem {
+        let cs = ChannelSystemBuilder::new();
+        cs.build()
+    }
+
+    fn parse_skill_list<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        reader: &Reader<R>,
+    ) -> anyhow::Result<()> {
+        const TASK_PLAN: &str = "taskPlan";
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                TASK_PLAN => {
+                    let skill_id = str::from_utf8(attr.value.as_ref())?;
+                    if self.skill_id.contains_key(skill_id) {
+                        // This means 'taskPlan' tag comes after declaration
+                        // Should not happen?
+                        return Err(anyhow!(ParserError(
+                            reader.buffer_position(),
+                            ParserErrorType::AlreadyDeclared(skill_id.to_string()),
+                        )));
+                        // self.task_plan = Some(*idx);
+                    } else {
+                        let idx = SkillId(self.skill_list.len());
+                        self.skill_id.insert(skill_id.to_string(), idx);
+                        self.skill_list.push((skill_id.to_string(), None));
+                        self.task_plan = Some(idx);
+                    }
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TASK_PLAN}",);
+                    return Err(anyhow!(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_skill_declaration<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+    ) -> anyhow::Result<()> {
+        const ID: &str = "id";
+        const INTERFACE: &str = "interface";
+        const TYPE: &str = "type";
+        const MOC: &str = "moc";
+        const PATH: &str = "path";
+        let mut skill_id: Option<String> = None;
+        let mut interface: Option<String> = None;
+        let mut type_skill: Option<String> = None;
+        let mut moc: Option<String> = None;
+        let mut path: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ID => {
+                    skill_id = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                INTERFACE => {
+                    interface = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key} in {}", INTERFACE);
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf)? {
+                Event::Empty(tag) => {
+                    let tag_name: String = String::from_utf8(tag.name().as_ref().to_vec())?;
+                    trace!("'{tag_name}' open tag");
+                    let tag_name = ConvinceTag::from(tag_name.as_str());
+                    match tag_name {
+                        ConvinceTag::SkillDefinition => {
+                            for attr in
+                                tag.attributes()
+                                    .into_iter()
+                                    .collect::<Result<Vec<Attribute>, AttrError>>()?
+                            {
+                                match str::from_utf8(attr.key.as_ref())? {
+                                    TYPE => {
+                                        type_skill =
+                                            Some(String::from_utf8(attr.value.into_owned())?);
+                                    }
+                                    MOC => {
+                                        moc = Some(String::from_utf8(attr.value.into_owned())?);
+                                    }
+                                    PATH => {
+                                        path = Some(String::from_utf8(attr.value.into_owned())?);
+                                    }
+                                    key => {
+                                        error!("found unknown attribute {key} in {}", INTERFACE);
+                                        return Err(anyhow::Error::new(ParserError(
+                                            reader.buffer_position(),
+                                            ParserErrorType::UnknownKey(key.to_owned()),
+                                        )));
+                                    }
+                                }
+                            }
+                        }
+                        ConvinceTag::Unknown(_) | _ => {
+                            // warn!("unknown or unexpected tag {tag_name}, skipping");
+                            reader.read_to_end_into(tag.to_end().into_owned().name(), &mut buf)?;
+                        }
+                    }
+                    break;
+                }
+                Event::Start(_) => todo!(),
+                Event::Text(_) => warn!("skipping text"),
+                Event::Comment(_) => warn!("skipping comment"),
+                Event::CData(_) => todo!(),
+                Event::Decl(_) => todo!(), // parser.parse_xml_declaration(tag)?,
+                Event::PI(_) => todo!(),
+                Event::DocType(_) => todo!(),
+                Event::End(_) => todo!(),
+                Event::Eof => todo!(),
+            }
+            // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
+            buf.clear();
+        }
+        let skill_id = skill_id.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ID.to_string())
+        )))?;
+        let interface = interface.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(INTERFACE.to_string())
+        )))?;
+        let skill_type = type_skill.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(TYPE.to_string())
+        )))?;
+        let skill_type = SkillType::try_from(skill_type)?;
+        let moc = moc.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(MOC.to_string())
+        )))?;
+        let moc = MoC::try_from(moc)?;
+        let path = path.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(PATH.to_string())
+        )))?;
+        let path = PathBuf::from(path);
+        let skill = SkillDeclaration {
+            skill_type,
+            moc,
+            path,
+        };
+        if let Some(idx) = self.skill_id.get(&skill_id) {
+            *self.skill_list.get_mut(idx.0).ok_or_else(|| {
+                anyhow!(ParserError(
+                    reader.buffer_position(),
+                    ParserErrorType::MissingSkill(*idx)
+                ))
+            })? = (skill_id, Some(skill));
+        } else {
+            let idx = SkillId(self.skill_list.len());
+            self.skill_id.insert(skill_id.to_string(), idx);
+            self.skill_list.push((skill_id, Some(skill)));
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for ParserErrorType {
@@ -50,6 +420,9 @@ impl fmt::Display for ParserErrorType {
             ParserErrorType::UnknownVar(_) => todo!(),
             ParserErrorType::MissingExpr => todo!(),
             ParserErrorType::MissingAttr(_) => todo!(),
+            ParserErrorType::UnclosedTags => todo!(),
+            ParserErrorType::AlreadyDeclared(_) => todo!(),
+            _ => todo!(),
         }
     }
 }
@@ -84,7 +457,7 @@ impl Error for ParserError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ConvinceTag {
     Specification,
     Model,
@@ -105,30 +478,59 @@ enum ConvinceTag {
     StructData,
     Enum,
     Function,
+    Unknown(String),
 }
 
-impl From<ConvinceTag> for &str {
+impl From<ConvinceTag> for String {
     fn from(value: ConvinceTag) -> Self {
         match value {
-            ConvinceTag::Specification => "specification",
-            ConvinceTag::Model => "model",
-            ConvinceTag::Properties => "properties",
-            ConvinceTag::Scxml => "scxml",
-            ConvinceTag::ComponentList => "componentList",
-            ConvinceTag::BlackBoard => "blackBoard",
-            ConvinceTag::SkillList => "skillList",
-            ConvinceTag::BtToSkillInterface => "btBoSkillInterface",
-            ConvinceTag::Bt => "bt",
-            ConvinceTag::Component => "component",
-            ConvinceTag::SkillDeclaration => "skillDeclaration",
-            ConvinceTag::SkillDefinition => "skillDefinition",
-            ConvinceTag::StructList => "stuctList",
-            ConvinceTag::Enumeration => "enumeration",
-            ConvinceTag::Service => "service",
-            ConvinceTag::Struct => "struct",
-            ConvinceTag::StructData => "struct_data",
-            ConvinceTag::Enum => "enum",
-            ConvinceTag::Function => "function",
+            ConvinceTag::Specification => "specification".to_string(),
+            ConvinceTag::Model => "model".to_string(),
+            ConvinceTag::Properties => "properties".to_string(),
+            ConvinceTag::Scxml => "scxml".to_string(),
+            ConvinceTag::ComponentList => "componentList".to_string(),
+            ConvinceTag::BlackBoard => "blackBoard".to_string(),
+            ConvinceTag::SkillList => "skillList".to_string(),
+            ConvinceTag::BtToSkillInterface => "btBoSkillInterface".to_string(),
+            ConvinceTag::Bt => "bt".to_string(),
+            ConvinceTag::Component => "component".to_string(),
+            ConvinceTag::SkillDeclaration => "skillDeclaration".to_string(),
+            ConvinceTag::SkillDefinition => "skillDefinition".to_string(),
+            ConvinceTag::StructList => "stuctList".to_string(),
+            ConvinceTag::Enumeration => "enumeration".to_string(),
+            ConvinceTag::Service => "service".to_string(),
+            ConvinceTag::Struct => "struct".to_string(),
+            ConvinceTag::StructData => "struct_data".to_string(),
+            ConvinceTag::Enum => "enum".to_string(),
+            ConvinceTag::Function => "function".to_string(),
+            ConvinceTag::Unknown(tag) => tag,
+        }
+    }
+}
+
+impl From<&str> for ConvinceTag {
+    fn from(value: &str) -> Self {
+        match value {
+            "specification" => ConvinceTag::Specification,
+            "model" => ConvinceTag::Model,
+            "properties" => ConvinceTag::Properties,
+            "scxml" => ConvinceTag::Scxml,
+            "componentList" => ConvinceTag::ComponentList,
+            "blackBoard" => ConvinceTag::BlackBoard,
+            "skillList" => ConvinceTag::SkillList,
+            "btBoSkillInterface" => ConvinceTag::BtToSkillInterface,
+            "bt" => ConvinceTag::Bt,
+            "component" => ConvinceTag::Component,
+            "skillDeclaration" => ConvinceTag::SkillDeclaration,
+            "skillDefinition" => ConvinceTag::SkillDefinition,
+            "stuctList" => ConvinceTag::StructList,
+            "enumeration" => ConvinceTag::Enumeration,
+            "service" => ConvinceTag::Service,
+            "struct" => ConvinceTag::Struct,
+            "struct_data" => ConvinceTag::StructData,
+            "enum" => ConvinceTag::Enum,
+            "function" => ConvinceTag::Function,
+            tag => ConvinceTag::Unknown(tag.to_string()),
         }
     }
 }
@@ -338,7 +740,7 @@ impl Parser {
                 Event::End(tag) => {
                     let name = tag.name();
                     let name = str::from_utf8(name.as_ref())?;
-                    if stack.pop().is_some_and(|tag| <&str>::from(tag) == name) {
+                    if stack.pop().is_some_and(|tag| <String>::from(tag) == name) {
                         trace!("'{name}' end tag");
                     } else {
                         error!("unexpected end tag {name}");
