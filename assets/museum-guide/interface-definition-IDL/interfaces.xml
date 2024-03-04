@@ -1,0 +1,54 @@
+<interfaces xmlns="..." xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="...">
+
+    <types path="./types.xml" />
+
+    <interface id="SkillInterface">
+        <function id="tick">
+            <protocol>
+                <ROS2data>
+                    <interface type="sync-service" />
+                </ROS2data>
+            </protocol>
+            <returnValue>
+                <dataType>enum</dataType>
+                <enum refid="TickResponse" />
+            </returnValue>
+        </function>
+        <function id="halt">
+            <protocol>
+                <ROS2data>
+                    <interface type="sync-service" />
+                </ROS2data>
+            </protocol>
+        </function>
+    </interface>
+    <interface id="BatteryDriverCmpInterface">
+        <function id="drain">
+            <protocol>
+                <ROS2data>
+                    <interface type="async-service" />
+                </ROS2data>
+            </protocol>
+        </function>
+        <function id="readLevel">
+            <protocol>
+                <ROS2data>
+                    <interface type="topic" />
+                </ROS2data>
+            </protocol>
+            <returnValue>
+                <dataType>i32</dataType>
+            </returnValue>
+        </function>
+    </interface>
+    <interface id="AlarmCmpInterface">
+        <function id="sendAlarm">
+            <protocol>
+                <ROS2data>
+                    <interface type="sync-service" />
+                </ROS2data>
+            </protocol>
+        </function>
+    </interface>
+
+</interfaces>

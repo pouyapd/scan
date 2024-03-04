@@ -1,0 +1,43 @@
+<scxml 
+  initial="idle" 
+  version="1.0" 
+  name="AlarmBatteryLow"
+  xmlns="http://www.w3.org/2005/07/scxml">
+  <datamodel>
+    <data name="origin" type="URI" />
+  </datamodel>
+
+  <state id="idle">
+    <transition event="tickCall" target="startAlarm" />
+    <transition event="haltCall" target="halt" />
+    <onexit>
+      <assign location="origin" expr="_event.origin" />
+    </onexit>
+  </state>
+
+  <state id="halt">
+    <onentry>
+      <send event="haltReturn" targetexpr="origin" />
+    </onentry>
+    <transition target="idle" />
+  </state>
+
+	<state id="startAlarm">
+    <onentry>
+      <send event="AlarmCmp.sendAlarmCall" target="AlarmCmp" />
+    </onentry>
+    <!-- External events received before 'sendAlarmReturn' are discarded -->
+    <!-- but in this case we know that no event will be received -->
+    <!-- because the tick of the BT is synchronous -->
+    <transition event="AlarmCmp.sendAlarmReturn" target="alarmSuccess" />
+  </state>
+
+  <state id="alarmSuccess">
+    <onentry>
+      <send event="tickReturn" targetexpr="origin">
+        <param name="result" expr="SUCCESS" />
+      </send>
+    </onentry>
+    <transition target="idle" />
+  </state>
+</scxml>

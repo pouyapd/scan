@@ -1,0 +1,35 @@
+<properties>
+  <datamodel>
+    <data id="level" type="i32">
+      <caller refid="BatteryLevel" type="skill" />
+      <called refid="BatteryDriverCmp" type="component" />
+      <!-- if event="return" value is either "returnValue" or "returnEvent"-->
+      <!-- if value is "returnEvent" a Boolean variable is set corresponding to the event (function return)-->
+      <!-- if value is "returnValue" the returned value is associated to a variable of a suitable type-->
+      <connection function="readLevel" event="return" value="returnValue" />
+    </data>
+    <data id="alarm" type="bool">
+      <caller refid="Alarm" type="skill" />
+      <called refid="AlarmCmp" type="component" />
+      <!-- if event="call" value is either "callValue" or "callEvent"-->
+      <!-- if value is "callEvent" a Boolean variable is set corresponding to the event (function call)-->
+      <!-- if value is "callValue" the id value is associated to a struct whose fields correspond to the function parameters -->
+      <!-- if value is "callValue.x" the id value is associated to the value of a specific function parameter "x" -->
+      <connection function="sendAlarm" event="call" value="callEvent" />
+    </data>
+  </datamodel>
+
+  <property propid="alarm-follows-battery-low">
+    <always>
+      <implies>
+        <leq>
+          <var name="level"/>
+          <const>30</const>
+        </leq>
+        <eventually within="5">
+          <prop refid="alarm">
+        </eventually>
+      </implies>
+    </always>
+  </property>
+</properties>

@@ -1,0 +1,9 @@
+<dataTypeList>
+  <enumeration>
+    <enum id="TickResponse">
+      <enumEntry>RUNNING</enumEntry>
+      <enumEntry>SUCCESS</enumEntry>
+      <enumEntry>FAILURE</enumEntry>
+    </enum>
+  </enumeration>
+</dataTypeList>

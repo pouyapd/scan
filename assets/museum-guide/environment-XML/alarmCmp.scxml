@@ -1,0 +1,30 @@
+<scxml
+  initial="idle"
+  version="1.0"
+  name="AlarmCmp"
+  xmlns="http://www.w3.org/2005/07/scxml">
+  <datamodel>
+    <!-- <data name="var" type="var_type"/> -->
+		<data id="origin" type="URI"/>
+  </datamodel>
+
+  <state id="idle">
+  	<!-- Event is raised by invoking interface function of same name -->
+    <transition event="sendAlarmCall" target="alarm">
+      <!-- Params are accessible as '_event.data.param_name' -->
+      <!-- <assign location="var" expr="_sendAlarmCall.data.param_name"/> -->
+			<assign location="origin" expr="_event.origin" />
+    </transition>
+  </state>
+
+  <state id="alarm">
+    <onentry>
+      <send event="sendAlarmReturn" targetexpr="origin">
+        <!-- Return parameters go here, as key-value -->
+        <!-- <param expr="1" name="return_param"/> -->
+      </send>
+    </onentry>
+    <!-- Special "return" event transitions to idle state and returns to invoking function -->
+    <transition target="idle"/>
+  </state>
+</scxml>
