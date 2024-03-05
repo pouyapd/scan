@@ -176,7 +176,7 @@ pub struct SkillId(usize);
 // pub struct PropertyId(usize);
 
 #[derive(Debug)]
-pub struct Specification {
+pub struct Parser {
     task_plan: Option<SkillId>,
     skill_list: Vec<(String, Option<SkillDeclaration>)>,
     skill_id: HashMap<String, SkillId>,
@@ -233,9 +233,9 @@ pub struct SkillDeclaration {
     path: PathBuf,
 }
 
-impl Specification {
-    pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Specification> {
-        let mut spec = Specification {
+impl Parser {
+    pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Parser> {
+        let mut spec = Parser {
             task_plan: None,
             skill_list: Vec::new(),
             skill_id: HashMap::new(),
