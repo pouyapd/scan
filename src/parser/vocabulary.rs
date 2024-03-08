@@ -1,12 +1,13 @@
 pub const TAG_SPECIFICATION: &'static str = "specification";
 pub const TAG_MODEL: &'static str = "model";
 pub const TAG_PROPERTIES: &'static str = "properties";
-pub const TAG_COMPONENT_LIST: &'static str = "componentList";
 // pub const TAG_BLACK_BOARD: &'static str = "blackBoard";
 pub const TAG_SKILL_LIST: &'static str = "skillList";
 pub const ATTR_TASK_PLAN: &'static str = "taskPlan";
 // pub const TAG_BT_TO_SKILL_INTERFACE: &'static str = "btToSkillInterface";
-pub const TAG_COMPONENT: &'static str = "component";
+pub const TAG_COMPONENT_LIST: &'static str = "componentList";
+pub const TAG_COMPONENT_DECLARATION: &'static str = "componentDeclaration";
+pub const TAG_COMPONENT_DEFINITION: &'static str = "componentDefinition";
 pub const TAG_SKILL_DECLARATION: &'static str = "skillDeclaration";
 pub const TAG_SKILL_DEFINITION: &'static str = "skillDefinition";
 pub const ATTR_FILE: &'static str = "file";

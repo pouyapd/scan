@@ -34,6 +34,7 @@ pub enum ParserErrorType {
     UnexpectedStartTag(String),
     MissingAttr(String),
     MissingSkill(SkillId),
+    MissingComponent(ComponentId),
     UnclosedTags,
     AlreadyDeclared(String),
     UnknownMoC(String),
@@ -99,11 +100,12 @@ enum ConvinceTag {
     Properties,
     // Scxml,
     ComponentList,
+    ComponentDeclaration { comp_id: String },
+    ComponentDefinition,
     // BlackBoard,
     SkillList,
     // BtToSkillInterface,
     // Bt,
-    Component,
     SkillDeclaration { skill_id: String },
     SkillDefinition,
     // StructList,
@@ -123,11 +125,12 @@ impl From<ConvinceTag> for &'static str {
             ConvinceTag::Properties => TAG_PROPERTIES,
             // ConvinceTag::Scxml => TAG_SCXML,
             ConvinceTag::ComponentList => TAG_COMPONENT_LIST,
+            ConvinceTag::ComponentDeclaration { .. } => TAG_COMPONENT_DECLARATION,
+            ConvinceTag::ComponentDefinition => TAG_COMPONENT_DEFINITION,
             // ConvinceTag::BlackBoard => TAG_BLACKBOARD,
             ConvinceTag::SkillList => TAG_SKILL_LIST,
             // ConvinceTag::BtToSkillInterface => TAG_BTTOSKILLINTERFACE,
             // ConvinceTag::Bt => TAG_BT,
-            ConvinceTag::Component => TAG_COMPONENT,
             ConvinceTag::SkillDeclaration { .. } => TAG_SKILL_DECLARATION,
             ConvinceTag::SkillDefinition => TAG_SKILL_DEFINITION,
             // ConvinceTag::StructList => TAG_STRUCT_LIST,
@@ -172,7 +175,10 @@ impl From<ConvinceTag> for &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SkillId(usize);
-// pub struct ComponentId(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComponentId(usize);
+
 // pub struct PropertyId(usize);
 
 #[derive(Debug)]
@@ -180,16 +186,15 @@ pub struct Parser {
     task_plan: Option<SkillId>,
     skill_list: Vec<(String, Option<SkillDeclaration>)>,
     skill_id: HashMap<String, SkillId>,
-    // blackboard: Blackboard,
-    // component_list: Vec<Component>,
-    // component_id: HashMap<String, ComponentId>,
+    component_list: Vec<(String, Option<ComponentDeclaration>)>,
+    component_id: HashMap<String, ComponentId>,
     // interface_list: Vec<Interface>,
     // interface_id: HashMap<String, InterfaceId>,
     // properties: Vec<Property>,
     // property_id: HashMap<String, PropertyId>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum SkillType {
     Action,
     Condition,
@@ -207,7 +212,7 @@ impl TryFrom<String> for SkillType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum MoC {
     Fsm,
     Bt,
@@ -225,10 +230,17 @@ impl TryFrom<String> for MoC {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SkillDeclaration {
     // interface: InterfaceId,
     skill_type: SkillType,
+    moc: MoC,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComponentDeclaration {
+    // interface: InterfaceId,
     moc: MoC,
     path: PathBuf,
 }
@@ -239,6 +251,8 @@ impl Parser {
             task_plan: None,
             skill_list: Vec::new(),
             skill_id: HashMap::new(),
+            component_list: Vec::new(),
+            component_id: HashMap::new(),
         };
         let mut buf = Vec::new();
         let mut stack = Vec::new();
@@ -271,7 +285,7 @@ impl Parser {
                                 .last()
                                 .is_some_and(|tag| *tag == ConvinceTag::SkillList) =>
                         {
-                            let skill_id = spec.parse_skill_declaration(tag, reader)?;
+                            let skill_id = spec.parse_skill_comp_declaration(tag, reader)?;
                             if !spec.skill_id.contains_key(&skill_id) {
                                 let idx = SkillId(spec.skill_list.len());
                                 spec.skill_id.insert(skill_id.to_string(), idx);
@@ -291,13 +305,18 @@ impl Parser {
                         {
                             stack.push(ConvinceTag::ComponentList);
                         }
-                        TAG_COMPONENT
+                        TAG_COMPONENT_DECLARATION
                             if stack
                                 .last()
                                 .is_some_and(|tag| *tag == ConvinceTag::ComponentList) =>
                         {
-                            // spec.parse_component(tag)?;
-                            stack.push(ConvinceTag::Component);
+                            let comp_id = spec.parse_skill_comp_declaration(tag, reader)?;
+                            if !spec.component_id.contains_key(&comp_id) {
+                                let idx = ComponentId(spec.component_list.len());
+                                spec.component_id.insert(comp_id.to_string(), idx);
+                                spec.component_list.push((comp_id.clone(), None));
+                            }
+                            stack.push(ConvinceTag::ComponentDeclaration { comp_id });
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -333,6 +352,20 @@ impl Parser {
                         {
                             if let Some(ConvinceTag::SkillDeclaration { skill_id }) = stack.last() {
                                 spec.parse_skill_definition(skill_id.to_owned(), tag, reader)?;
+                            } else {
+                                panic!("match guard prevents this");
+                            }
+                        }
+                        TAG_COMPONENT_DEFINITION
+                            if matches!(
+                                stack.last(),
+                                Some(ConvinceTag::ComponentDeclaration { .. })
+                            ) =>
+                        {
+                            if let Some(ConvinceTag::ComponentDeclaration { comp_id }) =
+                                stack.last()
+                            {
+                                spec.parse_comp_definition(comp_id.to_owned(), tag, reader)?;
                             } else {
                                 panic!("match guard prevents this");
                             }
@@ -415,7 +448,7 @@ impl Parser {
         Ok(())
     }
 
-    fn parse_skill_declaration<R: BufRead>(
+    fn parse_skill_comp_declaration<R: BufRead>(
         &mut self,
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
@@ -435,7 +468,7 @@ impl Parser {
                     interface = Some(String::from_utf8(attr.value.into_owned())?);
                 }
                 key => {
-                    error!("found unknown attribute {key} in {}", ATTR_INTERFACE);
+                    error!("found unknown attribute {key}");
                     return Err(anyhow::Error::new(ParserError(
                         reader.buffer_position(),
                         ParserErrorType::UnknownKey(key.to_owned()),
@@ -512,6 +545,59 @@ impl Parser {
                 ParserErrorType::MissingSkill(*idx)
             ))
         })? = (skill_id, Some(skill));
+        Ok(())
+    }
+
+    fn parse_comp_definition<R: BufRead>(
+        &mut self,
+        comp_id: String,
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+    ) -> anyhow::Result<()> {
+        let mut moc: Option<String> = None;
+        let mut path: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_MOC => {
+                    moc = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_PATH => {
+                    path = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TAG_COMPONENT_DEFINITION}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let moc = moc.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_MOC.to_string())
+        )))?;
+        let moc = MoC::try_from(moc)?;
+        let path = path.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_PATH.to_string())
+        )))?;
+        let path = PathBuf::from(path);
+        let component = ComponentDeclaration { moc, path };
+        let idx = self
+            .component_id
+            .get(&comp_id)
+            .expect("comp_id was already added");
+        *self.component_list.get_mut(idx.0).ok_or_else(|| {
+            anyhow!(ParserError(
+                reader.buffer_position(),
+                ParserErrorType::MissingComponent(*idx)
+            ))
+        })? = (comp_id, Some(component));
         Ok(())
     }
 }
