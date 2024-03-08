@@ -33,8 +33,8 @@ pub enum ParserErrorType {
     MissingExpr,
     UnexpectedStartTag(String),
     MissingAttr(String),
-    MissingSkill(SkillId),
-    MissingComponent(ComponentId),
+    MissingSkill(String),
+    MissingComponent(String),
     UnclosedTags,
     AlreadyDeclared(String),
     UnknownMoC(String),
@@ -100,21 +100,22 @@ enum ConvinceTag {
     Properties,
     // Scxml,
     ComponentList,
-    ComponentDeclaration { comp_id: String },
-    ComponentDefinition,
+    ComponentDeclaration { comp_id: String, interface: String },
+
+    // ComponentDefinition,
     // BlackBoard,
     SkillList,
     // BtToSkillInterface,
     // Bt,
-    SkillDeclaration { skill_id: String },
-    SkillDefinition,
+    SkillDeclaration { skill_id: String, interface: String },
+    // SkillDefinition,
     // StructList,
     // Enumeration,
     // Service,
     // Struct,
     // StructData,
     // Enum,
-    Function,
+    // Function,
 }
 
 impl From<ConvinceTag> for &'static str {
@@ -126,20 +127,20 @@ impl From<ConvinceTag> for &'static str {
             // ConvinceTag::Scxml => TAG_SCXML,
             ConvinceTag::ComponentList => TAG_COMPONENT_LIST,
             ConvinceTag::ComponentDeclaration { .. } => TAG_COMPONENT_DECLARATION,
-            ConvinceTag::ComponentDefinition => TAG_COMPONENT_DEFINITION,
+            // ConvinceTag::ComponentDefinition => TAG_COMPONENT_DEFINITION,
             // ConvinceTag::BlackBoard => TAG_BLACKBOARD,
             ConvinceTag::SkillList => TAG_SKILL_LIST,
             // ConvinceTag::BtToSkillInterface => TAG_BTTOSKILLINTERFACE,
             // ConvinceTag::Bt => TAG_BT,
             ConvinceTag::SkillDeclaration { .. } => TAG_SKILL_DECLARATION,
-            ConvinceTag::SkillDefinition => TAG_SKILL_DEFINITION,
+            // ConvinceTag::SkillDefinition => TAG_SKILL_DEFINITION,
             // ConvinceTag::StructList => TAG_STRUCT_LIST,
             // ConvinceTag::Enumeration => TAG_ENUMERATION,
             // ConvinceTag::Service => TAG_SERVICE,
             // ConvinceTag::Struct => TAG_STRUCT,
             // ConvinceTag::StructData => TAG_STRUCT_DATA,
             // ConvinceTag::Enum => TAG_ENUM,
-            ConvinceTag::Function => TAG_FUNCTION,
+            // ConvinceTag::Function => TAG_FUNCTION,
         }
     }
 }
@@ -173,25 +174,14 @@ impl From<ConvinceTag> for &'static str {
 //     }
 // }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SkillId(usize);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ComponentId(usize);
-
-// pub struct PropertyId(usize);
-
 #[derive(Debug)]
 pub struct Parser {
-    task_plan: Option<SkillId>,
-    skill_list: Vec<(String, Option<SkillDeclaration>)>,
-    skill_id: HashMap<String, SkillId>,
-    component_list: Vec<(String, Option<ComponentDeclaration>)>,
-    component_id: HashMap<String, ComponentId>,
-    // interface_list: Vec<Interface>,
-    // interface_id: HashMap<String, InterfaceId>,
-    // properties: Vec<Property>,
-    // property_id: HashMap<String, PropertyId>,
+    task_plan: Option<String>,
+    skill_list: HashMap<String, SkillDeclaration>,
+    component_list: HashMap<String, ComponentDeclaration>,
+    // interfaces: PathBuf,
+    // types: PathBuf,
+    // properties: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -232,7 +222,7 @@ impl TryFrom<String> for MoC {
 
 #[derive(Debug, Clone)]
 pub struct SkillDeclaration {
-    // interface: InterfaceId,
+    interface: String,
     skill_type: SkillType,
     moc: MoC,
     path: PathBuf,
@@ -240,7 +230,7 @@ pub struct SkillDeclaration {
 
 #[derive(Debug, Clone)]
 pub struct ComponentDeclaration {
-    // interface: InterfaceId,
+    interface: String,
     moc: MoC,
     path: PathBuf,
 }
@@ -249,10 +239,8 @@ impl Parser {
     pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Parser> {
         let mut spec = Parser {
             task_plan: None,
-            skill_list: Vec::new(),
-            skill_id: HashMap::new(),
-            component_list: Vec::new(),
-            component_id: HashMap::new(),
+            skill_list: HashMap::new(),
+            component_list: HashMap::new(),
         };
         let mut buf = Vec::new();
         let mut stack = Vec::new();
@@ -285,13 +273,8 @@ impl Parser {
                                 .last()
                                 .is_some_and(|tag| *tag == ConvinceTag::SkillList) =>
                         {
-                            let skill_id = spec.parse_skill_comp_declaration(tag, reader)?;
-                            if !spec.skill_id.contains_key(&skill_id) {
-                                let idx = SkillId(spec.skill_list.len());
-                                spec.skill_id.insert(skill_id.to_string(), idx);
-                                spec.skill_list.push((skill_id.clone(), None));
-                            }
-                            stack.push(ConvinceTag::SkillDeclaration { skill_id });
+                            let tag = spec.parse_skill_declaration(tag, reader)?;
+                            stack.push(tag);
                         }
                         TAG_PROPERTIES
                             if stack
@@ -310,13 +293,8 @@ impl Parser {
                                 .last()
                                 .is_some_and(|tag| *tag == ConvinceTag::ComponentList) =>
                         {
-                            let comp_id = spec.parse_skill_comp_declaration(tag, reader)?;
-                            if !spec.component_id.contains_key(&comp_id) {
-                                let idx = ComponentId(spec.component_list.len());
-                                spec.component_id.insert(comp_id.to_string(), idx);
-                                spec.component_list.push((comp_id.clone(), None));
-                            }
-                            stack.push(ConvinceTag::ComponentDeclaration { comp_id });
+                            let tag = spec.parse_comp_declaration(tag, reader)?;
+                            stack.push(tag);
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -350,8 +328,17 @@ impl Parser {
                                 Some(ConvinceTag::SkillDeclaration { .. })
                             ) =>
                         {
-                            if let Some(ConvinceTag::SkillDeclaration { skill_id }) = stack.last() {
-                                spec.parse_skill_definition(skill_id.to_owned(), tag, reader)?;
+                            if let Some(ConvinceTag::SkillDeclaration {
+                                skill_id,
+                                interface,
+                            }) = stack.last()
+                            {
+                                spec.parse_skill_definition(
+                                    skill_id.to_owned(),
+                                    interface.to_owned(),
+                                    tag,
+                                    reader,
+                                )?;
                             } else {
                                 panic!("match guard prevents this");
                             }
@@ -362,10 +349,15 @@ impl Parser {
                                 Some(ConvinceTag::ComponentDeclaration { .. })
                             ) =>
                         {
-                            if let Some(ConvinceTag::ComponentDeclaration { comp_id }) =
+                            if let Some(ConvinceTag::ComponentDeclaration { comp_id, interface }) =
                                 stack.last()
                             {
-                                spec.parse_comp_definition(comp_id.to_owned(), tag, reader)?;
+                                spec.parse_comp_definition(
+                                    comp_id.to_owned(),
+                                    interface.to_owned(),
+                                    tag,
+                                    reader,
+                                )?;
                             } else {
                                 panic!("match guard prevents this");
                             }
@@ -421,20 +413,7 @@ impl Parser {
             match str::from_utf8(attr.key.as_ref())? {
                 ATTR_TASK_PLAN => {
                     let skill_id = str::from_utf8(attr.value.as_ref())?;
-                    if self.skill_id.contains_key(skill_id) {
-                        // This means 'taskPlan' tag comes after declaration
-                        // Should not happen?
-                        return Err(anyhow!(ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::AlreadyDeclared(skill_id.to_string()),
-                        )));
-                        // self.task_plan = Some(*idx);
-                    } else {
-                        let idx = SkillId(self.skill_list.len());
-                        self.skill_id.insert(skill_id.to_string(), idx);
-                        self.skill_list.push((skill_id.to_string(), None));
-                        self.task_plan = Some(idx);
-                    }
+                    self.task_plan = Some(skill_id.to_string());
                 }
                 key => {
                     error!("found unknown attribute {key} in {ATTR_TASK_PLAN}",);
@@ -448,11 +427,11 @@ impl Parser {
         Ok(())
     }
 
-    fn parse_skill_comp_declaration<R: BufRead>(
+    fn parse_skill_declaration<R: BufRead>(
         &mut self,
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<ConvinceTag> {
         let mut skill_id: Option<String> = None;
         let mut interface: Option<String> = None;
         for attr in tag
@@ -476,15 +455,63 @@ impl Parser {
                 }
             }
         }
-        skill_id.ok_or(anyhow!(ParserError(
+        let skill_id = skill_id.ok_or(anyhow!(ParserError(
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_ID.to_string())
-        )))
+        )))?;
+        let interface = interface.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_INTERFACE.to_string())
+        )))?;
+        Ok(ConvinceTag::SkillDeclaration {
+            skill_id,
+            interface,
+        })
+    }
+
+    fn parse_comp_declaration<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+    ) -> anyhow::Result<ConvinceTag> {
+        let mut comp_id: Option<String> = None;
+        let mut interface: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_ID => {
+                    comp_id = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_INTERFACE => {
+                    interface = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let comp_id = comp_id.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_ID.to_string())
+        )))?;
+        let interface = interface.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_INTERFACE.to_string())
+        )))?;
+        Ok(ConvinceTag::ComponentDeclaration { comp_id, interface })
     }
 
     fn parse_skill_definition<R: BufRead>(
         &mut self,
         skill_id: String,
+        interface: String,
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
     ) -> anyhow::Result<()> {
@@ -532,25 +559,19 @@ impl Parser {
         let path = PathBuf::from(path);
         let skill = SkillDeclaration {
             skill_type,
+            interface,
             moc,
             path,
         };
-        let idx = self
-            .skill_id
-            .get(&skill_id)
-            .expect("skill_id was already added");
-        *self.skill_list.get_mut(idx.0).ok_or_else(|| {
-            anyhow!(ParserError(
-                reader.buffer_position(),
-                ParserErrorType::MissingSkill(*idx)
-            ))
-        })? = (skill_id, Some(skill));
+        // Here it should be checked that no skill was already in the list under the same name
+        self.skill_list.insert(skill_id, skill);
         Ok(())
     }
 
     fn parse_comp_definition<R: BufRead>(
         &mut self,
         comp_id: String,
+        interface: String,
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
     ) -> anyhow::Result<()> {
@@ -587,17 +608,13 @@ impl Parser {
             ParserErrorType::MissingAttr(ATTR_PATH.to_string())
         )))?;
         let path = PathBuf::from(path);
-        let component = ComponentDeclaration { moc, path };
-        let idx = self
-            .component_id
-            .get(&comp_id)
-            .expect("comp_id was already added");
-        *self.component_list.get_mut(idx.0).ok_or_else(|| {
-            anyhow!(ParserError(
-                reader.buffer_position(),
-                ParserErrorType::MissingComponent(*idx)
-            ))
-        })? = (comp_id, Some(component));
+        let component = ComponentDeclaration {
+            interface,
+            moc,
+            path,
+        };
+        // Here it should be checked that no component was already in the list under the same name
+        self.component_list.insert(comp_id.to_owned(), component);
         Ok(())
     }
 }
