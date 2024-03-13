@@ -1,10 +1,8 @@
 mod bt;
-// mod fsm;
+mod fsm;
 mod vocabulary;
 
 use std::collections::HashMap;
-use std::error::Error;
-use std::fmt;
 use std::io::BufRead;
 use std::path::PathBuf;
 use std::str;
@@ -15,83 +13,53 @@ use log::{error, info, trace, warn};
 use quick_xml::events::attributes::{AttrError, Attribute};
 use quick_xml::{events, Error as XmlError};
 use quick_xml::{events::Event, Reader};
+use thiserror::Error;
 
-use crate::model::{ChannelSystem, ChannelSystemBuilder, CsError};
-use vocabulary::*;
+use self::fsm::Fsm;
+use self::vocabulary::*;
+use super::model::{ChannelSystem, ChannelSystemBuilder, CsError};
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum ParserErrorType {
-    Reader(XmlError),
+    #[error("reader failed")]
+    Reader(#[from] XmlError),
+    #[error("an unknown or unexpected event was received: `{0:?}`")]
     UnknownEvent(Event<'static>),
-    Attr(AttrError),
+    #[error("error from an attribute")]
+    Attr(#[from] AttrError),
+    #[error("unknown key: `{0}`")]
     UnknownKey(String),
-    Utf8(Utf8Error),
-    Cs(CsError),
-    UnexpectedEndTag(String),
-    MissingLocation,
-    UnknownVar(String),
-    MissingExpr,
+    #[error("utf8 error")]
+    Utf8(#[from] Utf8Error),
+    #[error("channel system error")]
+    Cs(#[from] CsError),
+    #[error("unexpected start tag: `{0}`")]
     UnexpectedStartTag(String),
+    #[error("unexpected end tag: `{0}`")]
+    UnexpectedEndTag(String),
+    #[error("location does not exist")]
+    MissingLocation,
+    #[error("unknown variable `{0}`")]
+    UnknownVar(String),
+    #[error("missing `expr` attribute")]
+    MissingExpr,
+    #[error("missing attribute `{0}`")]
     MissingAttr(String),
-    MissingSkill(String),
-    MissingComponent(String),
+    #[error("open tags have not been closed")]
     UnclosedTags,
+    #[error("`{0}` has already been declared")]
     AlreadyDeclared(String),
+    #[error("unknown model of computation: `{0}`")]
     UnknownMoC(String),
+    #[error("unknown type of skill: `{0}`")]
     UnknownSkillType(String),
+    #[error("not in a state")]
+    NotAState,
 }
 
-impl fmt::Display for ParserErrorType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ParserErrorType::UnknownEvent(_) => write!(f, "self:#?"),
-            ParserErrorType::Attr(_) => write!(f, "self:#?"),
-            ParserErrorType::Reader(err) => err.fmt(f),
-            ParserErrorType::Utf8(err) => err.fmt(f),
-            ParserErrorType::UnknownKey(_) => write!(f, "self:#?"),
-            ParserErrorType::Cs(err) => err.fmt(f),
-            ParserErrorType::UnexpectedStartTag(_) => todo!(),
-            ParserErrorType::UnexpectedEndTag(_) => write!(f, "self:#?"),
-            ParserErrorType::MissingLocation => todo!(),
-            ParserErrorType::UnknownVar(_) => todo!(),
-            ParserErrorType::MissingExpr => todo!(),
-            ParserErrorType::MissingAttr(_) => todo!(),
-            ParserErrorType::UnclosedTags => todo!(),
-            ParserErrorType::AlreadyDeclared(_) => todo!(),
-            _ => todo!(),
-        }
-    }
-}
-
-impl Error for ParserErrorType {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            ParserErrorType::Reader(err) => Some(err),
-            ParserErrorType::Utf8(err) => Some(err),
-            ParserErrorType::Cs(err) => Some(err),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct ParserError(pub(crate) usize, pub(crate) ParserErrorType);
-
-impl fmt::Display for ParserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let byte = self.0;
-        let err = &self.1;
-        // Currently quick_xml only supports Reader byte position.
-        // See https://github.com/tafia/quick-xml/issues/109
-        write!(f, "parser error at byte {byte}: {err}")
-    }
-}
-
-impl Error for ParserError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.1.source()
-    }
-}
+#[derive(Error, Debug)]
+#[error("parser error at byte `{0}`")]
+pub struct ParserError(pub(crate) usize, #[source] pub(crate) ParserErrorType);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ConvinceTag {
@@ -101,7 +69,6 @@ enum ConvinceTag {
     // Scxml,
     ComponentList,
     ComponentDeclaration { comp_id: String, interface: String },
-
     // ComponentDefinition,
     // BlackBoard,
     SkillList,
@@ -145,40 +112,11 @@ impl From<ConvinceTag> for &'static str {
     }
 }
 
-// impl From<&str> for ConvinceTag {
-//     fn from(value: &str) -> Self {
-//         match value {
-//             "specification" => ConvinceTag::Specification,
-//             "model" => ConvinceTag::Model,
-//             "properties" => ConvinceTag::Properties,
-//             "scxml" => ConvinceTag::Scxml,
-//             "componentList" => ConvinceTag::ComponentList,
-//             "blackBoard" => ConvinceTag::BlackBoard,
-//             "skillList" => ConvinceTag::SkillList,
-//             "btBoSkillInterface" => ConvinceTag::BtToSkillInterface,
-//             "bt" => ConvinceTag::Bt,
-//             "component" => ConvinceTag::Component,
-//             "skillDeclaration" => ConvinceTag::SkillDeclaration {
-//                 skill_id: String::new(),
-//             },
-//             "skillDefinition" => ConvinceTag::SkillDefinition,
-//             "stuctList" => ConvinceTag::StructList,
-//             "enumeration" => ConvinceTag::Enumeration,
-//             "service" => ConvinceTag::Service,
-//             "struct" => ConvinceTag::Struct,
-//             "struct_data" => ConvinceTag::StructData,
-//             "enum" => ConvinceTag::Enum,
-//             "function" => ConvinceTag::Function,
-//             tag => ConvinceTag::Unknown(tag.to_string()),
-//         }
-//     }
-// }
-
 #[derive(Debug)]
 pub struct Parser {
-    task_plan: Option<String>,
-    skill_list: HashMap<String, SkillDeclaration>,
-    component_list: HashMap<String, ComponentDeclaration>,
+    pub(crate) task_plan: Option<String>,
+    pub(crate) skill_list: HashMap<String, SkillDeclaration>,
+    pub(crate) component_list: HashMap<String, ComponentDeclaration>,
     // interfaces: PathBuf,
     // types: PathBuf,
     // properties: PathBuf,
@@ -202,37 +140,23 @@ impl TryFrom<String> for SkillType {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum MoC {
-    Fsm,
+    Fsm(Fsm),
     Bt,
-}
-
-impl TryFrom<String> for MoC {
-    type Error = ParserErrorType;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match value.as_str() {
-            OPT_FSM => Ok(MoC::Fsm),
-            OPT_BT => Ok(MoC::Bt),
-            _ => Err(ParserErrorType::UnknownMoC(value)),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct SkillDeclaration {
-    interface: String,
-    skill_type: SkillType,
-    moc: MoC,
-    path: PathBuf,
+    pub(crate) interface: String,
+    pub(crate) skill_type: SkillType,
+    pub(crate) moc: MoC,
 }
 
 #[derive(Debug, Clone)]
 pub struct ComponentDeclaration {
-    interface: String,
-    moc: MoC,
-    path: PathBuf,
+    pub(crate) interface: String,
+    pub(crate) moc: MoC,
 }
 
 impl Parser {
@@ -369,8 +293,8 @@ impl Parser {
                         }
                     }
                 }
-                Event::Text(_) => warn!("skipping text"),
-                Event::Comment(_) => warn!("skipping comment"),
+                Event::Text(_) => continue,
+                Event::Comment(_) => continue,
                 Event::CData(_) => todo!(),
                 Event::Decl(_) => todo!(), // parser.parse_xml_declaration(tag)?,
                 Event::PI(_) => todo!(),
@@ -551,17 +475,26 @@ impl Parser {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_MOC.to_string())
         )))?;
-        let moc = MoC::try_from(moc)?;
+        // let moc = MoC::try_from(moc)?;
         let path = path.ok_or(anyhow!(ParserError(
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_PATH.to_string())
         )))?;
         let path = PathBuf::from(path);
+        let moc = match moc.as_str() {
+            "fsm" => {
+                info!("creating reader from file {0}", path.display());
+                let mut reader = Reader::from_file(path)?;
+                let fsm = Fsm::parse_skill(&mut reader)?;
+                MoC::Fsm(fsm)
+            }
+            "bt" => MoC::Bt,
+            _ => todo!(),
+        };
         let skill = SkillDeclaration {
             skill_type,
             interface,
             moc,
-            path,
         };
         // Here it should be checked that no skill was already in the list under the same name
         self.skill_list.insert(skill_id, skill);
@@ -602,17 +535,22 @@ impl Parser {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_MOC.to_string())
         )))?;
-        let moc = MoC::try_from(moc)?;
         let path = path.ok_or(anyhow!(ParserError(
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_PATH.to_string())
         )))?;
         let path = PathBuf::from(path);
-        let component = ComponentDeclaration {
-            interface,
-            moc,
-            path,
+        let moc = match moc.as_str() {
+            "fsm" => {
+                info!("creating reader from file {0}", path.display());
+                let mut reader = Reader::from_file(path)?;
+                let fsm = Fsm::parse_skill(&mut reader)?;
+                MoC::Fsm(fsm)
+            }
+            "bt" => MoC::Bt,
+            _ => todo!(),
         };
+        let component = ComponentDeclaration { interface, moc };
         // Here it should be checked that no component was already in the list under the same name
         self.component_list.insert(comp_id.to_owned(), component);
         Ok(())
