@@ -5,31 +5,31 @@
 
     <skillList taskPlan="Policy">
       <skillDeclaration id="Policy" interface="SkillInterface">
-        <skillDefinition type="action" moc="bt" path="../../BT-XML/museum-guide/Policy.xml" />
+        <skillDefinition type="action" moc="bt" path="./BT-XML/Policy.xml" />
       </skillDeclaration>
       <skillDeclaration id="BatteryLevel" interface="SkillInterface">
-        <skillDefinition type="condition" moc="fsm" path="../../skill-functions-SCXML/museum-guide/BatteryLevel.scxml" />
+        <skillDefinition type="condition" moc="fsm" path="./skill-functions-SCXML/BatteryLevel.scxml" />
       </skillDeclaration>
       <skillDeclaration id="Alarm" interface="SkillInterface">
-        <skillDefinition type="action" moc="fsm" path="../../skill-functions-SCXML/museum-guide/AlarmBatteryLow.scxml" />
+        <skillDefinition type="action" moc="fsm" path="./skill-functions-SCXML/AlarmBatteryLow.scxml" />
       </skillDeclaration>
       <skillDeclaration id="BatteryDrainer" interface="SkillInterface">
-        <skillDefinition type="action" moc="fsm" path="../../skill-functions-SCXML/museum-guide/BatteryDrainer.scxml" />
+        <skillDefinition type="action" moc="fsm" path="./skill-functions-SCXML/BatteryDrainer.scxml" />
       </skillDeclaration>
     </skillList>
 
     <componentList>
       <componentDeclaration id="BatteryDriverCmp" interface="BatteryDriverCmpInterface">
-        <componentDefinition moc="fsm" path="../../environment-XML/museum-guide/BatteryDriverCmp.scxml" />
+        <componentDefinition moc="fsm" path="./environment-XML/BatteryDriverCmp.scxml" />
       </componentDeclaration>
       <componentDeclaration id="AlarmCmp" interface="AlarmCmpInterface">
-        <componentDefinition moc="fsm" path="../../environment-XML/museum-guide/AlarmCmp.scxml" />
+        <componentDefinition moc="fsm" path="./environment-XML/AlarmCmp.scxml" />
       </componentDeclaration>
     </componentList>
 
-    <interfaces path="../interface-definition-IDL/interfaces.xml"/>
+    <interfaces path="./interface-definition-IDL/interfaces.xml"/>
 
   </model>
 
-  <properties path="../../properties-XML/museum-guide/properties.xml"/>
+  <properties path="./properties-XML/properties.xml"/>
 </specification>
