@@ -1,7 +1,7 @@
 use clap::{Parser as ClapParser, Subcommand};
 use log::info;
 use quick_xml::Reader;
-use scan::{CsModel, Parser};
+use scan::{Parser, Sc2CsVisitor};
 use std::{error::Error, path::PathBuf};
 
 #[derive(ClapParser)]
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             info!("parsing model");
             let model = Parser::parse(&mut reader)?;
             println!("{model:#?}");
-            let cs = CsModel::build(model)?;
+            let cs = Sc2CsVisitor::visit(model)?;
             println!("{cs:#?}");
 
             println!("Model successfully validated");
@@ -70,11 +70,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut reader = Reader::from_file(cli.model)?;
 
             info!("parsing model");
-            let spec = Parser::parse(&mut reader)?;
-            println!("{spec:#?}");
+            let model = Parser::parse(&mut reader)?;
+            println!("{model:#?}");
 
             info!("building CS representation");
-            let cs = CsModel::build(spec)?;
+            let cs = Sc2CsVisitor::visit(model)?;
             println!("{cs:#?}");
 
             println!("Model successfully validated");

@@ -1,3 +1,4 @@
+// TODO: use fast hasher
 use std::{collections::HashMap, error::Error, fmt, rc::Rc};
 
 // Use of "Newtype" pattern to define different types of indexes.
@@ -295,6 +296,7 @@ impl ProgramGraphBuilder {
 pub struct ProgramGraph {
     current_location: Location,
     vars: Vec<Val>,
+    // TODO: use SmallVec optimization
     effects: Rc<Vec<Vec<(Var, Expression)>>>,
     transitions: Rc<Vec<HashMap<(Action, Location), Formula>>>,
 }

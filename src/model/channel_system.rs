@@ -33,8 +33,8 @@ impl CsIntExpr {
         Self(pg_id, IntExpr::Const(int))
     }
 
-    pub fn new_var(pg_id: PgId, var: Var) -> Self {
-        Self(pg_id, IntExpr::Var(var))
+    pub fn new_var(var: CsVar) -> Self {
+        Self(var.0, IntExpr::Var(var.1))
     }
 
     pub fn opposite(self) -> Self {
@@ -151,6 +151,7 @@ impl CsExpr {
 pub enum Message {
     Send(CsExpr),
     Receive(CsVar),
+    ProbeEmptyQueue,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -224,7 +225,7 @@ impl Error for CsError {
 #[derive(Debug, Default, Clone)]
 pub struct ChannelSystemBuilder {
     program_graphs: Vec<ProgramGraphBuilder>,
-    channels: Vec<(VarType, usize)>,
+    channels: Vec<(VarType, Option<usize>)>,
     communications: HashMap<CsAction, (Channel, Message)>,
 }
 
@@ -328,7 +329,7 @@ impl ChannelSystemBuilder {
             })
     }
 
-    pub fn new_channel(&mut self, var_type: VarType, capacity: usize) -> Channel {
+    pub fn new_channel(&mut self, var_type: VarType, capacity: Option<usize>) -> Channel {
         let channel = Channel(self.channels.len());
         self.channels.push((var_type, capacity));
         channel
@@ -362,6 +363,10 @@ impl ChannelSystemBuilder {
                     .var_type(var.1)
                     .map_err(|err| CsError::ProgramGraph(pg_id, err))?
             }
+            Message::ProbeEmptyQueue => {
+                // There is no type to check so the message is always the right type
+                channel_type
+            }
         };
         if channel_type != message_type {
             return Err(CsError::ProgramGraph(pg_id, PgError::Mismatched));
@@ -391,7 +396,7 @@ impl ChannelSystemBuilder {
 #[derive(Debug, Clone)]
 pub struct ChannelSystem {
     program_graphs: Vec<ProgramGraph>,
-    channels: Rc<Vec<(VarType, usize)>>,
+    channels: Rc<Vec<(VarType, Option<usize>)>>,
     communications: Rc<HashMap<CsAction, (Channel, Message)>>,
     message_queue: Vec<Vec<Val>>,
 }
@@ -439,8 +444,8 @@ impl ChannelSystem {
                 Message::Send(_) => {
                     let len = queue.len();
                     // Channel capacity must never be exeeded!
-                    assert!(len <= *capacity);
-                    if len == *capacity {
+                    assert!(capacity.is_none() || capacity.is_some_and(|c| len <= c));
+                    if capacity.is_some_and(|c| c == len) {
                         Err(CsError::OutOfCapacity(*channel))
                     } else {
                         Ok(())
@@ -451,6 +456,13 @@ impl ChannelSystem {
                         Err(CsError::Empty(*channel))
                     } else {
                         Ok(())
+                    }
+                }
+                Message::ProbeEmptyQueue => {
+                    if queue.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(CsError::Empty(*channel))
                     }
                 }
             }
@@ -496,6 +508,12 @@ impl ChannelSystem {
                     let val = queue.pop().expect("communication has been verified before");
                     pg.assign(var.1, val)
                         .expect("communication has been verified before");
+                }
+                Message::ProbeEmptyQueue => {
+                    assert!(
+                        queue.is_empty(),
+                        "by definition, ProbeEmptyQueue is only possible if the queue is empty"
+                    );
                 }
             }
         }
@@ -586,7 +604,7 @@ mod tests {
     #[test]
     fn add_communication() -> Result<(), CsError> {
         let mut cs = ChannelSystemBuilder::new();
-        let ch = cs.new_channel(VarType::Boolean, 1);
+        let ch = cs.new_channel(VarType::Boolean, Some(1));
 
         let pg1 = cs.new_program_graph();
         let initial1 = cs.initial_location(pg1)?;

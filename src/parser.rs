@@ -15,7 +15,7 @@ use quick_xml::{events, Error as XmlError};
 use quick_xml::{events::Event, Reader};
 use thiserror::Error;
 
-use self::fsm::Fsm;
+pub use self::fsm::*;
 use self::vocabulary::*;
 use super::model::{ChannelSystem, ChannelSystemBuilder, CsError};
 
