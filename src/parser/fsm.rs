@@ -1,3 +1,4 @@
+use core::panic;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::str;
@@ -16,6 +17,8 @@ enum ScxmlTag {
     Transition,
     Scxml,
     Datamodel,
+    OnEntry,
+    OnExit,
     // Data,
 }
 
@@ -26,8 +29,16 @@ impl From<ScxmlTag> for &'static str {
             ScxmlTag::Transition => TAG_TRANSITION,
             ScxmlTag::Scxml => TAG_SCXML,
             ScxmlTag::Datamodel => TAG_DATAMODEL,
+            ScxmlTag::OnEntry => TAG_ONENTRY,
+            ScxmlTag::OnExit => TAG_ONEXIT,
             // ScxmlTag::Data => TAG_DATA,
         }
+    }
+}
+
+impl ScxmlTag {
+    pub fn is_executable(&self) -> bool {
+        matches!(self, ScxmlTag::OnEntry | ScxmlTag::OnExit)
     }
 }
 
@@ -35,6 +46,8 @@ impl From<ScxmlTag> for &'static str {
 pub struct State {
     pub(crate) id: String,
     pub(crate) transitions: Vec<Transition>,
+    pub(crate) on_entry: Vec<Executable>,
+    pub(crate) on_exit: Vec<Executable>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +55,12 @@ pub struct Transition {
     pub(crate) event: Option<String>,
     pub(crate) target: String,
     pub(crate) cond: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Executable {
+    Raise { event: String },
+    Send { event: String, target: String },
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +113,20 @@ impl Fsm {
                             fsm.parse_transition(tag, reader, &stack)?;
                             stack.push(ScxmlTag::Transition);
                         }
+                        TAG_ONENTRY
+                            if stack
+                                .last()
+                                .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
+                        {
+                            stack.push(ScxmlTag::OnEntry);
+                        }
+                        TAG_ONEXIT
+                            if stack
+                                .last()
+                                .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
+                        {
+                            stack.push(ScxmlTag::OnExit);
+                        }
                         // Unknown tag: skip till maching end tag
                         _ => {
                             warn!("unknown or unexpected tag {tag_name}, skipping");
@@ -130,6 +163,13 @@ impl Fsm {
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
                         {
                             fsm.parse_transition(tag, reader, &stack)?;
+                        }
+                        // we `rev()` the iterator only because we expect the relevant tag to be towards the end of the stack
+                        TAG_RAISE if stack.iter().rev().any(|tag| tag.is_executable()) => {
+                            fsm.parse_raise(tag, reader, &stack)?;
+                        }
+                        TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
+                            fsm.parse_send(tag, reader, &stack)?;
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -193,6 +233,8 @@ impl Fsm {
         let state = State {
             id: id.to_owned(),
             transitions: Vec::new(),
+            on_entry: Vec::new(),
+            on_exit: Vec::new(),
         };
         // Here it should be checked that no component was already in the list under the same name
         self.states.insert(id.to_owned(), state);
@@ -258,6 +300,140 @@ impl Fsm {
             .expect("the state tag has already been processed")
             .transitions
             .push(transition);
+        Ok(())
+    }
+
+    fn parse_raise<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+        stack: &[ScxmlTag],
+    ) -> anyhow::Result<()> {
+        let mut event: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_EVENT => {
+                    event = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TAG_TRANSITION}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let event = event.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_EVENT.to_string())
+        )))?;
+        let executable = Executable::Raise { event };
+        let state_id: &str = stack
+            .iter()
+            .rev()
+            .find_map(|tag| {
+                if let ScxmlTag::State(state) = tag {
+                    Some(state)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| ParserError(reader.buffer_position(), ParserErrorType::NotAState))?;
+        let state = self
+            .states
+            .get_mut(state_id)
+            .expect("State in stack has to exist");
+        match stack
+            .iter()
+            .rfind(|tag| tag.is_executable())
+            .expect("there must be an executable tag")
+        {
+            ScxmlTag::OnEntry => {
+                state.on_entry.push(executable);
+            }
+            ScxmlTag::OnExit => {
+                state.on_exit.push(executable);
+            }
+            _ => panic!("non executable tag"),
+        }
+        Ok(())
+    }
+
+    fn parse_send<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+        stack: &[ScxmlTag],
+    ) -> anyhow::Result<()> {
+        let mut event: Option<String> = None;
+        let mut target: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_EVENT => {
+                    event = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_TARGET => {
+                    target = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_TARGETEXPR => {
+                    // TODO: implement target expressions
+                    return Ok(());
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TAG_TRANSITION}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let event = event.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_EVENT.to_string())
+        )))?;
+        let target = target.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_TARGET.to_string())
+        )))?;
+        let executable = Executable::Send { event, target };
+        let state_id: &str = stack
+            .iter()
+            .rev()
+            .find_map(|tag| {
+                if let ScxmlTag::State(state) = tag {
+                    Some(state)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| ParserError(reader.buffer_position(), ParserErrorType::NotAState))?;
+        let state = self
+            .states
+            .get_mut(state_id)
+            .expect("State in stack has to exist");
+        match stack
+            .iter()
+            .rfind(|tag| tag.is_executable())
+            .expect("there must be an executable tag")
+        {
+            ScxmlTag::OnEntry => {
+                state.on_entry.push(executable);
+            }
+            ScxmlTag::OnExit => {
+                state.on_exit.push(executable);
+            }
+            _ => panic!("non executable tag"),
+        }
         Ok(())
     }
 }
