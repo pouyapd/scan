@@ -88,6 +88,7 @@ impl Fsm {
                     trace!("'{tag_name}' open tag");
                     match tag_name {
                         TAG_SCXML if stack.is_empty() => {
+                            fsm.parse_scxml(tag, reader)?;
                             stack.push(ScxmlTag::Scxml);
                         }
                         TAG_DATAMODEL
@@ -202,6 +203,29 @@ impl Fsm {
         Ok(fsm)
     }
 
+    fn parse_scxml<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        _reader: &mut Reader<R>,
+    ) -> anyhow::Result<()> {
+        for attr in tag
+            .attributes()
+            .into_iter()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_INITIAL => {
+                    self.initial = String::from_utf8(attr.value.into_owned())?;
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TAG_STATE}, ignoring");
+                    continue;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn parse_state<R: BufRead>(
         &mut self,
         tag: events::BytesStart<'_>,
@@ -230,6 +254,10 @@ impl Fsm {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_ID.to_string())
         )))?;
+        // Check if it is the initial state
+        if self.initial.is_empty() {
+            self.initial = id.to_owned();
+        }
         let state = State {
             id: id.to_owned(),
             transitions: Vec::new(),
