@@ -40,28 +40,18 @@ impl Sc2CsVisitor {
         };
 
         info!("Visit skill list");
-        for (name, declaration) in parser.skill_list.iter() {
+        for (id, declaration) in parser.skill_list.iter() {
             if let MoC::Fsm(fsm) = &declaration.moc {
-                // let pg_id = model.skill_ids.get(name).cloned().unwrap_or_else(|| {
-                //     let pg_id = model.cs.new_program_graph();
-                //     model.skill_ids.insert(name.to_owned(), pg_id);
-                //     pg_id
-                // });
-                info!("Visit skill {name}");
-                model.build_fsm(name, fsm)?;
+                info!("Visit skill {id}");
+                model.build_fsm(fsm)?;
             }
         }
 
         info!("Visit component list");
-        for (name, declaration) in parser.component_list.iter() {
+        for (id, declaration) in parser.component_list.iter() {
             if let MoC::Fsm(fsm) = &declaration.moc {
-                // let pg_id = model.component_ids.get(name).cloned().unwrap_or_else(|| {
-                //     let pg_id = model.cs.new_program_graph();
-                //     model.component_ids.insert(name.to_owned(), pg_id);
-                //     pg_id
-                // });
-                info!("Visit component {name}");
-                model.build_fsm(name, fsm)?;
+                info!("Visit component {id}");
+                model.build_fsm(fsm)?;
             }
         }
 
@@ -71,11 +61,11 @@ impl Sc2CsVisitor {
     }
 
     // TODO: Optimize CS by removing unnecessary states
-    fn build_fsm(&mut self, name: &str, fsm: &Fsm) -> anyhow::Result<()> {
+    fn build_fsm(&mut self, fsm: &Fsm) -> anyhow::Result<()> {
         // Initialize fsm.
-        let pg_id = self.fsm_ids.get(name).cloned().unwrap_or_else(|| {
+        let pg_id = self.fsm_ids.get(&fsm.id).cloned().unwrap_or_else(|| {
             let pg_id = self.cs.new_program_graph();
-            self.fsm_ids.insert(name.to_owned(), pg_id);
+            self.fsm_ids.insert(fsm.id.to_owned(), pg_id);
             pg_id
         });
         // Map fsm's state ids to corresponding CS's locations.
@@ -96,7 +86,7 @@ impl Sc2CsVisitor {
         // Implement external queue
         let ext_queue = self
             .external_queues
-            .get(name)
+            .get(&fsm.id)
             .cloned()
             .unwrap_or_else(|| self.cs.new_channel(VarType::Integer, None));
         let dequeue_ext =
@@ -147,7 +137,7 @@ impl Sc2CsVisitor {
                     Executable::Send { event, target } => {
                         let target_id = self.fsm_ids.get(target).cloned().unwrap_or_else(|| {
                             let pg_id = self.cs.new_program_graph();
-                            self.fsm_ids.insert(name.to_owned(), pg_id);
+                            self.fsm_ids.insert(target.to_owned(), pg_id);
                             pg_id
                         });
                         let event_id = self.events.get(event).cloned().unwrap_or_else(|| {

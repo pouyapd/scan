@@ -38,7 +38,10 @@ impl From<ScxmlTag> for &'static str {
 
 impl ScxmlTag {
     pub fn is_executable(&self) -> bool {
-        matches!(self, ScxmlTag::OnEntry | ScxmlTag::OnExit)
+        matches!(
+            self,
+            ScxmlTag::OnEntry | ScxmlTag::OnExit | ScxmlTag::Transition
+        )
     }
 }
 
@@ -55,6 +58,7 @@ pub struct Transition {
     pub(crate) event: Option<String>,
     pub(crate) target: String,
     pub(crate) cond: Option<String>,
+    pub(crate) effects: Vec<Executable>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +69,7 @@ pub enum Executable {
 
 #[derive(Debug, Clone)]
 pub struct Fsm {
+    pub(crate) id: String,
     pub(crate) initial: String,
     pub(crate) datamodel: HashMap<String, ()>,
     pub(crate) states: HashMap<String, State>,
@@ -73,6 +78,7 @@ pub struct Fsm {
 impl Fsm {
     pub(super) fn parse_skill<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Self> {
         let mut fsm = Fsm {
+            id: String::new(),
             initial: String::new(),
             datamodel: HashMap::new(),
             states: HashMap::new(),
@@ -214,6 +220,9 @@ impl Fsm {
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
+                ATTR_ID => {
+                    self.id = String::from_utf8(attr.value.into_owned())?;
+                }
                 ATTR_INITIAL => {
                     self.initial = String::from_utf8(attr.value.into_owned())?;
                 }
@@ -321,6 +330,7 @@ impl Fsm {
             event,
             target,
             cond,
+            effects: Vec::new(),
         };
         // Need to know current state
         self.states
@@ -386,6 +396,14 @@ impl Fsm {
             }
             ScxmlTag::OnExit => {
                 state.on_exit.push(executable);
+            }
+            ScxmlTag::Transition => {
+                state
+                    .transitions
+                    .last_mut()
+                    .expect("inside a `Transition` tag")
+                    .effects
+                    .push(executable);
             }
             _ => panic!("non executable tag"),
         }
@@ -459,6 +477,14 @@ impl Fsm {
             }
             ScxmlTag::OnExit => {
                 state.on_exit.push(executable);
+            }
+            ScxmlTag::Transition => {
+                state
+                    .transitions
+                    .last_mut()
+                    .expect("inside a `Transition` tag")
+                    .effects
+                    .push(executable);
             }
             _ => panic!("non executable tag"),
         }
