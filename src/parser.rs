@@ -15,6 +15,7 @@ use quick_xml::{events, Error as XmlError};
 use quick_xml::{events::Event, Reader};
 use thiserror::Error;
 
+pub use self::bt::*;
 pub use self::fsm::*;
 use self::vocabulary::*;
 use super::model::{ChannelSystem, ChannelSystemBuilder, CsError};
@@ -140,20 +141,20 @@ impl TryFrom<String> for SkillType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum MoC {
     Fsm(Fsm),
-    Bt,
+    Bt(Bt),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SkillDeclaration {
     pub(crate) interface: String,
     pub(crate) skill_type: SkillType,
     pub(crate) moc: MoC,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ComponentDeclaration {
     pub(crate) interface: String,
     pub(crate) moc: MoC,
@@ -488,7 +489,15 @@ impl Parser {
                 let fsm = Fsm::parse_skill(&mut reader)?;
                 MoC::Fsm(fsm)
             }
-            "bt" => MoC::Bt,
+            "bt" => {
+                info!("creating reader from file {0}", path.display());
+                let mut reader = Reader::from_file(path)?;
+                let bt = Bt::parse_skill(&mut reader)?.pop().unwrap();
+                // let xml = read_to_string(path)?;
+                // let mut reader = Reader::from_str(&xml);
+                // let bt = bt_semantics::parse_xml(&mut reader).pop().unwrap();
+                MoC::Bt(bt)
+            }
             _ => todo!(),
         };
         let skill = SkillDeclaration {
@@ -547,7 +556,15 @@ impl Parser {
                 let fsm = Fsm::parse_skill(&mut reader)?;
                 MoC::Fsm(fsm)
             }
-            "bt" => MoC::Bt,
+            "bt" => {
+                info!("creating reader from file {0}", path.display());
+                let mut reader = Reader::from_file(path)?;
+                let bt = Bt::parse_skill(&mut reader)?.pop().unwrap();
+                // let xml = read_to_string(path)?;
+                // let mut reader = Reader::from_str(&xml);
+                // let bt = bt_semantics::parse_xml(&mut reader).pop().unwrap();
+                MoC::Bt(bt)
+            }
             _ => todo!(),
         };
         let component = ComponentDeclaration { interface, moc };

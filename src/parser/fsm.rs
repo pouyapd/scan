@@ -1,4 +1,3 @@
-use core::panic;
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::str;
@@ -220,7 +219,7 @@ impl Fsm {
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
-                ATTR_ID => {
+                ATTR_NAME => {
                     self.id = String::from_utf8(attr.value.into_owned())?;
                 }
                 ATTR_INITIAL => {

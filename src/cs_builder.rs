@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env::current_dir};
+use std::collections::HashMap;
 
 use anyhow::Ok;
 use log::{info, trace};
@@ -41,9 +41,10 @@ impl Sc2CsVisitor {
 
         info!("Visit skill list");
         for (id, declaration) in parser.skill_list.iter() {
-            if let MoC::Fsm(fsm) = &declaration.moc {
-                info!("Visit skill {id}");
-                model.build_fsm(fsm)?;
+            info!("Visit skill {id}");
+            match &declaration.moc {
+                MoC::Fsm(fsm) => model.build_fsm(fsm)?,
+                MoC::Bt(bt) => model.build_bt(bt)?,
             }
         }
 
@@ -58,6 +59,10 @@ impl Sc2CsVisitor {
         let model = model.build();
 
         Ok(model)
+    }
+
+    fn build_bt(&mut self, bt: &Bt) -> anyhow::Result<()> {
+        Ok(())
     }
 
     // TODO: Optimize CS by removing unnecessary states
