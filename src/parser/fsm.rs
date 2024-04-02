@@ -215,7 +215,6 @@ impl Fsm {
     ) -> anyhow::Result<()> {
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
@@ -242,7 +241,6 @@ impl Fsm {
         let mut id: Option<String> = None;
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
@@ -299,7 +297,6 @@ impl Fsm {
         let mut cond: Option<String> = None;
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
@@ -349,7 +346,6 @@ impl Fsm {
         let mut event: Option<String> = None;
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
@@ -419,7 +415,6 @@ impl Fsm {
         let mut target: Option<String> = None;
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {

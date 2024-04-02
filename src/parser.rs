@@ -332,7 +332,6 @@ impl Parser {
     ) -> anyhow::Result<()> {
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
@@ -361,7 +360,6 @@ impl Parser {
         let mut interface: Option<String> = None;
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
@@ -403,7 +401,6 @@ impl Parser {
         let mut interface: Option<String> = None;
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
@@ -445,7 +442,6 @@ impl Parser {
         let mut path: Option<String> = None;
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
@@ -521,7 +517,6 @@ impl Parser {
         let mut path: Option<String> = None;
         for attr in tag
             .attributes()
-            .into_iter()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
         {
             match str::from_utf8(attr.key.as_ref())? {
