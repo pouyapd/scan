@@ -13,20 +13,35 @@ pub struct Action(usize);
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Var(usize);
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum VarType {
     Unit,
     Boolean,
     Integer,
+    Product(Vec<VarType>),
+}
+
+impl VarType {
+    pub fn default_value(&self) -> Val {
+        match self {
+            VarType::Boolean => Val::Boolean(false),
+            VarType::Integer => Val::Integer(0),
+            VarType::Unit => Val::Unit,
+            VarType::Product(tuple) => {
+                Val::Tuple(Vec::from_iter(tuple.iter().map(|e| e.default_value())))
+            }
+        }
+    }
 }
 
 pub type Integer = i32;
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Val {
     Unit,
     Boolean(bool),
     Integer(Integer),
+    Tuple(Vec<Val>),
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +72,7 @@ pub enum Expression {
     Unit,
     Boolean(Formula),
     Integer(IntExpr),
+    Tuple(Vec<Expression>),
 }
 
 impl From<&Expression> for VarType {
@@ -65,6 +81,9 @@ impl From<&Expression> for VarType {
             Expression::Boolean(_) => VarType::Boolean,
             Expression::Integer(_) => VarType::Integer,
             Expression::Unit => VarType::Unit,
+            Expression::Tuple(tuple) => {
+                VarType::Product(Vec::from_iter(tuple.iter().map(|e| VarType::from(e))))
+            }
         }
     }
 }
@@ -273,15 +292,7 @@ impl ProgramGraphBuilder {
         // Build program graph
         ProgramGraph {
             current_location: Self::INITIAL_LOCATION,
-            vars: self
-                .vars
-                .iter()
-                .map(|var_type| match var_type {
-                    VarType::Boolean => Val::Boolean(false),
-                    VarType::Integer => Val::Integer(0),
-                    VarType::Unit => Val::Unit,
-                })
-                .collect(),
+            vars: self.vars.iter().map(VarType::default_value).collect(),
             effects: Rc::new(self.effects),
             transitions: Rc::new(self.transitions),
         }
@@ -350,6 +361,9 @@ impl ProgramGraph {
             Expression::Boolean(formula) => Val::Boolean(self.eval_formula(formula)),
             Expression::Integer(expr) => Val::Integer(self.eval_expr(expr)),
             Expression::Unit => Val::Unit,
+            Expression::Tuple(entries) => {
+                Val::Tuple(Vec::from_iter(entries.iter().map(|e| self.eval(e))))
+            }
         }
     }
 
@@ -362,7 +376,7 @@ impl ProgramGraph {
             Val::Boolean(_) if !matches!(val, Val::Boolean(_)) => Err(PgError::Mismatched),
             Val::Integer(_) if !matches!(val, Val::Integer(_)) => Err(PgError::Mismatched),
             _ => {
-                let previous_val = *var_content;
+                let previous_val = var_content.clone();
                 *var_content = val;
                 Ok(previous_val)
             }

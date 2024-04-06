@@ -145,6 +145,24 @@ impl CsExpr {
     pub fn from_expr(expr: CsIntExpr) -> Self {
         Self(expr.0, Expression::Integer(expr.1))
     }
+
+    pub fn unit(pg_id: PgId) -> Self {
+        Self(pg_id, Expression::Unit)
+    }
+
+    pub fn tuple(pg_id: PgId, exprs: Vec<CsExpr>) -> Result<Self, CsError> {
+        let exprs: Vec<Expression> = exprs
+            .into_iter()
+            .map(|e| {
+                if e.0 == pg_id {
+                    Ok(e.1)
+                } else {
+                    Err(CsError::DifferentPgs(e.0, pg_id))
+                }
+            })
+            .collect::<Result<Vec<Expression>, CsError>>()?;
+        Ok(Self(pg_id, Expression::Tuple(exprs)))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -345,7 +363,8 @@ impl ChannelSystemBuilder {
             .channels
             .get(channel.0)
             .ok_or(CsError::MissingChannel(channel))?
-            .0;
+            .0
+            .to_owned();
         let message_type = match &message {
             Message::Send(effect) => {
                 if !self.program_graphs.len() <= (effect.0).0 {
@@ -365,7 +384,7 @@ impl ChannelSystemBuilder {
             }
             Message::ProbeEmptyQueue => {
                 // There is no type to check so the message is always the right type
-                channel_type
+                channel_type.to_owned()
             }
         };
         if channel_type != message_type {
