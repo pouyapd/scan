@@ -18,6 +18,7 @@ enum ScxmlTag {
     Datamodel,
     OnEntry,
     OnExit,
+    Send,
     // Data,
 }
 
@@ -30,6 +31,7 @@ impl From<ScxmlTag> for &'static str {
             ScxmlTag::Datamodel => TAG_DATAMODEL,
             ScxmlTag::OnEntry => TAG_ONENTRY,
             ScxmlTag::OnExit => TAG_ONEXIT,
+            ScxmlTag::Send => TAG_SEND,
             // ScxmlTag::Data => TAG_DATA,
         }
     }
@@ -62,8 +64,20 @@ pub struct Transition {
 
 #[derive(Debug, Clone)]
 pub enum Executable {
-    Raise { event: String },
-    Send { event: String, target: String },
+    Raise {
+        event: String,
+    },
+    Send {
+        event: String,
+        target: String,
+        params: Vec<Param>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub(crate) name: String,
+    pub(crate) location: String,
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +176,10 @@ impl Fsm {
                         TAG_DATA
                             if stack
                                 .last()
-                                .is_some_and(|tag| matches!(*tag, ScxmlTag::Datamodel)) => {}
+                                .is_some_and(|tag| matches!(*tag, ScxmlTag::Datamodel)) =>
+                        {
+                            // TODO: implement 'data' tag
+                        }
                         TAG_TRANSITION
                             if stack
                                 .last()
@@ -176,6 +193,11 @@ impl Fsm {
                         }
                         TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
                             fsm.parse_send(tag, reader, &stack)?;
+                        }
+                        TAG_PARAM
+                            if stack.iter().rev().any(|tag| matches!(*tag, ScxmlTag::Send)) =>
+                        {
+                            fsm.parse_param(tag, reader, &stack)?;
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -445,7 +467,11 @@ impl Fsm {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_TARGET.to_string())
         )))?;
-        let executable = Executable::Send { event, target };
+        let executable = Executable::Send {
+            event,
+            target,
+            params: Vec::new(),
+        };
         let state_id: &str = stack
             .iter()
             .rev()
@@ -479,6 +505,114 @@ impl Fsm {
                     .expect("inside a `Transition` tag")
                     .effects
                     .push(executable);
+            }
+            _ => panic!("non executable tag"),
+        }
+        Ok(())
+    }
+
+    fn parse_param<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+        stack: &[ScxmlTag],
+    ) -> anyhow::Result<()> {
+        let mut name: Option<String> = None;
+        let mut location: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_NAME => {
+                    name = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_LOCATION => {
+                    location = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_EXPR => {
+                    // TODO: implement target expressions
+                    return Ok(());
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TAG_TRANSITION}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let name = name.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_EVENT.to_string())
+        )))?;
+        let location = location.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_TARGET.to_string())
+        )))?;
+        let param = Param { name, location };
+
+        // Find which `State` is being parsed.
+        let state_id: &str = stack
+            .iter()
+            .rev()
+            .find_map(|tag| {
+                if let ScxmlTag::State(state) = tag {
+                    Some(state)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| ParserError(reader.buffer_position(), ParserErrorType::NotAState))?;
+        let state = self
+            .states
+            .get_mut(state_id)
+            .expect("State in stack has to exist");
+
+        // Find in which executable element the `Send` (the `Param` belongs to) is.
+        // The `Send` must be the last `Executable` being parsed.
+        // Then, push the `Param`.
+        // TODO: Handle errors.
+        match stack
+            .iter()
+            .rfind(|tag| tag.is_executable())
+            .expect("there must be an executable tag")
+        {
+            ScxmlTag::OnEntry => {
+                if let Some(Executable::Send {
+                    event: _,
+                    target: _,
+                    params,
+                }) = state.on_entry.last_mut()
+                {
+                    params.push(param);
+                }
+            }
+            ScxmlTag::OnExit => {
+                if let Some(Executable::Send {
+                    event: _,
+                    target: _,
+                    params,
+                }) = state.on_exit.last_mut()
+                {
+                    params.push(param);
+                }
+            }
+            ScxmlTag::Transition => {
+                if let Some(Executable::Send {
+                    event: _,
+                    target: _,
+                    params,
+                }) = state
+                    .transitions
+                    .last_mut()
+                    .expect("inside a `Transition` tag")
+                    .effects
+                    .last_mut()
+                {
+                    params.push(param);
+                }
             }
             _ => panic!("non executable tag"),
         }

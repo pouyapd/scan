@@ -10,15 +10,20 @@ use super::vocabulary::*;
 use crate::{ParserError, ParserErrorType};
 
 #[derive(Debug, Clone)]
-pub enum Bt {
-    Root(Box<Bt>),
-    RSeq(Vec<Box<Bt>>),
-    RFbk(Vec<Box<Bt>>),
-    MSeq(Vec<Box<Bt>>),
-    MFbk(Vec<Box<Bt>>),
-    Invr(Box<Bt>),
+pub enum BtNode {
+    RSeq(Vec<Box<BtNode>>),
+    RFbk(Vec<Box<BtNode>>),
+    MSeq(Vec<Box<BtNode>>),
+    MFbk(Vec<Box<BtNode>>),
+    Invr(Box<BtNode>),
     LAct(String),
     LCnd(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Bt {
+    pub(crate) id: String,
+    pub(crate) root: BtNode,
 }
 
 impl Bt {
@@ -33,11 +38,103 @@ impl Bt {
                     let tag_name = str::from_utf8(tag_name.as_ref())?;
                     trace!("'{tag_name}' open tag");
                     match tag_name {
-                        TAG_ROOT | TAG_BEHAVIOR_TREE => {
+                        TAG_ROOT => {
+                            // TODO: parse `main_tree_to_execute`
+                            // TODO: fix horrible recursion.
                             return Self::parse_skill(reader);
                         }
+                        TAG_BEHAVIOR_TREE => {
+                            // return Self::parse_skill(reader);
+                            let id = Self::parse_bt(tag, reader)?;
+                            let root = BtNode::parse_skill(reader)?.pop().ok_or_else(|| {
+                                ParserError(
+                                    reader.buffer_position(),
+                                    ParserErrorType::MissingBtRootNode,
+                                )
+                            })?;
+                            let bt = Bt { id, root };
+                            bts.push(bt);
+                        }
+                        // Unknown tag: skip till maching end tag
+                        _ => {
+                            warn!("unknown or unexpected tag {tag_name}, skipping");
+                            reader.read_to_end_into(tag.to_end().into_owned().name(), &mut buf)?;
+                        }
+                    }
+                }
+                Event::End(_tag) => {
+                    return Ok(bts);
+                }
+                Event::Empty(tag) => {
+                    let tag_name = tag.name();
+                    let tag_name = str::from_utf8(tag_name.as_ref())?;
+                    warn!("unknown or unexpected tag {tag_name:?}, skipping");
+                }
+                Event::Text(_) => continue,
+                Event::Comment(_) => continue,
+                Event::CData(_) => continue,
+                Event::Decl(_) => continue, // parser.parse_xml_declaration(tag)?,
+                Event::PI(_) => continue,
+                Event::DocType(_) => continue,
+                // exits the loop when reaching end of file
+                Event::Eof => {
+                    return Err(anyhow!(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnclosedTags,
+                    )));
+                }
+            }
+            // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
+            buf.clear();
+        }
+    }
+
+    fn parse_bt<R: BufRead>(
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+    ) -> anyhow::Result<String> {
+        let mut id: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_BT_ID => {
+                    id = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TAG_STATE}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        id.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_ID.to_string())
+        )))
+    }
+}
+
+impl BtNode {
+    pub(super) fn parse_skill<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Vec<Self>> {
+        let mut bts = Vec::new();
+        let mut buf = Vec::new();
+        info!("parsing bt");
+        loop {
+            match reader.read_event_into(&mut buf)? {
+                Event::Start(tag) => {
+                    let tag_name = tag.name();
+                    let tag_name = str::from_utf8(tag_name.as_ref())?;
+                    trace!("'{tag_name}' open tag");
+                    match tag_name {
+                        // TAG_ROOT | TAG_BEHAVIOR_TREE => {
+                        //     return Self::parse_skill(reader);
+                        // }
                         TAG_REACTIVE_SEQUENCE => {
-                            bts.push(Bt::RSeq(
+                            bts.push(BtNode::RSeq(
                                 Self::parse_skill(reader)?
                                     .into_iter()
                                     .map(Box::new)
@@ -45,7 +142,7 @@ impl Bt {
                             ));
                         }
                         TAG_REACTIVE_FALLBACK => {
-                            bts.push(Bt::RFbk(
+                            bts.push(BtNode::RFbk(
                                 Self::parse_skill(reader)?
                                     .into_iter()
                                     .map(Box::new)
@@ -103,7 +200,7 @@ impl Bt {
     fn parse_action<R: BufRead>(
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
-    ) -> anyhow::Result<Bt> {
+    ) -> anyhow::Result<BtNode> {
         let mut id: Option<String> = None;
         for attr in tag
             .attributes()
@@ -126,14 +223,14 @@ impl Bt {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_ID.to_string())
         )))?;
-        let action = Bt::LAct(id);
+        let action = BtNode::LAct(id);
         Ok(action)
     }
 
     fn parse_condition<R: BufRead>(
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
-    ) -> anyhow::Result<Bt> {
+    ) -> anyhow::Result<BtNode> {
         let mut id: Option<String> = None;
         for attr in tag
             .attributes()
@@ -156,7 +253,7 @@ impl Bt {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_ID.to_string())
         )))?;
-        let condition = Bt::LCnd(id);
+        let condition = BtNode::LCnd(id);
         Ok(condition)
     }
 }

@@ -163,6 +163,17 @@ impl CsExpr {
             .collect::<Result<Vec<Expression>, CsError>>()?;
         Ok(Self(pg_id, Expression::Tuple(exprs)))
     }
+
+    pub fn project(&self, nth: usize) -> Result<Self, CsError> {
+        if let Self(pg_id, Expression::Tuple(tuple)) = self {
+            Ok(Self(
+                *pg_id,
+                tuple.get(nth).ok_or_else(|| CsError::BadIndex)?.clone(),
+            ))
+        } else {
+            Err(CsError::NotATuple)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -185,8 +196,11 @@ pub enum CsError {
     DifferentPgs(PgId, PgId),
     ActionIsCommunication(CsAction),
     MissingChannel(Channel),
+    NotATuple,
+    BadIndex,
 }
 
+// TODO: switch to `thiserror` crate
 impl fmt::Display for CsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -227,6 +241,8 @@ impl fmt::Display for CsError {
                 write!(f, "action {action:?} is a communication")
             }
             CsError::MissingChannel(channel) => write!(f, "channel {channel:?} does not exists"),
+            CsError::NotATuple => todo!(),
+            CsError::BadIndex => todo!(),
         }
     }
 }
@@ -298,7 +314,7 @@ impl ChannelSystemBuilder {
         if effect.0 != pg_id {
             return Err(CsError::DifferentPgs(effect.0, pg_id));
         }
-        // Communication cannot have effects
+        // Communications cannot have effects
         if self.communications.contains_key(&action) {
             return Err(CsError::ActionIsCommunication(action));
         }

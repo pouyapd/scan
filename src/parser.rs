@@ -1,6 +1,6 @@
 mod bt;
 mod fsm;
-mod vocabulary;
+pub(crate) mod vocabulary;
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -56,6 +56,8 @@ pub enum ParserErrorType {
     UnknownSkillType(String),
     #[error("not in a state")]
     NotAState,
+    #[error("behavior tree missing root node")]
+    MissingBtRootNode,
 }
 
 #[derive(Error, Debug)]
@@ -115,7 +117,7 @@ impl From<ConvinceTag> for &'static str {
 
 #[derive(Debug)]
 pub struct Parser {
-    pub(crate) task_plan: Option<String>,
+    pub(crate) task_plan: String,
     pub(crate) skill_list: HashMap<String, SkillDeclaration>,
     pub(crate) component_list: HashMap<String, ComponentDeclaration>,
     // interfaces: PathBuf,
@@ -163,7 +165,7 @@ pub struct ComponentDeclaration {
 impl Parser {
     pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Parser> {
         let mut spec = Parser {
-            task_plan: None,
+            task_plan: String::new(),
             skill_list: HashMap::new(),
             component_list: HashMap::new(),
         };
@@ -337,7 +339,7 @@ impl Parser {
             match str::from_utf8(attr.key.as_ref())? {
                 ATTR_TASK_PLAN => {
                     let skill_id = str::from_utf8(attr.value.as_ref())?;
-                    self.task_plan = Some(skill_id.to_string());
+                    self.task_plan = skill_id.to_string();
                 }
                 key => {
                     error!("found unknown attribute {key} in {ATTR_TASK_PLAN}",);
