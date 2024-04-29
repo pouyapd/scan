@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Index};
+use std::{collections::HashMap, ops::Index, panic::Location};
 
 use crate::{parser::vocabulary::*, CsAction};
 use anyhow::Ok;
@@ -33,7 +33,7 @@ pub struct Sc2CsVisitor {
     // Each event is associated to a unique global index.
     events: HashMap<String, Integer>,
     // For each State Chart, each variable is associated to an index.
-    vars: HashMap<(PgId, String), CsVar>,
+    vars: HashMap<(PgId, String), (CsVar, VarType)>,
     // Events carrying parameters have dedicated channels for them,
     // one for each senderStateChart+sentEvent+paramName that is needed
     parameters: HashMap<(PgId, Integer, String), Channel>,
@@ -167,98 +167,315 @@ impl Sc2CsVisitor {
     //     Ok(())
     // }
 
+    // fn build_bt(&mut self, bt: &Bt) -> anyhow::Result<()> {
+    //     trace!("build bt {}", bt.id);
+    //     // Initialize bt.
+    //     let pg_id = self.get_moc_pgid(&bt.id);
+    //     // Implement channel receiving the tick event.
+    //     // TODO: the external queue origin channel is never emptied.
+    //     // TODO: capacity should be Some(0), i.e., handshake.
+    //     let tick_receive_chn = self.get_external_queue(&bt.id);
+    //     // The tick signal carries no data, so it is of type unit.
+    //     let tick_event = self.cs.new_var(pg_id, VarType::Integer)?;
+    //     let receive_tick =
+    //         self.cs
+    //             .new_communication(pg_id, tick_receive_chn, Message::Receive(tick_event))?;
+    //     // TODO: implement tick_response with enum type.
+    //     // tick_response, manually implemented:
+    //     // -1 = Failure
+    //     //  0 = Running (default value)
+    //     //  1 = Success
+    //     let tick_response = self.cs.new_var(pg_id, VarType::Integer)?;
+    //     // Implement channel receiving the tick response.
+    //     // TODO: capacity should be Some(0), i.e., handshake.
+    //     let tick_response_chn = self.get_external_queue(&(bt.id.to_owned() + "Response"));
+    //     let receive_response =
+    //         self.cs
+    //             .new_communication(pg_id, tick_response_chn, Message::Receive(tick_response))?;
+    //     let root = self.cs.new_location(pg_id)?;
+    //     let (tick_node_in, tick_node_out) =
+    //         self.build_bt_node(pg_id, tick_response, receive_response, &bt.root)?;
+    //     // Receiving tick on `tick_chn` transitions out of root into its child node.
+    //     self.cs.add_transition(
+    //         pg_id,
+    //         root,
+    //         receive_tick,
+    //         tick_node_in,
+    //         CsFormula::new_true(pg_id),
+    //     )?;
+    //     Ok(())
+    // }
+
     fn build_bt(&mut self, bt: &Bt) -> anyhow::Result<()> {
         trace!("build bt {}", bt.id);
         // Initialize bt.
-        // let pg_id = self.get_moc_pgid(&bt.id);
-        // // Implement channel receiving the tick event.
-        // // TODO: capacity should be Some(0), i.e., handshake.
-        // let tick_receive_chn = self.get_external_queue(&bt.id);
-        // // The tick signal carries no data, so it is of type unit.
-        // let tick_event = self.cs.new_var(pg_id, VarType::Integer)?;
-        // let receive_tick =
-        //     self.cs
-        //         .new_communication(pg_id, tick_receive_chn, Message::Receive(tick_event))?;
-        // // TODO: implement tick_response with enum type.
-        // // tick_response, manually implemented:
-        // // -1 = Failure
-        // //  0 = Running (default value)
-        // //  1 = Success
-        // let tick_response = self.cs.new_var(pg_id, VarType::Integer)?;
-        // // Implement channel receiving the tick response.
-        // // TODO: capacity should be Some(0), i.e., handshake.
-        // let tick_response_chn = self.get_external_queue(&(bt.id.to_owned() + "Response"));
-        // let receive_response =
-        //     self.cs
-        //         .new_communication(pg_id, tick_response_chn, Message::Receive(tick_response))?;
-        // let root = self.cs.new_location(pg_id)?;
-        // let (tick_node_in, tick_node_out) =
-        //     self.build_bt_node(pg_id, tick_response, receive_response, &bt.root)?;
-        // // Receiving tick on `tick_chn` transitions out of root into its child node.
-        // self.cs.add_transition(
+        let pg_id = self.get_moc_pgid(&bt.id);
+        let loc_tick = self.cs.initial_location(pg_id)?;
+        let loc_success = self.cs.new_location(pg_id)?;
+        let loc_running = self.cs.new_location(pg_id)?;
+        let loc_failure = self.cs.new_location(pg_id)?;
+        let loc_halt = self.cs.new_location(pg_id)?;
+        let loc_ack = self.cs.new_location(pg_id)?;
+        let step = self.cs.new_action(pg_id)?;
+        self.cs.add_transition(
+            pg_id,
+            loc_running,
+            step,
+            loc_tick,
+            CsFormula::new_true(pg_id),
+        )?;
+        let tick_response_chn = self.get_external_queue(&bt.id);
+        let tick_response = self.cs.new_var(pg_id, VarType::Integer)?;
+        let receive_response =
+            self.cs
+                .new_communication(pg_id, tick_response_chn, Message::Receive(tick_response))?;
+        // self.build_bt_node(
         //     pg_id,
-        //     root,
-        //     receive_tick,
-        //     tick_node_in,
-        //     CsFormula::new_true(pg_id),
+        //     loc_tick,
+        //     loc_success,
+        //     loc_running,
+        //     loc_failure,
+        //     loc_halt,
+        //     loc_ack,
+        //     step,
+        //     tick_response,
+        //     receive_response,
+        //     &bt.root,
         // )?;
         Ok(())
     }
 
+    /// Recursively build a BT node by associating each possible state of the node to a location:
+    /// - *_tick: the node has been sent a tick by its parent node
+    /// - *_success: the node has returned with state success
+    /// - *_running: the node has returned with state running
+    /// - *_failure: the node has returned with state failure
+    /// - *_halt: the node has been sent an halt signal by the parent node
+    /// - *_halt_success: the node has been sent an halt signal by its parent node after a previous node succeeded (in reactive nodes)
+    /// - *_halt_failure: the node has been sent an halt signal by its parent node after a previous node failed (in reactive nodes)
+    /// - *_ack: the node has returned an ack signal
+    /// - *_ack_success: the node has returned an ack signal after a previous node succeeded (in reactive nodes)
+    /// - *_ack_failure: the node has returned an ack signal after a previous node failed (in reactive nodes)
+    /// Moreover, we consider the following nodes:
+    /// - pt_*: parent
+    /// - loc_*: current note (loc=location)
+    /// - branch_*: branch/child
     fn build_bt_node(
         &mut self,
         pg_id: PgId,
+        pt_tick: CsLocation,
+        pt_success: CsLocation,
+        pt_running: CsLocation,
+        pt_failure: CsLocation,
+        pt_halt: CsLocation,
+        pt_halt_success: CsLocation,
+        pt_halt_failure: CsLocation,
+        pt_ack: CsLocation,
+        pt_ack_success: CsLocation,
+        pt_ack_failure: CsLocation,
+        step: CsAction,
         tick_response: CsVar,
         receive_response: CsAction,
         node: &BtNode,
-    ) -> anyhow::Result<(CsLocation, CsLocation)> {
-        let tick_in = self.cs.new_location(pg_id)?;
-        let tick_out = self.cs.new_location(pg_id)?;
-
+    ) -> anyhow::Result<()> {
         match node {
-            BtNode::RSeq(branches) => {}
+            BtNode::RSeq(branches) => {
+                let mut prev_tick = pt_tick;
+                let mut prev_success = pt_tick;
+                let mut prev_running = pt_running;
+                let mut prev_failure = pt_failure;
+                let mut prev_halt = pt_halt;
+                let mut prev_halt_success = pt_halt_success;
+                let mut prev_halt_failure = pt_halt_failure;
+                let mut prev_ack = pt_ack;
+                let mut prev_ack_success = pt_ack_success;
+                let mut prev_ack_failure = pt_ack_failure;
+                for branch in branches {
+                    let loc_tick = self.cs.new_location(pg_id)?;
+                    let loc_success = self.cs.new_location(pg_id)?;
+                    let loc_running = self.cs.new_location(pg_id)?;
+                    let loc_failure = self.cs.new_location(pg_id)?;
+                    let loc_halt = self.cs.new_location(pg_id)?;
+                    let loc_halt_success = self.cs.new_location(pg_id)?;
+                    let loc_halt_failure = self.cs.new_location(pg_id)?;
+                    let loc_ack = self.cs.new_location(pg_id)?;
+                    let loc_ack_success = self.cs.new_location(pg_id)?;
+                    let loc_ack_failure = self.cs.new_location(pg_id)?;
+                    self.cs.add_transition(
+                        pg_id,
+                        prev_success,
+                        step,
+                        loc_tick,
+                        CsFormula::new_true(pg_id),
+                    )?;
+                    self.cs.add_transition(
+                        pg_id,
+                        loc_running,
+                        step,
+                        pt_running,
+                        CsFormula::new_true(pg_id),
+                    )?;
+                    self.cs.add_transition(
+                        pg_id,
+                        prev_failure,
+                        step,
+                        loc_halt_failure,
+                        CsFormula::new_true(pg_id),
+                    )?;
+                    self.cs.add_transition(
+                        pg_id,
+                        prev_ack_failure,
+                        step,
+                        loc_halt_failure,
+                        CsFormula::new_true(pg_id),
+                    )?;
+                    self.cs.add_transition(
+                        pg_id,
+                        prev_ack,
+                        step,
+                        loc_halt,
+                        CsFormula::new_true(pg_id),
+                    )?;
+                    self.build_bt_node(
+                        pg_id,
+                        loc_tick,
+                        loc_success,
+                        loc_running,
+                        loc_failure,
+                        loc_halt,
+                        loc_halt_success,
+                        loc_halt_failure,
+                        loc_ack,
+                        loc_ack_success,
+                        loc_ack_failure,
+                        step,
+                        tick_response,
+                        receive_response,
+                        branch,
+                    )?;
+                    prev_tick = loc_tick;
+                    prev_success = loc_success;
+                    prev_running = loc_running;
+                    prev_failure = loc_failure;
+                    prev_halt = loc_halt;
+                    prev_halt_success = loc_halt_success;
+                    prev_halt_failure = loc_halt_failure;
+                    prev_ack = loc_ack;
+                    prev_ack_success = loc_ack_success;
+                    prev_ack_failure = loc_ack_failure;
+                }
+                self.cs.add_transition(
+                    pg_id,
+                    prev_success,
+                    step,
+                    pt_success,
+                    CsFormula::new_true(pg_id),
+                )?;
+                self.cs.add_transition(
+                    pg_id,
+                    prev_ack,
+                    step,
+                    pt_ack,
+                    CsFormula::new_true(pg_id),
+                )?;
+                self.cs.add_transition(
+                    pg_id,
+                    prev_ack_failure,
+                    step,
+                    pt_ack_failure,
+                    CsFormula::new_true(pg_id),
+                )?;
+                // self.cs.add_transition(
+                //     pg_id,
+                //     prev_ack_success,
+                //     step,
+                //     pt_ack_success,
+                //     CsFormula::new_true(pg_id),
+                // )?;
+            }
             BtNode::RFbk(branches) => {}
             BtNode::MSeq(branches) => {}
             BtNode::MFbk(branches) => {}
             BtNode::Invr(branch) => {
-                // Recursively build branch BT and get its PoE location.
-                let (tick_child_in, tick_child_out) =
-                    self.build_bt_node(pg_id, tick_response, receive_response, branch)?;
-                // Propagate the tick to the branch.
-                let tick = self.cs.new_action(pg_id)?;
-                self.cs.add_transition(
+                // Swap success and failure.
+                self.build_bt_node(
                     pg_id,
-                    tick_in,
-                    tick,
-                    tick_child_in,
-                    CsFormula::new_true(pg_id),
-                )?;
-                // Inverting the tick_response:
-                // -1 ->  1
-                //  0 ->  0
-                //  1 -> -1
-                let invert = self.cs.new_action(pg_id)?;
-                self.cs.add_effect(
-                    pg_id,
-                    invert,
+                    pt_tick,
+                    pt_failure,
+                    pt_running,
+                    pt_success,
+                    pt_halt,
+                    pt_halt_success,
+                    pt_halt_failure,
+                    pt_ack,
+                    pt_ack_success,
+                    pt_ack_failure,
+                    step,
                     tick_response,
-                    CsExpr::from_expr(CsIntExpr::opposite(CsIntExpr::new_var(tick_response))),
+                    receive_response,
+                    branch,
                 )?;
-                self.cs.add_transition(
-                    pg_id,
-                    tick_child_out,
-                    invert,
-                    tick_out,
-                    CsFormula::new_true(pg_id),
-                )?;
+                // let loc_tick = self.cs.new_location(pg_id)?;
+                // let loc_success = self.cs.new_location(pg_id)?;
+                // let loc_running = self.cs.new_location(pg_id)?;
+                // let loc_failure = self.cs.new_location(pg_id)?;
+                // let loc_halt = self.cs.new_location(pg_id)?;
+                // let loc_ack = self.cs.new_location(pg_id)?;
+                // self.build_bt_node(
+                //     pg_id,
+                //     loc_tick,
+                //     loc_success,
+                //     loc_running,
+                //     loc_failure,
+                //     loc_halt,
+                //     loc_ack,
+                //     step,
+                //     tick_response,
+                //     receive_response,
+                //     &branch,
+                // )?;
+                // self.cs.add_transition(
+                //     pg_id,
+                //     loc_failure,
+                //     step,
+                //     pt_success,
+                //     CsFormula::new_true(pg_id),
+                // )?;
+                // self.cs.add_transition(
+                //     pg_id,
+                //     loc_running,
+                //     step,
+                //     pt_running,
+                //     CsFormula::new_true(pg_id),
+                // )?;
+                // self.cs.add_transition(
+                //     pg_id,
+                //     loc_success,
+                //     step,
+                //     pt_failure,
+                //     CsFormula::new_true(pg_id),
+                // )?;
+                // self.cs.add_transition(
+                //     pg_id,
+                //     pt_halt,
+                //     step,
+                //     loc_halt,
+                //     CsFormula::new_true(pg_id),
+                // )?;
+                // self.cs
+                //     .add_transition(pg_id, loc_ack, step, pt_ack, CsFormula::new_true(pg_id))?;
             }
             BtNode::LAct(id) | BtNode::LCnd(id) => {
+                // let ev_tick = self.get_event_idx(&"TICK");
+                let ev_tick_success = self.get_event_idx(&"SUCCESS");
+                let ev_tick_running = self.get_event_idx(&"RUNNING");
+                let ev_tick_failure = self.get_event_idx(&"FAILURE");
+                // let ev_halt = self.get_event_idx(&"HALT");
+                // let ev_halt_ack = self.get_event_idx(&"ACK");
+                let loc_tick = self.cs.new_location(pg_id)?;
+                let loc_response = self.cs.new_location(pg_id)?;
                 // Build external queue for skill, if it does not exist already.
-                let external_queue = self.external_queues.get(id).cloned().unwrap_or_else(|| {
-                    let external_queue = self.cs.new_channel(VarType::Integer, None);
-                    self.external_queues.insert(id.to_owned(), external_queue);
-                    external_queue
-                });
+                let external_queue = self.get_external_queue(id);
                 // Create tick event, if it does not exist already.
                 let tick_call_event = self.get_event_idx(TICK_CALL);
                 // Send a tickCall event to the skill.
@@ -270,27 +487,147 @@ impl Sc2CsVisitor {
                         tick_call_event,
                     ))),
                 )?;
-                let wait_response_loc = self.cs.new_location(pg_id)?;
                 self.cs.add_transition(
                     pg_id,
-                    tick_in,
+                    pt_tick,
                     tick_skill,
-                    wait_response_loc,
+                    loc_tick,
                     CsFormula::new_true(pg_id),
                 )?;
                 // Now leaf waits for response on its own channel
                 self.cs.add_transition(
                     pg_id,
-                    wait_response_loc,
+                    loc_tick,
                     receive_response,
-                    tick_out,
+                    loc_response,
                     CsFormula::new_true(pg_id),
+                )?;
+                self.cs.add_transition(
+                    pg_id,
+                    loc_response,
+                    step,
+                    pt_success,
+                    CsFormula::eq(
+                        CsIntExpr::new_const(pg_id, ev_tick_success),
+                        CsIntExpr::new_var(tick_response),
+                    )?,
+                )?;
+                self.cs.add_transition(
+                    pg_id,
+                    loc_response,
+                    step,
+                    pt_running,
+                    CsFormula::eq(
+                        CsIntExpr::new_const(pg_id, ev_tick_running),
+                        CsIntExpr::new_var(tick_response),
+                    )?,
+                )?;
+                self.cs.add_transition(
+                    pg_id,
+                    loc_response,
+                    step,
+                    pt_failure,
+                    CsFormula::eq(
+                        CsIntExpr::new_const(pg_id, ev_tick_failure),
+                        CsIntExpr::new_var(tick_response),
+                    )?,
                 )?;
             }
         }
 
-        Ok((tick_in, tick_out))
+        Ok(())
     }
+
+    // fn build_bt_node(
+    //     &mut self,
+    //     pg_id: PgId,
+    //     loc_tick: CsLocation,
+    //     loc_success: CsLocation,
+    //     loc_running: CsLocation,
+    //     loc_failure: CsLocation,
+    //     loc_halt: CsLocation,
+    //     loc_ack: CsLocation,
+    //     node: &BtNode,
+    // ) -> anyhow::Result<(CsLocation, CsLocation)> {
+    //     let tick_in = self.cs.new_location(pg_id)?;
+    //     let tick_out = self.cs.new_location(pg_id)?;
+
+    //     match node {
+    //         BtNode::RSeq(branches) => {}
+    //         BtNode::RFbk(branches) => {}
+    //         BtNode::MSeq(branches) => {}
+    //         BtNode::MFbk(branches) => {}
+    //         BtNode::Invr(branch) => {
+    //             // Recursively build branch BT and get its PoE location.
+    //             let (tick_child_in, tick_child_out) =
+    //                 self.build_bt_node(pg_id, tick_response, receive_response, branch)?;
+    //             // Propagate the tick to the branch.
+    //             let tick = self.cs.new_action(pg_id)?;
+    //             self.cs.add_transition(
+    //                 pg_id,
+    //                 tick_in,
+    //                 tick,
+    //                 tick_child_in,
+    //                 CsFormula::new_true(pg_id),
+    //             )?;
+    //             // Inverting the tick_response:
+    //             // -1 ->  1
+    //             //  0 ->  0
+    //             //  1 -> -1
+    //             let invert = self.cs.new_action(pg_id)?;
+    //             self.cs.add_effect(
+    //                 pg_id,
+    //                 invert,
+    //                 tick_response,
+    //                 CsExpr::from_expr(CsIntExpr::opposite(CsIntExpr::new_var(tick_response))),
+    //             )?;
+    //             self.cs.add_transition(
+    //                 pg_id,
+    //                 tick_child_out,
+    //                 invert,
+    //                 tick_out,
+    //                 CsFormula::new_true(pg_id),
+    //             )?;
+    //         }
+    //         BtNode::LAct(id) | BtNode::LCnd(id) => {
+    //             // Build external queue for skill, if it does not exist already.
+    //             let external_queue = self.external_queues.get(id).cloned().unwrap_or_else(|| {
+    //                 let external_queue = self.cs.new_channel(VarType::Integer, None);
+    //                 self.external_queues.insert(id.to_owned(), external_queue);
+    //                 external_queue
+    //             });
+    //             // Create tick event, if it does not exist already.
+    //             let tick_call_event = self.get_event_idx(TICK_CALL);
+    //             // Send a tickCall event to the skill.
+    //             let tick_skill = self.cs.new_communication(
+    //                 pg_id,
+    //                 external_queue,
+    //                 Message::Send(CsExpr::from_expr(CsIntExpr::new_const(
+    //                     pg_id,
+    //                     tick_call_event,
+    //                 ))),
+    //             )?;
+    //             let wait_response_loc = self.cs.new_location(pg_id)?;
+    //             self.cs.add_transition(
+    //                 pg_id,
+    //                 tick_in,
+    //                 tick_skill,
+    //                 wait_response_loc,
+    //                 CsFormula::new_true(pg_id),
+    //             )?;
+    //             // Now leaf waits for response on its own channel
+    //             self.cs.add_transition(
+    //                 pg_id,
+    //                 wait_response_loc,
+    //                 receive_response,
+    //                 tick_out,
+    //                 CsFormula::new_true(pg_id),
+    //             )?;
+    //         }
+    //     }
+
+    //     Ok((tick_in, tick_out))
+    // }
 
     // TODO: Optimize CS by removing unnecessary states
     fn build_fsm(&mut self, fsm: &Fsm) -> anyhow::Result<()> {
@@ -332,8 +669,6 @@ impl Sc2CsVisitor {
                 .new_communication(pg_id, ext_queue_origin, Message::Receive(origin))?;
         // Action representing checking the next transition
         let next_transition = self.cs.new_action(pg_id)?;
-
-        trace!("fsm initialization done");
 
         // Consider each of the fsm's states
         for (_, state) in fsm.states.iter() {
@@ -461,31 +796,29 @@ impl Sc2CsVisitor {
                 }
 
                 // If transition is active, execute the relevant executable content and then the transition to the target.
-                {
-                    let mut exec_trans_loc = self.cs.new_location(pg_id)?;
-                    self.cs.add_transition(
-                        pg_id,
-                        check_trans_loc,
-                        exec_transition,
-                        exec_trans_loc,
-                        guard.to_owned(),
-                    )?;
-                    // First execute the executable content of the state's `on_exit` tag,
-                    // then that of the `transition` tag.
-                    for exec in state.on_exit.iter().chain(transition.effects.iter()) {
-                        exec_trans_loc =
-                            self.add_executable(exec, pg_id, pg_idx, int_queue, exec_trans_loc)?;
-                    }
-                    // Transitioning to the target state/location.
-                    // At this point, the transition cannot be stopped so there can be no guard.
-                    self.cs.add_transition(
-                        pg_id,
-                        exec_trans_loc,
-                        exec_transition,
-                        target_loc,
-                        CsFormula::new_true(pg_id),
-                    )?;
+                let mut exec_trans_loc = self.cs.new_location(pg_id)?;
+                self.cs.add_transition(
+                    pg_id,
+                    check_trans_loc,
+                    exec_transition,
+                    exec_trans_loc,
+                    guard.to_owned(),
+                )?;
+                // First execute the executable content of the state's `on_exit` tag,
+                // then that of the `transition` tag.
+                for exec in state.on_exit.iter().chain(transition.effects.iter()) {
+                    exec_trans_loc =
+                        self.add_executable(exec, pg_id, pg_idx, int_queue, exec_trans_loc)?;
                 }
+                // Transitioning to the target state/location.
+                // At this point, the transition cannot be stopped so there can be no guard.
+                self.cs.add_transition(
+                    pg_id,
+                    exec_trans_loc,
+                    exec_transition,
+                    target_loc,
+                    CsFormula::new_true(pg_id),
+                )?;
                 // If the current transition is not active, move on to check the next one.
                 let not_guard = CsFormula::negation(guard.to_owned());
                 self.cs.add_transition(
@@ -563,13 +896,6 @@ impl Sc2CsVisitor {
                     crate::Message::Send(CsExpr::from_expr(CsIntExpr::new_const(pg_id, pg_idx))),
                 )?;
 
-                // // Pass parameters.
-                // for param in params {
-                //     // Get associated variable.
-                //     let var = self.vars.get_mut(&(pg_id, param.location.to_owned()));
-                //     // Get or create suitable channel.
-                // }
-
                 // Send event and event origin before moving on to next location.
                 let event_loc = self.cs.new_location(pg_id)?;
                 self.cs.add_transition(
@@ -587,6 +913,47 @@ impl Sc2CsVisitor {
                     next_loc,
                     CsFormula::new_true(pg_id),
                 )?;
+
+                // Pass parameters.
+                for param in params {
+                    // Get associated variable.
+                    let (var, var_type) = self
+                        .vars
+                        .get(&(pg_id, param.location.to_owned()))
+                        .expect("vars have already been parsed");
+                    // Get or create suitable channel. This has to be unique with respect to
+                    // - origin State Chart,
+                    // - carrying event, and
+                    // - parameter name,
+                    // so that the receiver can correctly associate events and parameters.
+                    let param_chn = *self
+                        .parameters
+                        .entry((pg_id, event_idx, param.name.to_owned()))
+                        .or_insert(self.cs.new_channel(var_type.to_owned(), None));
+                    // Expression to be passed.
+                    // TODO: This will require parsing expressions.
+                    let expr = match var_type {
+                        VarType::Unit => CsExpr::unit(pg_id),
+                        VarType::Boolean => CsExpr::from_formula(CsFormula::new(pg_id, *var)?),
+                        VarType::Integer => CsExpr::from_expr(CsIntExpr::new_var(*var)),
+                        // TODO: This probably requires a recursive function.
+                        VarType::Product(_) => todo!(),
+                    };
+                    // Add suitable transition to send parameter to suitable channel.
+                    let pass_param =
+                        self.cs
+                            .new_communication(pg_id, param_chn, Message::Send(expr))?;
+                    let param_loc = next_loc;
+                    let next_loc = self.cs.new_location(pg_id)?;
+                    self.cs.add_transition(
+                        pg_id,
+                        param_loc,
+                        pass_param,
+                        next_loc,
+                        CsFormula::new_true(pg_id),
+                    )?;
+                }
+
                 Ok(next_loc)
             }
         }
