@@ -3,12 +3,13 @@ use std::io::BufRead;
 use std::str;
 
 use anyhow::anyhow;
+use boa_ast::StatementListItem;
 use log::{error, info, trace, warn};
 use quick_xml::events::attributes::{AttrError, Attribute};
 use quick_xml::{events, events::Event, Reader};
 
 use super::vocabulary::*;
-use crate::{ParserError, ParserErrorType};
+use crate::{Expression, ParserError, ParserErrorType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScxmlTag {
@@ -58,12 +59,16 @@ pub struct State {
 pub struct Transition {
     pub(crate) event: Option<String>,
     pub(crate) target: String,
-    pub(crate) cond: Option<String>,
+    pub(crate) cond: Option<boa_ast::Expression>,
     pub(crate) effects: Vec<Executable>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Executable {
+    Assign {
+        location: String,
+        expr: boa_ast::expression::Expression,
+    },
     Raise {
         event: String,
     },
@@ -133,6 +138,10 @@ impl Fsm {
                             fsm.parse_transition(tag, reader, &stack)?;
                             stack.push(ScxmlTag::Transition);
                         }
+                        TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
+                            fsm.parse_send(tag, reader, &stack)?;
+                            stack.push(ScxmlTag::Send);
+                        }
                         TAG_ONENTRY
                             if stack
                                 .last()
@@ -193,6 +202,9 @@ impl Fsm {
                         }
                         TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
                             fsm.parse_send(tag, reader, &stack)?;
+                        }
+                        TAG_ASSIGN if stack.iter().rev().any(|tag| tag.is_executable()) => {
+                            fsm.parse_assign(tag, reader, &stack)?;
                         }
                         TAG_PARAM
                             if stack.iter().rev().any(|tag| matches!(*tag, ScxmlTag::Send)) =>
@@ -344,12 +356,39 @@ impl Fsm {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_TARGET.to_string())
         )))?;
-        let transition = Transition {
-            event,
-            target,
-            cond,
-            effects: Vec::new(),
-        };
+        // FIXME: This is really bad code!
+        let transition;
+        if let Some(cond) = cond {
+            let mut context = boa_engine::Context::default();
+            if let StatementListItem::Statement(boa_ast::Statement::Expression(cond)) =
+                boa_parser::Parser::new(boa_parser::Source::from_bytes(cond.as_bytes()))
+                    .parse_script(&mut context.interner_mut())
+                    .expect("hope this works")
+                    .statements()
+                    .first()
+                    .expect("hopefully there is a statement")
+                    .to_owned()
+            {
+                transition = Transition {
+                    event,
+                    target,
+                    cond: Some(cond),
+                    effects: Vec::new(),
+                };
+            } else {
+                return Err(anyhow!(ParserError(
+                    reader.buffer_position(),
+                    ParserErrorType::EcmaScriptParsing,
+                )));
+            }
+        } else {
+            transition = Transition {
+                event,
+                target,
+                cond: None,
+                effects: Vec::new(),
+            };
+        }
         // Need to know current state
         self.states
             .get_mut(state)
@@ -388,42 +427,7 @@ impl Fsm {
             ParserErrorType::MissingAttr(ATTR_EVENT.to_string())
         )))?;
         let executable = Executable::Raise { event };
-        let state_id: &str = stack
-            .iter()
-            .rev()
-            .find_map(|tag| {
-                if let ScxmlTag::State(state) = tag {
-                    Some(state)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| ParserError(reader.buffer_position(), ParserErrorType::NotAState))?;
-        let state = self
-            .states
-            .get_mut(state_id)
-            .expect("State in stack has to exist");
-        match stack
-            .iter()
-            .rfind(|tag| tag.is_executable())
-            .expect("there must be an executable tag")
-        {
-            ScxmlTag::OnEntry => {
-                state.on_entry.push(executable);
-            }
-            ScxmlTag::OnExit => {
-                state.on_exit.push(executable);
-            }
-            ScxmlTag::Transition => {
-                state
-                    .transitions
-                    .last_mut()
-                    .expect("inside a `Transition` tag")
-                    .effects
-                    .push(executable);
-            }
-            _ => panic!("non executable tag"),
-        }
+        self.add_executable(stack, reader, executable)?;
         Ok(())
     }
 
@@ -472,6 +476,69 @@ impl Fsm {
             target,
             params: Vec::new(),
         };
+        self.add_executable(stack, reader, executable)?;
+        Ok(())
+    }
+
+    fn parse_assign<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+        stack: &[ScxmlTag],
+    ) -> anyhow::Result<()> {
+        let mut location: Option<String> = None;
+        let mut expr: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_LOCATION => {
+                    location = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_EXPR => {
+                    expr = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TAG_TRANSITION}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let location = location.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_LOCATION.to_string())
+        )))?;
+        let expr = expr.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_EXPR.to_string())
+        )))?;
+        // FIXME: This is really bad code!
+        let mut context = boa_engine::Context::default();
+        if let StatementListItem::Statement(boa_ast::Statement::Expression(expr)) =
+            boa_parser::Parser::new(boa_parser::Source::from_bytes(expr.as_bytes()))
+                .parse_script(&mut context.interner_mut())
+                .expect("hope this works")
+                .statements()
+                .first()
+                .expect("hopefully there is a statement")
+                .to_owned()
+        {
+            let executable = Executable::Assign { location, expr };
+            self.add_executable(stack, reader, executable)?;
+        }
+        Ok(())
+    }
+
+    fn add_executable<R: BufRead>(
+        &mut self,
+        stack: &[ScxmlTag],
+        reader: &mut Reader<R>,
+        executable: Executable,
+    ) -> Result<(), anyhow::Error> {
         let state_id: &str = stack
             .iter()
             .rev()
@@ -487,28 +554,29 @@ impl Fsm {
             .states
             .get_mut(state_id)
             .expect("State in stack has to exist");
-        match stack
-            .iter()
-            .rfind(|tag| tag.is_executable())
-            .expect("there must be an executable tag")
-        {
-            ScxmlTag::OnEntry => {
-                state.on_entry.push(executable);
-            }
-            ScxmlTag::OnExit => {
-                state.on_exit.push(executable);
-            }
-            ScxmlTag::Transition => {
-                state
-                    .transitions
-                    .last_mut()
-                    .expect("inside a `Transition` tag")
-                    .effects
-                    .push(executable);
-            }
-            _ => panic!("non executable tag"),
-        }
-        Ok(())
+        Ok(
+            match stack
+                .iter()
+                .rfind(|tag| tag.is_executable())
+                .expect("there must be an executable tag")
+            {
+                ScxmlTag::OnEntry => {
+                    state.on_entry.push(executable);
+                }
+                ScxmlTag::OnExit => {
+                    state.on_exit.push(executable);
+                }
+                ScxmlTag::Transition => {
+                    state
+                        .transitions
+                        .last_mut()
+                        .expect("inside a `Transition` tag")
+                        .effects
+                        .push(executable);
+                }
+                _ => panic!("non executable tag"),
+            },
+        )
     }
 
     fn parse_param<R: BufRead>(

@@ -7,6 +7,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.79"
+boa_ast = "0.18.0"
+boa_engine = "0.18.0"
+boa_parser = "0.18.0"
 clap = { version = "4.4.14", features = ["derive"] }
 env_logger = "0.11.0"
 log = "0.4.20"

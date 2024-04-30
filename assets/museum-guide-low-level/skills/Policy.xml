@@ -5,7 +5,7 @@
         <ReactiveSequence>
             <ReactiveFallback>
                 <Condition ID="BatteryLevel" />
-                <Action ID="Alarm" />
+                <Action ID="AlarmBatteryLow" />
             </ReactiveFallback>
             <Action ID="BatteryDrainer" />
         </ReactiveSequence>

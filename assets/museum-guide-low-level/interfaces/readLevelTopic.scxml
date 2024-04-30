@@ -1,0 +1,25 @@
+<scxml
+	version="1.0"
+	xmlns="http://www.w3.org/2005/07/scxml"
+	datamodel="ecmascript"
+	name="readLevelTopic"
+	initial="running">
+
+	<datamodel>
+		<!-- TYPE level:int32 -->
+		<data id="level" expr="0" />
+	</datamodel>
+
+	<state id="running">
+		<transition event="readLevelReturn" target="running">
+			<assign location="level" expr="_event.data.result"\>
+		</transition>
+		<transition event="readLevelCall" target="running">
+			<send event="readLevelReturn" target_expr="_event.origin">
+				<!-- TYPE level:int32 -->
+				<param name="result" location="level" />
+			</send>
+		</transition>
+	</state>
+</scxml>
+

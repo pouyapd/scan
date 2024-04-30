@@ -1,0 +1,30 @@
+<scxml
+    version="1.0"
+    xmlns="http://www.w3.org/2005/07/scxml"
+    datamodel="ecmascript"
+    name="BatteryLevel" 
+    initial="idle">
+
+    <state id="idle">
+        <!-- This skill is a condition so there is no halt -->
+        <transition event="tickCall" target="running">
+            <send event="readLevelCall" target="readLevelTopic"/>
+        </transition>
+    </state>
+
+    <state id="running">
+        <transition event="readLevelReturn" target="idle">
+            <if cond="level &gt; 30">
+                <send event="tickReturn" targetexpr="BehaviorTree" >
+                    <!-- TYPE result:TickResponse -->
+                    <param name="result" expr="SUCCESS"/>
+                </send>
+            <else/>
+                <send event="tickReturn" targetexpr="BehaviorTree" >
+                    <!-- TYPE result:TickResponse -->
+                    <param name="result" expr="FAILURE"/>
+                </send>
+            </if>
+        </transition>
+    </state>
+</scxml>

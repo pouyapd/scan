@@ -1,0 +1,29 @@
+<specification xmlns="..." xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="...">
+
+  <model>
+
+    <types path="./types.xml" />
+    
+    <skillList>
+      <skill id="TickGen" moc="fsm" path="../skills/TickGen.scxml" />
+      <skill id="Policy" moc="bt" path="../skills/Policy.xml" />
+      <skill id="BatteryLevel" moc="fsm" path="../skills/BatteryLevel.scxml" />
+      <skill id="Alarm" moc="fsm" path="../skills/AlarmBatteryLow.scxml" />
+      <skill id="BatteryDrainer" moc="fsm" path="../skills/BatteryDrainer.scxml" />
+    </skillList>
+
+    <componentList>
+      <component id="BatteryDriverCmp" moc="fsm" path="../environment/BatteryDriverCmp.scxml" />
+      <component id="AlarmCmp" moc="fsm" path="../environment/AlarmCmp.scxml" />
+    </componentList>
+
+    <protocols>
+      <protocol id="drainAsyncService" moc="fsm" path="../interfaces/drainAsyncService.scxml" />
+      <protocol id="readLevelTopic" moc="fsm" path="../interfaces/readLevelTopic.scxml" />
+    </protocols>
+  
+  </model>
+
+  <properties path="../properties/properties.xml"/>
+</specification>

@@ -35,8 +35,13 @@ pub struct Sc2CsVisitor {
     // For each State Chart, each variable is associated to an index.
     vars: HashMap<(PgId, String), (CsVar, VarType)>,
     // Events carrying parameters have dedicated channels for them,
-    // one for each senderStateChart+sentEvent+paramName that is needed
-    parameters: HashMap<(PgId, Integer, String), Channel>,
+    // one for each:
+    // - senderStateChart
+    // - receiverStateChart
+    // - sentEvent
+    // - paramName
+    // that is needed
+    parameters: HashMap<(PgId, PgId, Integer, String), Channel>,
 }
 
 impl Sc2CsVisitor {
@@ -905,7 +910,7 @@ impl Sc2CsVisitor {
                     event_loc,
                     CsFormula::new_true(pg_id),
                 )?;
-                let next_loc = self.cs.new_location(pg_id)?;
+                let mut next_loc = self.cs.new_location(pg_id)?;
                 self.cs.add_transition(
                     pg_id,
                     event_loc,
@@ -916,47 +921,55 @@ impl Sc2CsVisitor {
 
                 // Pass parameters.
                 for param in params {
-                    // Get associated variable.
-                    let (var, var_type) = self
-                        .vars
-                        .get(&(pg_id, param.location.to_owned()))
-                        .expect("vars have already been parsed");
-                    // Get or create suitable channel. This has to be unique with respect to
-                    // - origin State Chart,
-                    // - carrying event, and
-                    // - parameter name,
-                    // so that the receiver can correctly associate events and parameters.
-                    let param_chn = *self
-                        .parameters
-                        .entry((pg_id, event_idx, param.name.to_owned()))
-                        .or_insert(self.cs.new_channel(var_type.to_owned(), None));
-                    // Expression to be passed.
-                    // TODO: This will require parsing expressions.
-                    let expr = match var_type {
-                        VarType::Unit => CsExpr::unit(pg_id),
-                        VarType::Boolean => CsExpr::from_formula(CsFormula::new(pg_id, *var)?),
-                        VarType::Integer => CsExpr::from_expr(CsIntExpr::new_var(*var)),
-                        // TODO: This probably requires a recursive function.
-                        VarType::Product(_) => todo!(),
-                    };
-                    // Add suitable transition to send parameter to suitable channel.
-                    let pass_param =
-                        self.cs
-                            .new_communication(pg_id, param_chn, Message::Send(expr))?;
-                    let param_loc = next_loc;
-                    let next_loc = self.cs.new_location(pg_id)?;
-                    self.cs.add_transition(
-                        pg_id,
-                        param_loc,
-                        pass_param,
-                        next_loc,
-                        CsFormula::new_true(pg_id),
-                    )?;
+                    // Updates next location.
+                    next_loc = self.send_param(pg_id, target_id, param, event_idx, next_loc)?;
                 }
 
                 Ok(next_loc)
             }
+            Executable::Assign { location, expr } => {
+                // TODO
+                Ok(loc)
+            }
         }
+    }
+
+    fn send_param(
+        &mut self,
+        pg_id: PgId,
+        target_id: PgId,
+        param: &Param,
+        event_idx: i32,
+        next_loc: CsLocation,
+    ) -> Result<CsLocation, anyhow::Error> {
+        let (var, var_type) = self
+            .vars
+            .get(&(pg_id, param.location.to_owned()))
+            .expect("vars have already been parsed");
+        let param_chn = *self
+            .parameters
+            .entry((pg_id, target_id, event_idx, param.name.to_owned()))
+            .or_insert(self.cs.new_channel(var_type.to_owned(), None));
+        let expr = match var_type {
+            VarType::Unit => CsExpr::unit(pg_id),
+            VarType::Boolean => CsExpr::from_formula(CsFormula::new(pg_id, *var)?),
+            VarType::Integer => CsExpr::from_expr(CsIntExpr::new_var(*var)),
+            // TODO: This probably requires a recursive function.
+            VarType::Product(_) => todo!(),
+        };
+        let pass_param = self
+            .cs
+            .new_communication(pg_id, param_chn, Message::Send(expr))?;
+        let param_loc = next_loc;
+        let next_loc = self.cs.new_location(pg_id)?;
+        self.cs.add_transition(
+            pg_id,
+            param_loc,
+            pass_param,
+            next_loc,
+            CsFormula::new_true(pg_id),
+        )?;
+        Ok(next_loc)
     }
 
     fn build(self) -> CsModel {
