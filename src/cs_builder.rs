@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ops::Index, panic::Location};
+use std::collections::HashMap;
 
 use crate::{parser::vocabulary::*, CsAction};
 use anyhow::Ok;
@@ -61,20 +61,12 @@ impl Sc2CsVisitor {
         // info!("build tick generator");
         // model.build_tick_generator(&parser.task_plan)?;
 
-        info!("Visit skill list");
-        for (id, declaration) in parser.skill_list.iter() {
-            info!("Visit skill {id}");
+        info!("Visit process list");
+        for (id, declaration) in parser.process_list.iter() {
+            info!("Visit process {id}");
             match &declaration.moc {
                 MoC::Fsm(fsm) => model.build_fsm(fsm)?,
                 MoC::Bt(bt) => model.build_bt(bt)?,
-            }
-        }
-
-        info!("Visit component list");
-        for (id, declaration) in parser.component_list.iter() {
-            if let MoC::Fsm(fsm) = &declaration.moc {
-                info!("Visit component {id}");
-                model.build_fsm(fsm)?;
             }
         }
 

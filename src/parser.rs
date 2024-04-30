@@ -74,7 +74,7 @@ enum ConvinceTag {
     Model,
     Properties,
     ComponentList,
-    SkillList,
+    ProcessList,
 }
 
 impl From<ConvinceTag> for &'static str {
@@ -84,36 +84,17 @@ impl From<ConvinceTag> for &'static str {
             ConvinceTag::Model => TAG_MODEL,
             ConvinceTag::Properties => TAG_PROPERTIES,
             ConvinceTag::ComponentList => TAG_COMPONENT_LIST,
-            ConvinceTag::SkillList => TAG_SKILL_LIST,
+            ConvinceTag::ProcessList => TAG_PROCESS_LIST,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct Parser {
-    pub(crate) skill_list: HashMap<String, Skill>,
-    pub(crate) component_list: HashMap<String, Component>,
+    pub(crate) process_list: HashMap<String, Process>,
     // interfaces: PathBuf,
     // types: PathBuf,
     // properties: PathBuf,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum SkillType {
-    Action,
-    Condition,
-}
-
-impl TryFrom<String> for SkillType {
-    type Error = ParserErrorType;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match value.as_str() {
-            OPT_ACTION => Ok(SkillType::Action),
-            OPT_CONDITION => Ok(SkillType::Condition),
-            _ => Err(ParserErrorType::UnknownSkillType(value)),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -123,21 +104,14 @@ pub enum MoC {
 }
 
 #[derive(Debug)]
-pub struct Skill {
-    pub(crate) skill_type: Option<SkillType>,
-    pub(crate) moc: MoC,
-}
-
-#[derive(Debug)]
-pub struct Component {
+pub struct Process {
     pub(crate) moc: MoC,
 }
 
 impl Parser {
     pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Parser> {
         let mut spec = Parser {
-            skill_list: HashMap::new(),
-            component_list: HashMap::new(),
+            process_list: HashMap::new(),
         };
         let mut buf = Vec::new();
         let mut stack = Vec::new();
@@ -159,10 +133,10 @@ impl Parser {
                         {
                             stack.push(ConvinceTag::Model);
                         }
-                        TAG_SKILL_LIST
+                        TAG_PROCESS_LIST
                             if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
                         {
-                            stack.push(ConvinceTag::SkillList);
+                            stack.push(ConvinceTag::ProcessList);
                         }
                         TAG_PROPERTIES
                             if stack
@@ -170,11 +144,6 @@ impl Parser {
                                 .is_some_and(|tag| *tag == ConvinceTag::Specification) =>
                         {
                             stack.push(ConvinceTag::Properties);
-                        }
-                        TAG_COMPONENT_LIST
-                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
-                        {
-                            stack.push(ConvinceTag::ComponentList);
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -202,19 +171,12 @@ impl Parser {
                     trace!("'{tag_name}' empty tag");
                     // let tag_name = ConvinceTag::from(tag_name.as_str());
                     match tag_name {
-                        TAG_SKILL
+                        TAG_PROCESS
                             if stack
                                 .last()
-                                .is_some_and(|tag| *tag == ConvinceTag::SkillList) =>
+                                .is_some_and(|tag| *tag == ConvinceTag::ProcessList) =>
                         {
-                            spec.parse_skill(tag, reader)?;
-                        }
-                        TAG_COMPONENT_DECLARATION
-                            if stack
-                                .last()
-                                .is_some_and(|tag| *tag == ConvinceTag::ComponentList) =>
-                        {
-                            spec.parse_comp_declaration(tag, reader)?;
+                            spec.parse_process(tag, reader)?;
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -254,13 +216,12 @@ impl Parser {
         cs.build()
     }
 
-    fn parse_skill<R: BufRead>(
+    fn parse_process<R: BufRead>(
         &mut self,
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
     ) -> anyhow::Result<()> {
-        let mut skill_id: Option<String> = None;
-        let mut skill_type: Option<String> = None;
+        let mut process_id: Option<String> = None;
         let mut moc: Option<String> = None;
         let mut path: Option<String> = None;
         for attr in tag
@@ -269,10 +230,7 @@ impl Parser {
         {
             match str::from_utf8(attr.key.as_ref())? {
                 ATTR_ID => {
-                    skill_id = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                ATTR_TYPE => {
-                    skill_type = Some(String::from_utf8(attr.value.into_owned())?);
+                    process_id = Some(String::from_utf8(attr.value.into_owned())?);
                 }
                 ATTR_MOC => {
                     moc = Some(String::from_utf8(attr.value.into_owned())?);
@@ -289,11 +247,10 @@ impl Parser {
                 }
             }
         }
-        let skill_id = skill_id.ok_or(anyhow!(ParserError(
+        let process_id = process_id.ok_or(anyhow!(ParserError(
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_ID.to_string())
         )))?;
-        let skill_type = skill_type.map(SkillType::try_from).transpose()?;
         let path = path.ok_or(anyhow!(ParserError(
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_PATH.to_string())
@@ -318,80 +275,9 @@ impl Parser {
             }
             _ => todo!(),
         };
-        let skill = Skill { skill_type, moc };
-        // Here it should be checked that no skill was already in the list under the same name
-        self.skill_list.insert(skill_id, skill);
-        Ok(())
-    }
-
-    fn parse_comp_declaration<R: BufRead>(
-        &mut self,
-        tag: events::BytesStart<'_>,
-        reader: &mut Reader<R>,
-    ) -> anyhow::Result<()> {
-        let mut comp_id: Option<String> = None;
-        let mut moc: Option<String> = None;
-        let mut path: Option<String> = None;
-        for attr in tag
-            .attributes()
-            .collect::<Result<Vec<Attribute>, AttrError>>()?
-        {
-            match str::from_utf8(attr.key.as_ref())? {
-                ATTR_ID => {
-                    comp_id = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                ATTR_MOC => {
-                    moc = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                ATTR_PATH => {
-                    path = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                key => {
-                    error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError(
-                        reader.buffer_position(),
-                        ParserErrorType::UnknownKey(key.to_owned()),
-                    )));
-                }
-            }
-        }
-        let comp_id = comp_id.ok_or(anyhow!(ParserError(
-            reader.buffer_position(),
-            ParserErrorType::MissingAttr(ATTR_ID.to_string())
-        )))?;
-        let path = path.ok_or(anyhow!(ParserError(
-            reader.buffer_position(),
-            ParserErrorType::MissingAttr(ATTR_PATH.to_string())
-        )))?;
-        let path = PathBuf::from(path);
-        let moc = moc.ok_or(anyhow!(ParserError(
-            reader.buffer_position(),
-            ParserErrorType::MissingAttr(ATTR_MOC.to_string())
-        )))?;
-        let path = PathBuf::from(path);
-        let moc = match moc.as_str() {
-            "fsm" => {
-                info!("creating reader from file {0}", path.display());
-                let mut reader = Reader::from_file(path)?;
-                let fsm = Fsm::parse_skill(&mut reader)?;
-                MoC::Fsm(fsm)
-            }
-            "bt" => {
-                info!("creating reader from file {0}", path.display());
-                let mut reader = Reader::from_file(path)?;
-                let bt = Bt::parse_skill(&mut reader)?.pop().unwrap();
-                MoC::Bt(bt)
-            }
-            _ => {
-                return Err(anyhow!(ParserError(
-                    reader.buffer_position(),
-                    ParserErrorType::UnknownVal(moc.to_owned())
-                )))
-            }
-        };
-        let component = Component { moc };
-        // Here it should be checked that no component was already in the list under the same name
-        self.component_list.insert(comp_id.to_owned(), component);
+        let process = Process { moc };
+        // Here it should be checked that no process was already in the list under the same name
+        self.process_list.insert(process_id, process);
         Ok(())
     }
 }

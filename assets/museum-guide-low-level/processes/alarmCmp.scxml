@@ -8,7 +8,7 @@
   <state id="alarm">
   	<!-- Event is raised by invoking interface function of same name -->
     <transition event="sendAlarmCall" target="alarm">
-      <send event="sendAlarmReturn" targetexpr="_event.origin">
+      <send event="sendAlarmReturn" targetexpr="_event.origin"/>
     </transition>
   </state>
 </scxml>
