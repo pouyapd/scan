@@ -1,5 +1,7 @@
 mod bt;
 mod fsm;
+mod omg_types;
+
 pub(crate) mod vocabulary;
 
 use std::collections::HashMap;
@@ -17,6 +19,7 @@ use thiserror::Error;
 
 pub use self::bt::*;
 pub use self::fsm::*;
+use self::omg_types::OmgTypes;
 use self::vocabulary::*;
 use super::model::{ChannelSystem, ChannelSystemBuilder, CsError};
 
@@ -73,8 +76,9 @@ enum ConvinceTag {
     Specification,
     Model,
     Properties,
-    ComponentList,
     ProcessList,
+    DataTypeList,
+    Enumeration(String),
 }
 
 impl From<ConvinceTag> for &'static str {
@@ -83,8 +87,9 @@ impl From<ConvinceTag> for &'static str {
             ConvinceTag::Specification => TAG_SPECIFICATION,
             ConvinceTag::Model => TAG_MODEL,
             ConvinceTag::Properties => TAG_PROPERTIES,
-            ConvinceTag::ComponentList => TAG_COMPONENT_LIST,
             ConvinceTag::ProcessList => TAG_PROCESS_LIST,
+            ConvinceTag::DataTypeList => TAG_DATA_TYPE_LIST,
+            ConvinceTag::Enumeration(_) => TAG_ENUMERATION,
         }
     }
 }
@@ -92,8 +97,7 @@ impl From<ConvinceTag> for &'static str {
 #[derive(Debug)]
 pub struct Parser {
     pub(crate) process_list: HashMap<String, Process>,
-    // interfaces: PathBuf,
-    // types: PathBuf,
+    pub(crate) types: OmgTypes,
     // properties: PathBuf,
 }
 
@@ -112,6 +116,7 @@ impl Parser {
     pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Parser> {
         let mut spec = Parser {
             process_list: HashMap::new(),
+            types: OmgTypes::new(),
         };
         let mut buf = Vec::new();
         let mut stack = Vec::new();
@@ -177,6 +182,9 @@ impl Parser {
                                 .is_some_and(|tag| *tag == ConvinceTag::ProcessList) =>
                         {
                             spec.parse_process(tag, reader)?;
+                        }
+                        TAG_TYPES if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) => {
+                            spec.parse_types(tag, reader)?;
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -278,6 +286,40 @@ impl Parser {
         let process = Process { moc };
         // Here it should be checked that no process was already in the list under the same name
         self.process_list.insert(process_id, process);
+        Ok(())
+    }
+
+    fn parse_types<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        reader: &mut Reader<R>,
+    ) -> anyhow::Result<()> {
+        let mut path: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_PATH => {
+                    path = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let path = path.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_PATH.to_string())
+        )))?;
+        let path = PathBuf::from(path);
+        info!("creating reader from file {0}", path.display());
+        let mut reader = Reader::from_file(path)?;
+        self.types.parse(&mut reader)?;
         Ok(())
     }
 }

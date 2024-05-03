@@ -1,6 +1,11 @@
 pub const TAG_SPECIFICATION: &str = "specification";
 pub const TAG_MODEL: &str = "model";
 pub const TAG_PROPERTIES: &str = "properties";
+// pub const TAG_TYPE: &str = "type";
+pub const TAG_TYPES: &str = "types";
+pub const TAG_DATA_TYPE_LIST: &str = "dataTypeList";
+pub const TAG_ENUMERATION: &str = "enumeration";
+pub const TAG_LABEL: &str = "label";
 // pub const TAG_BLACK_BOARD: &str = "blackBoard";
 pub const ATTR_TASK_PLAN: &str = "taskPlan";
 // pub const TAG_BT_TO_SKILL_INTERFACE: &str = "btToSkillInterface";

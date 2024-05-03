@@ -94,9 +94,9 @@ NOTE: alias for string
   <!-- This is the only non-native data type required in this example -->
 
   <enumeration id="TickResponse">
-    <label id="RUNNING">
-    <label id="SUCCESS">
-    <label id="FAILURE">
+    <label id="RUNNING"/>
+    <label id="SUCCESS"/>
+    <label id="FAILURE"/>
   </enumeration>
 
 </dataTypeList>

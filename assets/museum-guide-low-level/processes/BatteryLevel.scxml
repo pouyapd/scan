@@ -5,22 +5,28 @@
     name="BatteryLevel" 
     initial="idle">
 
+    <datamodel>
+        <!-- TYPE origin:URI -->
+        <data id="origin"/>
+    </datamodel>
+        
     <state id="idle">
         <!-- This skill is a condition so there is no halt -->
         <transition event="tickCall" target="running">
+            <assign location="origin" expr="_event.origin"/>
             <send event="readLevelCall" target="readLevelTopic"/>
         </transition>
     </state>
 
     <state id="running">
         <transition event="readLevelReturn" target="idle">
-            <if cond="level &gt; 30">
-                <send event="tickReturn" targetexpr="BehaviorTree" >
+            <if cond="_event.data.result &gt; 30">
+                <send event="tickReturn" targetexpr="origin" >
                     <!-- TYPE result:TickResponse -->
                     <param name="result" expr="SUCCESS"/>
                 </send>
             <else/>
-                <send event="tickReturn" targetexpr="BehaviorTree" >
+                <send event="tickReturn" targetexpr="origin" >
                     <!-- TYPE result:TickResponse -->
                     <param name="result" expr="FAILURE"/>
                 </send>
