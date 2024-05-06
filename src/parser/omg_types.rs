@@ -18,15 +18,17 @@ use crate::{
     ParserError, ParserErrorType,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum OmgType {
+    Boolean,
+    Int32,
     Structure(),
     Enumeration(Vec<String>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OmgTypes {
-    types: HashMap<String, OmgType>,
+    pub(crate) types: HashMap<String, OmgType>,
 }
 
 impl OmgTypes {

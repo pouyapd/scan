@@ -7,7 +7,7 @@
 
   <datamodel>
     <!-- TYPE origin:URI -->
-    <data name="origin"/>
+    <data id="origin"/>
   </datamodel>
 
   <state id="idle">

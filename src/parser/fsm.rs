@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::io::BufRead;
+use std::fmt::Debug;
+use std::io::{BufRead, Read};
 use std::str;
 
 use anyhow::anyhow;
@@ -9,7 +10,7 @@ use quick_xml::events::attributes::{AttrError, Attribute};
 use quick_xml::{events, events::Event, Reader};
 
 use super::vocabulary::*;
-use crate::{Expression, ParserError, ParserErrorType};
+use crate::{ParserError, ParserErrorType};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScxmlTag {
@@ -20,7 +21,6 @@ enum ScxmlTag {
     OnEntry,
     OnExit,
     Send,
-    // Data,
 }
 
 impl From<ScxmlTag> for &'static str {
@@ -33,7 +33,6 @@ impl From<ScxmlTag> for &'static str {
             ScxmlTag::OnEntry => TAG_ONENTRY,
             ScxmlTag::OnExit => TAG_ONEXIT,
             ScxmlTag::Send => TAG_SEND,
-            // ScxmlTag::Data => TAG_DATA,
         }
     }
 }
@@ -67,7 +66,7 @@ pub struct Transition {
 pub enum Executable {
     Assign {
         location: String,
-        expr: boa_ast::expression::Expression,
+        expr: boa_ast::Expression,
     },
     Raise {
         event: String,
@@ -82,19 +81,20 @@ pub enum Executable {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub(crate) name: String,
-    pub(crate) location: String,
+    pub(crate) omg_type: String,
+    pub(crate) expr: boa_ast::Expression,
 }
 
 #[derive(Debug, Clone)]
 pub struct Fsm {
     pub(crate) id: String,
     pub(crate) initial: String,
-    pub(crate) datamodel: HashMap<String, ()>,
+    pub(crate) datamodel: HashMap<String, (String, Option<boa_ast::Expression>)>,
     pub(crate) states: HashMap<String, State>,
 }
 
 impl Fsm {
-    pub(super) fn parse_skill<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Self> {
+    pub(super) fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Self> {
         let mut fsm = Fsm {
             id: String::new(),
             initial: String::new(),
@@ -103,6 +103,7 @@ impl Fsm {
         };
         let mut buf = Vec::new();
         let mut stack: Vec<ScxmlTag> = Vec::new();
+        let mut type_annotation: Option<(String, String)> = None;
         info!("parsing fsm");
         loop {
             match reader.read_event_into(&mut buf)? {
@@ -187,7 +188,11 @@ impl Fsm {
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::Datamodel)) =>
                         {
-                            // TODO: implement 'data' tag
+                            let (ident, omg_type) = type_annotation.take().ok_or(ParserError(
+                                reader.buffer_position(),
+                                ParserErrorType::NoTypeAnnotation,
+                            ))?;
+                            fsm.parse_data(tag, ident, omg_type, reader)?;
                         }
                         TAG_TRANSITION
                             if stack
@@ -209,7 +214,11 @@ impl Fsm {
                         TAG_PARAM
                             if stack.iter().rev().any(|tag| matches!(*tag, ScxmlTag::Send)) =>
                         {
-                            fsm.parse_param(tag, reader, &stack)?;
+                            let (ident, omg_type) = type_annotation.take().ok_or(ParserError(
+                                reader.buffer_position(),
+                                ParserErrorType::NoTypeAnnotation,
+                            ))?;
+                            fsm.parse_param(tag, ident, omg_type, reader, &stack)?;
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -219,7 +228,15 @@ impl Fsm {
                     }
                 }
                 Event::Text(_) => continue,
-                Event::Comment(_) => continue,
+                Event::Comment(comment) => {
+                    // Convert comment into string (is there no easier way?)
+                    let comment = String::from_utf8(
+                        comment
+                            .bytes()
+                            .collect::<Result<Vec<u8>, std::io::Error>>()?,
+                    )?;
+                    type_annotation = fsm.parse_comment(comment)?;
+                }
                 Event::CData(_) => todo!(),
                 Event::Decl(_) => todo!(), // parser.parse_xml_declaration(tag)?,
                 Event::PI(_) => todo!(),
@@ -582,11 +599,14 @@ impl Fsm {
     fn parse_param<R: BufRead>(
         &mut self,
         tag: events::BytesStart<'_>,
+        ident: String,
+        omg_type: String,
         reader: &mut Reader<R>,
         stack: &[ScxmlTag],
     ) -> anyhow::Result<()> {
         let mut name: Option<String> = None;
         let mut location: Option<String> = None;
+        let mut expr: Option<String> = None;
         for attr in tag
             .attributes()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
@@ -599,8 +619,7 @@ impl Fsm {
                     location = Some(String::from_utf8(attr.value.into_owned())?);
                 }
                 ATTR_EXPR => {
-                    // TODO: implement target expressions
-                    return Ok(());
+                    expr = Some(String::from_utf8(attr.value.into_owned())?);
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_TRANSITION}");
@@ -613,13 +632,41 @@ impl Fsm {
         }
         let name = name.ok_or(anyhow!(ParserError(
             reader.buffer_position(),
-            ParserErrorType::MissingAttr(ATTR_EVENT.to_string())
+            ParserErrorType::MissingAttr(ATTR_NAME.to_string())
         )))?;
-        let location = location.ok_or(anyhow!(ParserError(
+        if name != ident {
+            return Err(anyhow!(ParserError(
+                reader.buffer_position(),
+                ParserErrorType::NoTypeAnnotation,
+            )));
+        }
+        let param;
+        let expr = expr.or(location).ok_or(ParserError(
             reader.buffer_position(),
-            ParserErrorType::MissingAttr(ATTR_TARGET.to_string())
-        )))?;
-        let param = Param { name, location };
+            ParserErrorType::MissingExpr,
+        ))?;
+        let mut context = boa_engine::Context::default();
+        if let StatementListItem::Statement(boa_ast::Statement::Expression(expr)) =
+            boa_parser::Parser::new(boa_parser::Source::from_bytes(expr.as_bytes()))
+                .parse_script(&mut context.interner_mut())
+                .expect("hope this works")
+                .statements()
+                .first()
+                .expect("hopefully there is a statement")
+                .to_owned()
+        {
+            // Full parameter with either location or expression as argument
+            param = Param {
+                name,
+                omg_type,
+                expr,
+            };
+        } else {
+            return Err(anyhow!(ParserError(
+                reader.buffer_position(),
+                ParserErrorType::EcmaScriptParsing,
+            )));
+        }
 
         // Find which `State` is being parsed.
         let state_id: &str = stack
@@ -685,5 +732,80 @@ impl Fsm {
             _ => panic!("non executable tag"),
         }
         Ok(())
+    }
+
+    fn parse_data<R: BufRead>(
+        &mut self,
+        tag: events::BytesStart<'_>,
+        ident: String,
+        omg_type: String,
+        reader: &Reader<R>,
+    ) -> anyhow::Result<()> {
+        let mut id: Option<String> = None;
+        let mut expr: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_ID => {
+                    id = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_EXPR => {
+                    expr = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key} in {TAG_DATA}");
+                    return Err(anyhow::Error::new(ParserError(
+                        reader.buffer_position(),
+                        ParserErrorType::UnknownKey(key.to_owned()),
+                    )));
+                }
+            }
+        }
+        let id = id.ok_or(anyhow!(ParserError(
+            reader.buffer_position(),
+            ParserErrorType::MissingAttr(ATTR_ID.to_string())
+        )))?;
+        // Check id is matching
+        if id != ident {
+            return Err(anyhow!(ParserError(
+                reader.buffer_position(),
+                ParserErrorType::NoTypeAnnotation,
+            )));
+        }
+        if let Some(expr) = expr {
+            let mut context = boa_engine::Context::default();
+            if let StatementListItem::Statement(boa_ast::Statement::Expression(expr)) =
+                boa_parser::Parser::new(boa_parser::Source::from_bytes(expr.as_bytes()))
+                    .parse_script(&mut context.interner_mut())
+                    .expect("hope this works")
+                    .statements()
+                    .first()
+                    .expect("hopefully there is a statement")
+                    .to_owned()
+            {
+                self.datamodel.insert(id, (omg_type, Some(expr)));
+            }
+        } else {
+            self.datamodel.insert(id, (omg_type, None));
+        }
+        Ok(())
+    }
+
+    fn parse_comment(&mut self, comment: String) -> anyhow::Result<Option<(String, String)>> {
+        let mut iter = comment.trim().split_whitespace();
+        let keyword = iter.next().ok_or(anyhow!("no keyword"))?;
+        if keyword == "TYPE" {
+            trace!("parsing TYPE magic comment");
+            let body = iter.next().ok_or(anyhow!("no body"))?;
+            let (ident, omg_type) = body
+                .split_once(':')
+                .ok_or(anyhow!("badly formatted type declaration"))?;
+            trace!("found ident: {ident}, type: {omg_type}");
+            Ok(Some((ident.to_string(), omg_type.to_string())))
+        } else {
+            Ok(None)
+        }
     }
 }

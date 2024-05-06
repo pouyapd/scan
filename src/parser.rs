@@ -19,7 +19,7 @@ use thiserror::Error;
 
 pub use self::bt::*;
 pub use self::fsm::*;
-use self::omg_types::OmgTypes;
+pub use self::omg_types::*;
 use self::vocabulary::*;
 use super::model::{ChannelSystem, ChannelSystemBuilder, CsError};
 
@@ -65,6 +65,8 @@ pub enum ParserErrorType {
     MissingBtRootNode,
     #[error("something went wrong parsing EcmaScript code")]
     EcmaScriptParsing,
+    #[error("required type annotation missing")]
+    NoTypeAnnotation,
 }
 
 #[derive(Error, Debug)]
@@ -272,7 +274,7 @@ impl Parser {
             "fsm" => {
                 info!("creating reader from file {0}", path.display());
                 let mut reader = Reader::from_file(path)?;
-                let fsm = Fsm::parse_skill(&mut reader)?;
+                let fsm = Fsm::parse(&mut reader)?;
                 MoC::Fsm(fsm)
             }
             "bt" => {

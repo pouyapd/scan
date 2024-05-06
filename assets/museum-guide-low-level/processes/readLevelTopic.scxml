@@ -16,7 +16,7 @@
 		</transition>
 		<transition event="readLevelCall" target="running">
 			<send event="readLevelReturn" targetexpr="_event.origin">
-				<!-- TYPE level:int32 -->
+				<!-- TYPE result:int32 -->
 				<param name="result" location="level" />
 			</send>
 		</transition>

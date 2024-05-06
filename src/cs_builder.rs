@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::{any::Any, collections::HashMap, str::FromStr};
 
-use crate::{parser::vocabulary::*, CsAction};
-use anyhow::Ok;
+use crate::{parser::vocabulary::*, CsAction, Val, Var};
+use anyhow::{anyhow, Ok};
 use log::{info, trace};
 
 use crate::{
@@ -22,6 +22,9 @@ pub struct CsModel {
 #[derive(Debug)]
 pub struct Sc2CsVisitor {
     cs: ChannelSystemBuilder,
+    // Represent OMG types
+    scan_types: HashMap<String, VarType>,
+    enums: HashMap<(String, String), Integer>,
     // Each State Chart has an associated Program Graph,
     // and an arbitrary, progressive index
     moc_ids: HashMap<String, usize>,
@@ -48,6 +51,8 @@ impl Sc2CsVisitor {
     pub fn visit(parser: Parser) -> anyhow::Result<CsModel> {
         let mut model = Sc2CsVisitor {
             cs: ChannelSystemBuilder::new(),
+            scan_types: HashMap::new(),
+            enums: HashMap::new(),
             // skill_ids: HashMap::new(),
             // component_ids: HashMap::new(),
             moc_ids: HashMap::new(),
@@ -58,8 +63,18 @@ impl Sc2CsVisitor {
             vars: HashMap::new(),
         };
 
-        // info!("build tick generator");
-        // model.build_tick_generator(&parser.task_plan)?;
+        // FIXME: Is there a better way? Const object?
+        model
+            .scan_types
+            .insert(String::from_str("int32").unwrap(), VarType::Integer);
+        model
+            .scan_types
+            .insert(String::from_str("URI").unwrap(), VarType::Integer);
+        model
+            .scan_types
+            .insert(String::from_str("Boolean").unwrap(), VarType::Boolean);
+
+        model.build_types(&parser.types)?;
 
         info!("Visit process list");
         for (id, declaration) in parser.process_list.iter() {
@@ -73,6 +88,25 @@ impl Sc2CsVisitor {
         let model = model.build();
 
         Ok(model)
+    }
+
+    fn build_types(&mut self, omg_types: &OmgTypes) -> anyhow::Result<()> {
+        for (name, omg_type) in omg_types.types.iter() {
+            let scan_type = match omg_type {
+                OmgType::Boolean => VarType::Boolean,
+                OmgType::Int32 => VarType::Integer,
+                OmgType::Structure() => todo!(),
+                OmgType::Enumeration(labels) => {
+                    for (idx, label) in labels.iter().enumerate() {
+                        self.enums
+                            .insert((name.to_owned(), label.to_owned()), idx as Integer);
+                    }
+                    VarType::Integer
+                }
+            };
+            self.scan_types.insert(name.to_owned(), scan_type);
+        }
+        Ok(())
     }
 
     fn get_event_idx(&mut self, id: &str) -> Integer {
@@ -107,62 +141,6 @@ impl Sc2CsVisitor {
             external_queue
         })
     }
-
-    /// Builds a simple Program Graph that sends TickCall events to the task plan,
-    /// and receives TickResponse values,
-    /// as long as the response is Running.
-    /// When it receives Success or Failure, it stops.
-    ///
-    /// Informal description of TickGenerator PG:
-    ///
-    // fn build_tick_generator(&mut self, task_plan: &str) -> anyhow::Result<()> {
-    //     let pg_id = self.cs.new_program_graph();
-    //     let send_tick_loc = self.cs.new_location(pg_id)?;
-    //     // Create tick event, if it does not exist already.
-    //     let tick_call_event = self.get_event_idx(TICK_CALL);
-    //     // Build external queue for task_plan, if it does not exist already.
-    //     let task_plan_external_queue = self.get_external_queue(task_plan);
-    //     // Send a tick to the task_plan.
-    //     let tick_task_plan = self.cs.new_communication(
-    //         pg_id,
-    //         task_plan_external_queue,
-    //         Message::Send(CsExpr::from_expr(CsIntExpr::new_const(
-    //             pg_id,
-    //             tick_call_event,
-    //         ))),
-    //     )?;
-    //     let wait_response_loc = self.cs.new_location(pg_id)?;
-    //     let tick_response = self.cs.new_var(pg_id, VarType::Integer)?;
-    //     // While system is Running, tick task plan.
-    //     self.cs.add_transition(
-    //         pg_id,
-    //         send_tick_loc,
-    //         tick_task_plan,
-    //         wait_response_loc,
-    //         CsFormula::eq(
-    //             CsIntExpr::new_var(tick_response),
-    //             CsIntExpr::new_const(pg_id, 0),
-    //         )?,
-    //     )?;
-
-    //     // Implement channel receiving the tick response.
-    //     // TODO: capacity should be Some(0), i.e., handshake.
-    //     let receive_tick_response_chn = self.get_external_queue(TICK_GENERATOR);
-    //     let receive_response = self.cs.new_communication(
-    //         pg_id,
-    //         receive_tick_response_chn,
-    //         Message::Receive(tick_response),
-    //     )?;
-    //     // Now the tick generator waits for response on its own channel
-    //     self.cs.add_transition(
-    //         pg_id,
-    //         wait_response_loc,
-    //         receive_response,
-    //         send_tick_loc,
-    //         CsFormula::new_true(pg_id),
-    //     )?;
-    //     Ok(())
-    // }
 
     // fn build_bt(&mut self, bt: &Bt) -> anyhow::Result<()> {
     //     trace!("build bt {}", bt.id);
@@ -632,6 +610,17 @@ impl Sc2CsVisitor {
         // Initialize fsm.
         let pg_id = self.get_moc_pgid(&fsm.id);
         let pg_idx = *self.moc_ids.get(&fsm.id).expect("should exist") as Integer;
+        // Initialize variables from datamodel
+        for (location, (type_name, expr)) in fsm.datamodel.iter() {
+            let scan_type = self
+                .scan_types
+                .get(type_name)
+                .ok_or(anyhow!("unknown type"))?;
+            let var = self.cs.new_var(pg_id, scan_type.to_owned())?;
+            self.vars
+                .insert((pg_id, location.to_owned()), (var, scan_type.to_owned()));
+            // TODO: initialize with expr!
+        }
         // Map fsm's state ids to corresponding CS's locations.
         let mut states = HashMap::new();
         let initial = self.cs.initial_location(pg_id)?;
@@ -920,8 +909,18 @@ impl Sc2CsVisitor {
                 Ok(next_loc)
             }
             Executable::Assign { location, expr } => {
-                // TODO
-                Ok(loc)
+                // Add a transition that perform the assignment via the effect of the `assign` action.
+                let (var, scan_type) = self
+                    .vars
+                    .get(&(pg_id, location.to_owned()))
+                    .ok_or(anyhow!("undefined variable"))?;
+                let assign = self.cs.new_action(pg_id)?;
+                let expr = self.expression(pg_id, expr, scan_type)?;
+                self.cs.add_effect(pg_id, assign, *var, expr)?;
+                let next_loc = self.cs.new_location(pg_id)?;
+                self.cs
+                    .add_transition(pg_id, loc, assign, next_loc, CsFormula::new_true(pg_id))?;
+                Ok(next_loc)
             }
         }
     }
@@ -934,21 +933,20 @@ impl Sc2CsVisitor {
         event_idx: i32,
         next_loc: CsLocation,
     ) -> Result<CsLocation, anyhow::Error> {
-        let (var, var_type) = self
-            .vars
-            .get(&(pg_id, param.location.to_owned()))
-            .expect("vars have already been parsed");
+        // Get param type.
+        let scan_type = self
+            .scan_types
+            .get(&param.omg_type)
+            .cloned()
+            .ok_or(anyhow!("Undefined type"))?;
+        // Build expression from ECMAScript expression.
+        let expr = self.expression(pg_id, &param.expr, &scan_type)?;
+        // Create channel for parameter passing.
         let param_chn = *self
             .parameters
             .entry((pg_id, target_id, event_idx, param.name.to_owned()))
-            .or_insert(self.cs.new_channel(var_type.to_owned(), None));
-        let expr = match var_type {
-            VarType::Unit => CsExpr::unit(pg_id),
-            VarType::Boolean => CsExpr::from_formula(CsFormula::new(pg_id, *var)?),
-            VarType::Integer => CsExpr::from_expr(CsIntExpr::new_var(*var)),
-            // TODO: This probably requires a recursive function.
-            VarType::Product(_) => todo!(),
-        };
+            .or_insert(self.cs.new_channel(scan_type, None));
+
         let pass_param = self
             .cs
             .new_communication(pg_id, param_chn, Message::Send(expr))?;
@@ -962,6 +960,60 @@ impl Sc2CsVisitor {
             CsFormula::new_true(pg_id),
         )?;
         Ok(next_loc)
+    }
+
+    fn expression(
+        &self,
+        pg_id: PgId,
+        expr: &boa_ast::Expression,
+        scan_type: &VarType,
+    ) -> anyhow::Result<CsExpr> {
+        // match expr {
+        //     boa_ast::Expression::This => todo!(),
+        //     boa_ast::Expression::Identifier(ident) => {
+        //         ident.
+        //     },
+        //     boa_ast::Expression::Literal(_) => todo!(),
+        //     boa_ast::Expression::RegExpLiteral(_) => todo!(),
+        //     boa_ast::Expression::ArrayLiteral(_) => todo!(),
+        //     boa_ast::Expression::ObjectLiteral(_) => todo!(),
+        //     boa_ast::Expression::Spread(_) => todo!(),
+        //     boa_ast::Expression::Function(_) => todo!(),
+        //     boa_ast::Expression::ArrowFunction(_) => todo!(),
+        //     boa_ast::Expression::AsyncArrowFunction(_) => todo!(),
+        //     boa_ast::Expression::Generator(_) => todo!(),
+        //     boa_ast::Expression::AsyncFunction(_) => todo!(),
+        //     boa_ast::Expression::AsyncGenerator(_) => todo!(),
+        //     boa_ast::Expression::Class(_) => todo!(),
+        //     boa_ast::Expression::TemplateLiteral(_) => todo!(),
+        //     boa_ast::Expression::PropertyAccess(_) => todo!(),
+        //     boa_ast::Expression::New(_) => todo!(),
+        //     boa_ast::Expression::Call(_) => todo!(),
+        //     boa_ast::Expression::SuperCall(_) => todo!(),
+        //     boa_ast::Expression::ImportCall(_) => todo!(),
+        //     boa_ast::Expression::Optional(_) => todo!(),
+        //     boa_ast::Expression::TaggedTemplate(_) => todo!(),
+        //     boa_ast::Expression::NewTarget => todo!(),
+        //     boa_ast::Expression::ImportMeta => todo!(),
+        //     boa_ast::Expression::Assign(_) => todo!(),
+        //     boa_ast::Expression::Unary(_) => todo!(),
+        //     boa_ast::Expression::Update(_) => todo!(),
+        //     boa_ast::Expression::Binary(_) => todo!(),
+        //     boa_ast::Expression::BinaryInPrivate(_) => todo!(),
+        //     boa_ast::Expression::Conditional(_) => todo!(),
+        //     boa_ast::Expression::Await(_) => todo!(),
+        //     boa_ast::Expression::Yield(_) => todo!(),
+        //     boa_ast::Expression::Parenthesized(_) => todo!(),
+        //     _ => todo!(),
+        // }
+        // FIXME: dummy implementation
+        let expr = match scan_type {
+            VarType::Unit => todo!(),
+            VarType::Boolean => CsExpr::from_formula(CsFormula::new_true(pg_id)),
+            VarType::Integer => CsExpr::from_expr(CsIntExpr::new_const(pg_id, 0)),
+            VarType::Product(_) => todo!(),
+        };
+        Ok(expr)
     }
 
     fn build(self) -> CsModel {
