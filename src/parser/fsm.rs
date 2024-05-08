@@ -4,7 +4,7 @@ use std::io::{BufRead, Read};
 use std::str;
 
 use anyhow::anyhow;
-use boa_ast::StatementListItem;
+use boa_ast::{Expression as BoaExpression, StatementListItem};
 use log::{error, info, trace, warn};
 use quick_xml::events::attributes::{AttrError, Attribute};
 use quick_xml::{events, events::Event, Reader};
@@ -82,15 +82,16 @@ pub enum Executable {
 pub struct Param {
     pub(crate) name: String,
     pub(crate) omg_type: String,
-    pub(crate) expr: boa_ast::Expression,
+    pub(crate) expr: BoaExpression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Fsm {
     pub(crate) id: String,
     pub(crate) initial: String,
     pub(crate) datamodel: HashMap<String, (String, Option<boa_ast::Expression>)>,
     pub(crate) states: HashMap<String, State>,
+    pub(crate) interner: boa_interner::Interner,
 }
 
 impl Fsm {
@@ -100,6 +101,7 @@ impl Fsm {
             initial: String::new(),
             datamodel: HashMap::new(),
             states: HashMap::new(),
+            interner: boa_interner::Interner::new(),
         };
         let mut buf = Vec::new();
         let mut stack: Vec<ScxmlTag> = Vec::new();
@@ -376,10 +378,9 @@ impl Fsm {
         // FIXME: This is really bad code!
         let transition;
         if let Some(cond) = cond {
-            let mut context = boa_engine::Context::default();
             if let StatementListItem::Statement(boa_ast::Statement::Expression(cond)) =
                 boa_parser::Parser::new(boa_parser::Source::from_bytes(cond.as_bytes()))
-                    .parse_script(&mut context.interner_mut())
+                    .parse_script(&mut self.interner)
                     .expect("hope this works")
                     .statements()
                     .first()
@@ -534,10 +535,9 @@ impl Fsm {
             ParserErrorType::MissingAttr(ATTR_EXPR.to_string())
         )))?;
         // FIXME: This is really bad code!
-        let mut context = boa_engine::Context::default();
         if let StatementListItem::Statement(boa_ast::Statement::Expression(expr)) =
             boa_parser::Parser::new(boa_parser::Source::from_bytes(expr.as_bytes()))
-                .parse_script(&mut context.interner_mut())
+                .parse_script(&mut self.interner)
                 .expect("hope this works")
                 .statements()
                 .first()
@@ -645,10 +645,9 @@ impl Fsm {
             reader.buffer_position(),
             ParserErrorType::MissingExpr,
         ))?;
-        let mut context = boa_engine::Context::default();
         if let StatementListItem::Statement(boa_ast::Statement::Expression(expr)) =
             boa_parser::Parser::new(boa_parser::Source::from_bytes(expr.as_bytes()))
-                .parse_script(&mut context.interner_mut())
+                .parse_script(&mut self.interner)
                 .expect("hope this works")
                 .statements()
                 .first()
@@ -775,10 +774,9 @@ impl Fsm {
             )));
         }
         if let Some(expr) = expr {
-            let mut context = boa_engine::Context::default();
             if let StatementListItem::Statement(boa_ast::Statement::Expression(expr)) =
                 boa_parser::Parser::new(boa_parser::Source::from_bytes(expr.as_bytes()))
-                    .parse_script(&mut context.interner_mut())
+                    .parse_script(&mut self.interner)
                     .expect("hope this works")
                     .statements()
                     .first()

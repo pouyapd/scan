@@ -61,6 +61,8 @@ pub enum Formula {
     Not(Box<Formula>),
     Prop(Var),
     Equal(IntExpr, IntExpr),
+    Greater(IntExpr, IntExpr),
+    GreaterEq(IntExpr, IntExpr),
     Less(IntExpr, IntExpr),
     LessEq(IntExpr, IntExpr),
     True,
@@ -401,6 +403,8 @@ impl ProgramGraph {
                 }
             }
             Formula::Equal(lhs, rhs) => self.eval_expr(lhs) == self.eval_expr(rhs),
+            Formula::Greater(lhs, rhs) => self.eval_expr(lhs) > self.eval_expr(rhs),
+            Formula::GreaterEq(lhs, rhs) => self.eval_expr(lhs) >= self.eval_expr(rhs),
             Formula::Less(lhs, rhs) => self.eval_expr(lhs) < self.eval_expr(rhs),
             Formula::LessEq(lhs, rhs) => self.eval_expr(lhs) <= self.eval_expr(rhs),
             Formula::True => true,

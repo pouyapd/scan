@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap, str::FromStr};
+use std::{any::Any, collections::HashMap, fmt::Debug, str::FromStr};
 
 use crate::{parser::vocabulary::*, CsAction, Val, Var};
 use anyhow::{anyhow, Ok};
@@ -140,6 +140,11 @@ impl Sc2CsVisitor {
             self.external_queues.insert(id.to_owned(), external_queue);
             external_queue
         })
+    }
+
+    fn get_origin_channel(&mut self, pg_id: PgId) -> Channel {
+        let ch_name = format!("BLDR:{pg_id:?}:origin");
+        self.get_external_queue(&ch_name)
     }
 
     // fn build_bt(&mut self, bt: &Bt) -> anyhow::Result<()> {
@@ -610,6 +615,9 @@ impl Sc2CsVisitor {
         // Initialize fsm.
         let pg_id = self.get_moc_pgid(&fsm.id);
         let pg_idx = *self.moc_ids.get(&fsm.id).expect("should exist") as Integer;
+        // Initial location of Program Graph.
+        let initial_loc = self.cs.initial_location(pg_id)?;
+        let initialize = self.cs.new_action(pg_id)?;
         // Initialize variables from datamodel
         for (location, (type_name, expr)) in fsm.datamodel.iter() {
             let scan_type = self
@@ -619,14 +627,27 @@ impl Sc2CsVisitor {
             let var = self.cs.new_var(pg_id, scan_type.to_owned())?;
             self.vars
                 .insert((pg_id, location.to_owned()), (var, scan_type.to_owned()));
-            // TODO: initialize with expr!
+            // Initialize variable with `expr`, if any, by adding it as effect of `initialize` action.
+            if let Some(expr) = expr {
+                let expr = self.expression(pg_id, expr, &fsm.interner)?;
+                self.cs.add_effect(pg_id, initialize, var, expr)?;
+            }
         }
+        // Transition initializing datamodel variables.
+        // After initializing datamodel, transition to location representing point-of-entry of initial state of State Chart.
+        let initial_state = self.cs.new_location(pg_id)?;
+        self.cs.add_transition(
+            pg_id,
+            initial_loc,
+            initialize,
+            initial_state,
+            CsFormula::new_true(pg_id),
+        )?;
         // Map fsm's state ids to corresponding CS's locations.
         let mut states = HashMap::new();
-        let initial = self.cs.initial_location(pg_id)?;
         // Conventionally, the entry-point for a state is a location associated to the id of the state.
         // In particular, the id of the initial state of the fsm has to correspond to the initial location of the program graph.
-        states.insert(fsm.initial.to_owned(), initial);
+        states.insert(fsm.initial.to_owned(), initial_state);
         // Var representing the current event
         let current_event = self.cs.new_var(pg_id, VarType::Integer)?;
         // Variable that will store origin of last processed event.
@@ -673,8 +694,14 @@ impl Sc2CsVisitor {
             for executable in state.on_entry.iter() {
                 // Each executable content attaches suitable transitions to the point-of-entry location
                 // and returns the target of such transitions as updated point-of-entry location.
-                onentry_loc =
-                    self.add_executable(executable, pg_id, pg_idx, int_queue, onentry_loc)?;
+                onentry_loc = self.add_executable(
+                    executable,
+                    pg_id,
+                    pg_idx,
+                    int_queue,
+                    onentry_loc,
+                    &fsm.interner,
+                )?;
             }
 
             // Location where eventless/NULL transitions activate
@@ -752,21 +779,34 @@ impl Sc2CsVisitor {
                 let exec_transition = self.cs.new_action(pg_id)?;
                 // Location corresponding to verifying the transition is not active and moving to next one.
                 let next_trans_loc = self.cs.new_location(pg_id)?;
+                // Condition activating the transition.
+                // It has to be parsed/built as a Boolean expression.
+                let cond: Option<CsFormula> = if let Some(cond) = &transition.cond {
+                    let cond = self.expression(pg_id, cond, &fsm.interner)?;
+                    Some(
+                        cond.try_into()
+                            .expect("cond was built as a Boolean expression"),
+                    )
+                } else {
+                    None
+                };
                 // Guard for transition.
                 // Has to be defined depending on the type of transition, etc...
                 let guard;
-                // TODO: implement guards
-                // TODO: add effects
-
                 // Proceed on whether the transition is eventless or activated by event.
                 if let Some(event) = &transition.event {
                     // Create tick event, if it does not exist already.
                     let event_idx = self.get_event_idx(event);
                     // Check if the current event (internal or external) corresponds to the event activating the transition.
-                    guard = CsFormula::eq(
+                    let event_match = CsFormula::eq(
                         CsIntExpr::new_var(current_event),
                         CsIntExpr::new_const(pg_id, event_idx),
                     )?;
+                    guard = if let Some(cond) = cond {
+                        CsFormula::and(event_match.clone(), cond).expect("formulae in same PG")
+                    } else {
+                        event_match
+                    };
                     // Check this transition after the other eventful transitions.
                     check_trans_loc = eventful_trans;
                     // Move location of next eventful transitions to a new location.
@@ -774,7 +814,7 @@ impl Sc2CsVisitor {
                 } else {
                     // // NULL (unnamed) event transition
                     // No event needs to happen in order to trigger this transition.
-                    guard = CsFormula::new_true(pg_id);
+                    guard = cond.unwrap_or_else(|| CsFormula::new_true(pg_id));
                     // Check this transition after the other eventless transitions.
                     check_trans_loc = null_trans;
                     // Move location of next eventless transitions to a new location.
@@ -790,11 +830,20 @@ impl Sc2CsVisitor {
                     exec_trans_loc,
                     guard.to_owned(),
                 )?;
+                // Before executing executable content, we need to load the event's origin and parameters
+                // This is done as an effect
+
                 // First execute the executable content of the state's `on_exit` tag,
                 // then that of the `transition` tag.
                 for exec in state.on_exit.iter().chain(transition.effects.iter()) {
-                    exec_trans_loc =
-                        self.add_executable(exec, pg_id, pg_idx, int_queue, exec_trans_loc)?;
+                    exec_trans_loc = self.add_executable(
+                        exec,
+                        pg_id,
+                        pg_idx,
+                        int_queue,
+                        exec_trans_loc,
+                        &fsm.interner,
+                    )?;
                 }
                 // Transitioning to the target state/location.
                 // At this point, the transition cannot be stopped so there can be no guard.
@@ -844,6 +893,7 @@ impl Sc2CsVisitor {
         pg_idx: Integer,
         int_queue: Channel,
         loc: CsLocation,
+        interner: &boa_interner::Interner,
     ) -> Result<CsLocation, anyhow::Error> {
         match executable {
             Executable::Raise { event } => {
@@ -874,8 +924,7 @@ impl Sc2CsVisitor {
                     target_ext_queue,
                     crate::Message::Send(CsExpr::from_expr(CsIntExpr::new_const(pg_id, event_idx))),
                 )?;
-                let target_ext_queue_origin =
-                    self.get_external_queue(&(target.to_owned() + "Origin"));
+                let target_ext_queue_origin = self.get_origin_channel(target_id);
                 let send_origin = self.cs.new_communication(
                     pg_id,
                     target_ext_queue_origin,
@@ -903,19 +952,20 @@ impl Sc2CsVisitor {
                 // Pass parameters.
                 for param in params {
                     // Updates next location.
-                    next_loc = self.send_param(pg_id, target_id, param, event_idx, next_loc)?;
+                    next_loc =
+                        self.send_param(pg_id, target_id, param, event_idx, next_loc, interner)?;
                 }
 
                 Ok(next_loc)
             }
             Executable::Assign { location, expr } => {
                 // Add a transition that perform the assignment via the effect of the `assign` action.
+                let expr = self.expression(pg_id, expr, interner)?;
                 let (var, scan_type) = self
                     .vars
                     .get(&(pg_id, location.to_owned()))
                     .ok_or(anyhow!("undefined variable"))?;
                 let assign = self.cs.new_action(pg_id)?;
-                let expr = self.expression(pg_id, expr, scan_type)?;
                 self.cs.add_effect(pg_id, assign, *var, expr)?;
                 let next_loc = self.cs.new_location(pg_id)?;
                 self.cs
@@ -932,6 +982,7 @@ impl Sc2CsVisitor {
         param: &Param,
         event_idx: i32,
         next_loc: CsLocation,
+        interner: &boa_interner::Interner,
     ) -> Result<CsLocation, anyhow::Error> {
         // Get param type.
         let scan_type = self
@@ -940,7 +991,7 @@ impl Sc2CsVisitor {
             .cloned()
             .ok_or(anyhow!("Undefined type"))?;
         // Build expression from ECMAScript expression.
-        let expr = self.expression(pg_id, &param.expr, &scan_type)?;
+        let expr = self.expression(pg_id, &param.expr, interner)?;
         // Create channel for parameter passing.
         let param_chn = *self
             .parameters
@@ -963,55 +1014,161 @@ impl Sc2CsVisitor {
     }
 
     fn expression(
-        &self,
+        &mut self,
         pg_id: PgId,
         expr: &boa_ast::Expression,
-        scan_type: &VarType,
+        interner: &boa_interner::Interner,
+        // scan_type: &VarType,
     ) -> anyhow::Result<CsExpr> {
-        // match expr {
-        //     boa_ast::Expression::This => todo!(),
-        //     boa_ast::Expression::Identifier(ident) => {
-        //         ident.
-        //     },
-        //     boa_ast::Expression::Literal(_) => todo!(),
-        //     boa_ast::Expression::RegExpLiteral(_) => todo!(),
-        //     boa_ast::Expression::ArrayLiteral(_) => todo!(),
-        //     boa_ast::Expression::ObjectLiteral(_) => todo!(),
-        //     boa_ast::Expression::Spread(_) => todo!(),
-        //     boa_ast::Expression::Function(_) => todo!(),
-        //     boa_ast::Expression::ArrowFunction(_) => todo!(),
-        //     boa_ast::Expression::AsyncArrowFunction(_) => todo!(),
-        //     boa_ast::Expression::Generator(_) => todo!(),
-        //     boa_ast::Expression::AsyncFunction(_) => todo!(),
-        //     boa_ast::Expression::AsyncGenerator(_) => todo!(),
-        //     boa_ast::Expression::Class(_) => todo!(),
-        //     boa_ast::Expression::TemplateLiteral(_) => todo!(),
-        //     boa_ast::Expression::PropertyAccess(_) => todo!(),
-        //     boa_ast::Expression::New(_) => todo!(),
-        //     boa_ast::Expression::Call(_) => todo!(),
-        //     boa_ast::Expression::SuperCall(_) => todo!(),
-        //     boa_ast::Expression::ImportCall(_) => todo!(),
-        //     boa_ast::Expression::Optional(_) => todo!(),
-        //     boa_ast::Expression::TaggedTemplate(_) => todo!(),
-        //     boa_ast::Expression::NewTarget => todo!(),
-        //     boa_ast::Expression::ImportMeta => todo!(),
-        //     boa_ast::Expression::Assign(_) => todo!(),
-        //     boa_ast::Expression::Unary(_) => todo!(),
-        //     boa_ast::Expression::Update(_) => todo!(),
-        //     boa_ast::Expression::Binary(_) => todo!(),
-        //     boa_ast::Expression::BinaryInPrivate(_) => todo!(),
-        //     boa_ast::Expression::Conditional(_) => todo!(),
-        //     boa_ast::Expression::Await(_) => todo!(),
-        //     boa_ast::Expression::Yield(_) => todo!(),
-        //     boa_ast::Expression::Parenthesized(_) => todo!(),
-        //     _ => todo!(),
-        // }
-        // FIXME: dummy implementation
-        let expr = match scan_type {
-            VarType::Unit => todo!(),
-            VarType::Boolean => CsExpr::from_formula(CsFormula::new_true(pg_id)),
-            VarType::Integer => CsExpr::from_expr(CsIntExpr::new_const(pg_id, 0)),
-            VarType::Product(_) => todo!(),
+        let expr = match expr {
+            boa_ast::Expression::This => todo!(),
+            boa_ast::Expression::Identifier(ident) => {
+                let ident: &str = interner
+                    .resolve(ident.sym())
+                    .ok_or(anyhow!("unknown identifier"))?
+                    .utf8()
+                    .ok_or(anyhow!("not utf8"))?;
+                match ident {
+                    "_event" => todo!(),
+                    var_ident => {
+                        let (var, var_type) = self
+                            .vars
+                            .get(&(pg_id, var_ident.to_string()))
+                            .ok_or(anyhow!("unknown variable"))?;
+                        match var_type {
+                            VarType::Unit => todo!(),
+                            VarType::Boolean => CsExpr::from_formula(CsFormula::new_var(*var)),
+                            VarType::Integer => CsExpr::from_expr(CsIntExpr::new_var(*var)),
+                            VarType::Product(_) => todo!(),
+                        }
+                    }
+                }
+            }
+            boa_ast::Expression::Literal(lit) => {
+                use boa_ast::expression::literal::Literal;
+                match lit {
+                    Literal::String(_) => todo!(),
+                    Literal::Num(_) => todo!(),
+                    Literal::Int(i) => CsExpr::from_expr(CsIntExpr::new_const(pg_id, *i)),
+                    Literal::BigInt(_) => todo!(),
+                    Literal::Bool(b) => CsExpr::from_formula(CsFormula::new_const(pg_id, *b)),
+                    Literal::Null => todo!(),
+                    Literal::Undefined => todo!(),
+                }
+            }
+            boa_ast::Expression::RegExpLiteral(_) => todo!(),
+            boa_ast::Expression::ArrayLiteral(_) => todo!(),
+            boa_ast::Expression::ObjectLiteral(_) => todo!(),
+            boa_ast::Expression::Spread(_) => todo!(),
+            boa_ast::Expression::Function(_) => todo!(),
+            boa_ast::Expression::ArrowFunction(_) => todo!(),
+            boa_ast::Expression::AsyncArrowFunction(_) => todo!(),
+            boa_ast::Expression::Generator(_) => todo!(),
+            boa_ast::Expression::AsyncFunction(_) => todo!(),
+            boa_ast::Expression::AsyncGenerator(_) => todo!(),
+            boa_ast::Expression::Class(_) => todo!(),
+            boa_ast::Expression::TemplateLiteral(_) => todo!(),
+            boa_ast::Expression::PropertyAccess(prop_acc) => {
+                use boa_ast::expression::access::{PropertyAccess, PropertyAccessField};
+                match prop_acc {
+                    PropertyAccess::Simple(simp_prop_acc) => match simp_prop_acc.field() {
+                        PropertyAccessField::Const(sym) => {
+                            let ident: &str = interner
+                                .resolve(*sym)
+                                .ok_or(anyhow!("unknown identifier"))?
+                                .utf8()
+                                .ok_or(anyhow!("not utf8"))?;
+                            match ident {
+                                "origin" => {
+                                    let queue_origin = self.get_origin_channel(pg_id);
+                                    todo!()
+                                }
+                                var_ident => {
+                                    // let (var, var_type) = self
+                                    //     .vars
+                                    //     .get(&(pg_id, var_ident.to_string()))
+                                    //     .ok_or(anyhow!("unknown variable"))?;
+                                    // let (var, var_type) = self
+                                    // .parameters.get((???, pg_id, ))
+                                    // match var_type {
+                                    //     VarType::Unit => todo!(),
+                                    //     VarType::Boolean => {
+                                    //         CsExpr::from_formula(CsFormula::new_var(*var))
+                                    //     }
+                                    //     VarType::Integer => {
+                                    //         CsExpr::from_expr(CsIntExpr::new_var(*var))
+                                    //     }
+                                    //     VarType::Product(_) => todo!(),
+                                    // }
+                                    todo!()
+                                }
+                            }
+                        }
+                        PropertyAccessField::Expr(_) => todo!(),
+                    },
+                    PropertyAccess::Private(_) => todo!(),
+                    PropertyAccess::Super(_) => todo!(),
+                }
+            }
+            boa_ast::Expression::New(_) => todo!(),
+            boa_ast::Expression::Call(_) => todo!(),
+            boa_ast::Expression::SuperCall(_) => todo!(),
+            boa_ast::Expression::ImportCall(_) => todo!(),
+            boa_ast::Expression::Optional(_) => todo!(),
+            boa_ast::Expression::TaggedTemplate(_) => todo!(),
+            boa_ast::Expression::NewTarget => todo!(),
+            boa_ast::Expression::ImportMeta => todo!(),
+            boa_ast::Expression::Assign(_) => todo!(),
+            boa_ast::Expression::Unary(_) => todo!(),
+            boa_ast::Expression::Update(_) => todo!(),
+            boa_ast::Expression::Binary(bin) => {
+                use boa_ast::expression::operator::binary::{ArithmeticOp, BinaryOp, RelationalOp};
+                match bin.op() {
+                    BinaryOp::Arithmetic(ar_bin) => {
+                        let lhs =
+                            CsIntExpr::try_from(self.expression(pg_id, bin.lhs(), interner)?)?;
+                        let rhs =
+                            CsIntExpr::try_from(self.expression(pg_id, bin.rhs(), interner)?)?;
+                        match ar_bin {
+                            ArithmeticOp::Add => CsExpr::from_expr(CsIntExpr::sum(lhs, rhs)?),
+                            ArithmeticOp::Sub => todo!(),
+                            ArithmeticOp::Div => todo!(),
+                            ArithmeticOp::Mul => todo!(),
+                            ArithmeticOp::Exp => todo!(),
+                            ArithmeticOp::Mod => todo!(),
+                        }
+                    }
+                    BinaryOp::Bitwise(_) => todo!(),
+                    BinaryOp::Relational(rel_bin) => {
+                        // WARN FIXME TODO: this assumes relations are between integers
+                        let lhs =
+                            CsIntExpr::try_from(self.expression(pg_id, bin.lhs(), interner)?)?;
+                        let rhs =
+                            CsIntExpr::try_from(self.expression(pg_id, bin.rhs(), interner)?)?;
+                        let formula = match rel_bin {
+                            RelationalOp::Equal => CsFormula::eq(lhs, rhs)?,
+                            RelationalOp::NotEqual => todo!(),
+                            RelationalOp::StrictEqual => todo!(),
+                            RelationalOp::StrictNotEqual => todo!(),
+                            RelationalOp::GreaterThan => CsFormula::greater(lhs, rhs)?,
+                            RelationalOp::GreaterThanOrEqual => CsFormula::geq(lhs, rhs)?,
+                            RelationalOp::LessThan => CsFormula::less(lhs, rhs)?,
+                            RelationalOp::LessThanOrEqual => CsFormula::leq(lhs, rhs)?,
+                            RelationalOp::In => todo!(),
+                            RelationalOp::InstanceOf => todo!(),
+                        };
+                        CsExpr::from_formula(formula)
+                    }
+                    BinaryOp::Logical(_) => todo!(),
+                    BinaryOp::Comma => todo!(),
+                }
+            }
+            boa_ast::Expression::BinaryInPrivate(_) => todo!(),
+            boa_ast::Expression::Conditional(_) => todo!(),
+            boa_ast::Expression::Await(_) => todo!(),
+            boa_ast::Expression::Yield(_) => todo!(),
+            boa_ast::Expression::Parenthesized(_) => todo!(),
+            _ => todo!(),
         };
         Ok(expr)
     }

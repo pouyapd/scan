@@ -62,6 +62,14 @@ impl CsIntExpr {
 pub struct CsFormula(PgId, Formula);
 
 impl CsFormula {
+    pub fn new_const(pg_id: PgId, val: bool) -> Self {
+        if val {
+            Self(pg_id, Formula::True)
+        } else {
+            Self(pg_id, Formula::False)
+        }
+    }
+
     pub fn new_true(pg_id: PgId) -> Self {
         Self(pg_id, Formula::True)
     }
@@ -70,12 +78,8 @@ impl CsFormula {
         Self(pg_id, Formula::False)
     }
 
-    pub fn new(pg_id: PgId, var: CsVar) -> Result<Self, CsError> {
-        if var.0 != pg_id {
-            Err(CsError::DifferentPgs(var.0, pg_id))
-        } else {
-            Ok(Self(pg_id, Formula::Prop(var.1)))
-        }
+    pub fn new_var(var: CsVar) -> Self {
+        Self(var.0, Formula::Prop(var.1))
     }
 
     pub fn negation(self) -> Self {
@@ -114,6 +118,22 @@ impl CsFormula {
             Err(CsError::DifferentPgs(lhs.0, rhs.0))
         } else {
             Ok(Self(lhs.0, Formula::Equal(lhs.1, rhs.1)))
+        }
+    }
+
+    pub fn geq(lhs: CsIntExpr, rhs: CsIntExpr) -> Result<Self, CsError> {
+        if lhs.0 != rhs.0 {
+            Err(CsError::DifferentPgs(lhs.0, rhs.0))
+        } else {
+            Ok(Self(lhs.0, Formula::GreaterEq(lhs.1, rhs.1)))
+        }
+    }
+
+    pub fn greater(lhs: CsIntExpr, rhs: CsIntExpr) -> Result<Self, CsError> {
+        if lhs.0 != rhs.0 {
+            Err(CsError::DifferentPgs(lhs.0, rhs.0))
+        } else {
+            Ok(Self(lhs.0, Formula::Greater(lhs.1, rhs.1)))
         }
     }
 
@@ -163,15 +183,41 @@ impl CsExpr {
             .collect::<Result<Vec<Expression>, CsError>>()?;
         Ok(Self(pg_id, Expression::Tuple(exprs)))
     }
+}
 
-    pub fn project(&self, nth: usize) -> Result<Self, CsError> {
-        if let Self(pg_id, Expression::Tuple(tuple)) = self {
-            Ok(Self(
-                *pg_id,
-                tuple.get(nth).ok_or_else(|| CsError::BadIndex)?.clone(),
-            ))
+impl TryFrom<CsExpr> for CsFormula {
+    type Error = CsError;
+
+    fn try_from(expr: CsExpr) -> Result<Self, Self::Error> {
+        if let CsExpr(pg_id, Expression::Boolean(formula)) = expr {
+            Ok(CsFormula(pg_id, formula))
         } else {
-            Err(CsError::NotATuple)
+            Err(CsError::ProgramGraph(expr.0, PgError::Mismatched))
+        }
+    }
+}
+
+impl TryFrom<CsExpr> for CsIntExpr {
+    type Error = CsError;
+
+    fn try_from(expr: CsExpr) -> Result<Self, Self::Error> {
+        if let CsExpr(pg_id, Expression::Integer(int_expr)) = expr {
+            Ok(CsIntExpr(pg_id, int_expr))
+        } else {
+            Err(CsError::ProgramGraph(expr.0, PgError::Mismatched))
+        }
+    }
+}
+
+impl TryFrom<CsExpr> for Vec<CsExpr> {
+    type Error = CsError;
+
+    fn try_from(expr: CsExpr) -> Result<Self, Self::Error> {
+        if let CsExpr(pg_id, Expression::Tuple(tuple)) = expr {
+            let cs_tuple = tuple.into_iter().map(|expr| CsExpr(pg_id, expr)).collect();
+            Ok(cs_tuple)
+        } else {
+            Err(CsError::ProgramGraph(expr.0, PgError::Mismatched))
         }
     }
 }
