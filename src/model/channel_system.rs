@@ -1,8 +1,9 @@
+use super::grammar::*;
+
 use std::{collections::HashMap, error::Error, fmt, rc::Rc};
 
 use crate::{
-    Action, Expression, Formula, IntExpr, Integer, Location, PgError, ProgramGraph,
-    ProgramGraphBuilder, Val, Var, VarType,
+    Action, Location, PgError, PgExpression, ProgramGraph, ProgramGraphBuilder, Type, Val, Var,
 };
 
 // Use of "Newtype" pattern to define different types of indexes.
@@ -19,217 +20,96 @@ pub struct CsLocation(PgId, Location);
 
 // Use of "Newtype" pattern to define different types of indexes.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct CsVar(PgId, Var);
+pub struct CsAction(PgId, Action);
 
 // Use of "Newtype" pattern to define different types of indexes.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct CsAction(PgId, Action);
+pub struct CsVar(PgId, Var);
 
-#[derive(Debug, Clone)]
-pub struct CsIntExpr(PgId, IntExpr);
+pub type CsExpression = super::grammar::Expression<CsVar>;
 
-impl CsIntExpr {
-    pub fn new_const(pg_id: PgId, int: Integer) -> Self {
-        Self(pg_id, IntExpr::Const(int))
-    }
-
-    pub fn new_var(var: CsVar) -> Self {
-        Self(var.0, IntExpr::Var(var.1))
-    }
-
-    pub fn opposite(self) -> Self {
-        Self(self.0, IntExpr::Opposite(Box::new(self.1)))
-    }
-
-    pub fn sum(lhs: Self, rhs: Self) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, IntExpr::Sum(Box::new(lhs.1), Box::new(rhs.1))))
-        }
-    }
-
-    pub fn mult(lhs: Self, rhs: Self) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, IntExpr::Mult(Box::new(lhs.1), Box::new(rhs.1))))
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct CsFormula(PgId, Formula);
-
-impl CsFormula {
-    pub fn new_const(pg_id: PgId, val: bool) -> Self {
-        if val {
-            Self(pg_id, Formula::True)
-        } else {
-            Self(pg_id, Formula::False)
-        }
-    }
-
-    pub fn new_true(pg_id: PgId) -> Self {
-        Self(pg_id, Formula::True)
-    }
-
-    pub fn new_false(pg_id: PgId) -> Self {
-        Self(pg_id, Formula::False)
-    }
-
-    pub fn new_var(var: CsVar) -> Self {
-        Self(var.0, Formula::Prop(var.1))
-    }
-
-    pub fn negation(self) -> Self {
-        Self(self.0, Formula::Not(Box::new(self.1)))
-    }
-
-    pub fn and(lhs: Self, rhs: Self) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, Formula::And(Box::new(lhs.1), Box::new(rhs.1))))
-        }
-    }
-
-    pub fn or(lhs: Self, rhs: Self) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, Formula::Or(Box::new(lhs.1), Box::new(rhs.1))))
-        }
-    }
-
-    pub fn implies(lhs: Self, rhs: Self) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(
-                lhs.0,
-                Formula::Implies(Box::new(lhs.1), Box::new(rhs.1)),
-            ))
-        }
-    }
-
-    pub fn eq(lhs: CsIntExpr, rhs: CsIntExpr) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, Formula::Equal(lhs.1, rhs.1)))
-        }
-    }
-
-    pub fn geq(lhs: CsIntExpr, rhs: CsIntExpr) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, Formula::GreaterEq(lhs.1, rhs.1)))
-        }
-    }
-
-    pub fn greater(lhs: CsIntExpr, rhs: CsIntExpr) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, Formula::Greater(lhs.1, rhs.1)))
-        }
-    }
-
-    pub fn leq(lhs: CsIntExpr, rhs: CsIntExpr) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, Formula::LessEq(lhs.1, rhs.1)))
-        }
-    }
-
-    pub fn less(lhs: CsIntExpr, rhs: CsIntExpr) -> Result<Self, CsError> {
-        if lhs.0 != rhs.0 {
-            Err(CsError::DifferentPgs(lhs.0, rhs.0))
-        } else {
-            Ok(Self(lhs.0, Formula::Less(lhs.1, rhs.1)))
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct CsExpr(PgId, Expression);
-
-impl CsExpr {
-    pub fn from_formula(formula: CsFormula) -> Self {
-        Self(formula.0, Expression::Boolean(formula.1))
-    }
-
-    pub fn from_expr(expr: CsIntExpr) -> Self {
-        Self(expr.0, Expression::Integer(expr.1))
-    }
-
-    pub fn unit(pg_id: PgId) -> Self {
-        Self(pg_id, Expression::Unit)
-    }
-
-    pub fn tuple(pg_id: PgId, exprs: Vec<CsExpr>) -> Result<Self, CsError> {
-        let exprs: Vec<Expression> = exprs
-            .into_iter()
-            .map(|e| {
-                if e.0 == pg_id {
-                    Ok(e.1)
-                } else {
-                    Err(CsError::DifferentPgs(e.0, pg_id))
-                }
-            })
-            .collect::<Result<Vec<Expression>, CsError>>()?;
-        Ok(Self(pg_id, Expression::Tuple(exprs)))
-    }
-}
-
-impl TryFrom<CsExpr> for CsFormula {
+impl TryFrom<(PgId, CsExpression)> for PgExpression {
     type Error = CsError;
 
-    fn try_from(expr: CsExpr) -> Result<Self, Self::Error> {
-        if let CsExpr(pg_id, Expression::Boolean(formula)) = expr {
-            Ok(CsFormula(pg_id, formula))
-        } else {
-            Err(CsError::ProgramGraph(expr.0, PgError::Mismatched))
-        }
-    }
-}
-
-impl TryFrom<CsExpr> for CsIntExpr {
-    type Error = CsError;
-
-    fn try_from(expr: CsExpr) -> Result<Self, Self::Error> {
-        if let CsExpr(pg_id, Expression::Integer(int_expr)) = expr {
-            Ok(CsIntExpr(pg_id, int_expr))
-        } else {
-            Err(CsError::ProgramGraph(expr.0, PgError::Mismatched))
-        }
-    }
-}
-
-impl TryFrom<CsExpr> for Vec<CsExpr> {
-    type Error = CsError;
-
-    fn try_from(expr: CsExpr) -> Result<Self, Self::Error> {
-        if let CsExpr(pg_id, Expression::Tuple(tuple)) = expr {
-            let cs_tuple = tuple.into_iter().map(|expr| CsExpr(pg_id, expr)).collect();
-            Ok(cs_tuple)
-        } else {
-            Err(CsError::ProgramGraph(expr.0, PgError::Mismatched))
+    fn try_from((pg_id, expr): (PgId, CsExpression)) -> Result<Self, Self::Error> {
+        match expr {
+            Expression::Const(val) => Ok(Expression::Const(val)),
+            Expression::Var(cs_var) if cs_var.0 == pg_id => Ok(Expression::Var(cs_var.1)),
+            Expression::Var(cs_var) => Err(CsError::VarNotInPg(cs_var, pg_id)),
+            Expression::Tuple(comps) => Ok(Expression::Tuple(
+                comps
+                    .into_iter()
+                    .map(|comp| (pg_id, comp).try_into())
+                    .collect::<Result<Vec<PgExpression>, CsError>>()?,
+            )),
+            Expression::Component(index, expr) => (pg_id, *expr)
+                .try_into()
+                .map(|expr| Expression::Component(index, Box::new(expr))),
+            Expression::And(comps) => Ok(Expression::And(
+                comps
+                    .into_iter()
+                    .map(|comp| (pg_id, comp).try_into())
+                    .collect::<Result<Vec<PgExpression>, CsError>>()?,
+            )),
+            Expression::Or(comps) => Ok(Expression::Or(
+                comps
+                    .into_iter()
+                    .map(|comp| (pg_id, comp).try_into())
+                    .collect::<Result<Vec<PgExpression>, CsError>>()?,
+            )),
+            Expression::Implies(comps) => Ok(Expression::Implies(Box::new((
+                (pg_id, comps.0).try_into()?,
+                (pg_id, comps.1).try_into()?,
+            )))),
+            Expression::Not(expr) => (pg_id, *expr).try_into().map(Box::new).map(Expression::Not),
+            Expression::Opposite(expr) => (pg_id, *expr)
+                .try_into()
+                .map(Box::new)
+                .map(Expression::Opposite),
+            Expression::Sum(comps) => Ok(Expression::Sum(
+                comps
+                    .into_iter()
+                    .map(|comp| (pg_id, comp).try_into())
+                    .collect::<Result<Vec<PgExpression>, CsError>>()?,
+            )),
+            Expression::Mult(comps) => Ok(Expression::Mult(
+                comps
+                    .into_iter()
+                    .map(|comp| (pg_id, comp).try_into())
+                    .collect::<Result<Vec<PgExpression>, CsError>>()?,
+            )),
+            Expression::Equal(comps) => Ok(Expression::Equal(Box::new((
+                (pg_id, comps.0).try_into()?,
+                (pg_id, comps.1).try_into()?,
+            )))),
+            Expression::Greater(comps) => Ok(Expression::Greater(Box::new((
+                (pg_id, comps.0).try_into()?,
+                (pg_id, comps.1).try_into()?,
+            )))),
+            Expression::GreaterEq(comps) => Ok(Expression::GreaterEq(Box::new((
+                (pg_id, comps.0).try_into()?,
+                (pg_id, comps.1).try_into()?,
+            )))),
+            Expression::Less(comps) => Ok(Expression::Less(Box::new((
+                (pg_id, comps.0).try_into()?,
+                (pg_id, comps.1).try_into()?,
+            )))),
+            Expression::LessEq(comps) => Ok(Expression::LessEq(Box::new((
+                (pg_id, comps.0).try_into()?,
+                (pg_id, comps.1).try_into()?,
+            )))),
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Send(CsExpr),
+    Send(CsExpression),
     Receive(CsVar),
     ProbeEmptyQueue,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum CsError {
     ProgramGraph(PgId, PgError),
     MissingPg(PgId),
@@ -305,7 +185,7 @@ impl Error for CsError {
 #[derive(Debug, Default, Clone)]
 pub struct ChannelSystemBuilder {
     program_graphs: Vec<ProgramGraphBuilder>,
-    channels: Vec<(VarType, Option<usize>)>,
+    channels: Vec<(Type, Option<usize>)>,
     communications: HashMap<CsAction, (Channel, Message)>,
 }
 
@@ -330,7 +210,7 @@ impl ChannelSystemBuilder {
         Ok(initial)
     }
 
-    pub fn new_var(&mut self, pg_id: PgId, var_type: VarType) -> Result<CsVar, CsError> {
+    pub fn new_var(&mut self, pg_id: PgId, var_type: Type) -> Result<CsVar, CsError> {
         self.program_graphs
             .get_mut(pg_id.0)
             .ok_or(CsError::MissingPg(pg_id))
@@ -349,7 +229,7 @@ impl ChannelSystemBuilder {
         pg_id: PgId,
         action: CsAction,
         var: CsVar,
-        effect: CsExpr,
+        effect: CsExpression,
     ) -> Result<(), CsError> {
         if action.0 != pg_id {
             return Err(CsError::ActionNotInPg(action, pg_id));
@@ -357,9 +237,7 @@ impl ChannelSystemBuilder {
         if var.0 != pg_id {
             return Err(CsError::VarNotInPg(var, pg_id));
         }
-        if effect.0 != pg_id {
-            return Err(CsError::DifferentPgs(effect.0, pg_id));
-        }
+        let effect = PgExpression::try_from((pg_id, effect))?;
         // Communications cannot have effects
         if self.communications.contains_key(&action) {
             return Err(CsError::ActionIsCommunication(action));
@@ -368,7 +246,7 @@ impl ChannelSystemBuilder {
             .get_mut(pg_id.0)
             .ok_or(CsError::MissingPg(pg_id))
             .and_then(|pg| {
-                pg.add_effect(action.1, var.1, effect.1)
+                pg.add_effect(action.1, var.1, effect)
                     .map_err(|err| CsError::ProgramGraph(pg_id, err))
             })
     }
@@ -386,7 +264,7 @@ impl ChannelSystemBuilder {
         pre: CsLocation,
         action: CsAction,
         post: CsLocation,
-        guard: CsFormula,
+        guard: Option<CsExpression>,
     ) -> Result<(), CsError> {
         if action.0 != pg_id {
             return Err(CsError::ActionNotInPg(action, pg_id));
@@ -397,19 +275,20 @@ impl ChannelSystemBuilder {
         if post.0 != pg_id {
             return Err(CsError::LocationNotInPg(post, pg_id));
         }
-        if guard.0 != pg_id {
-            return Err(CsError::DifferentPgs(guard.0, pg_id));
-        }
+        // Turn CsExpression into a PgExpression for Program Graph pg_id
+        let guard = guard
+            .map(|guard| PgExpression::try_from((pg_id, guard)))
+            .transpose()?;
         self.program_graphs
             .get_mut(pg_id.0)
             .ok_or(CsError::MissingPg(pg_id))
             .and_then(|pg| {
-                pg.add_transition(pre.1, action.1, post.1, guard.1)
+                pg.add_transition(pre.1, action.1, post.1, guard)
                     .map_err(|err| CsError::ProgramGraph(pg_id, err))
             })
     }
 
-    pub fn new_channel(&mut self, var_type: VarType, capacity: Option<usize>) -> Channel {
+    pub fn new_channel(&mut self, var_type: Type, capacity: Option<usize>) -> Channel {
         let channel = Channel(self.channels.len());
         self.channels.push((var_type, capacity));
         channel
@@ -428,12 +307,12 @@ impl ChannelSystemBuilder {
             .0
             .to_owned();
         let message_type = match &message {
-            Message::Send(effect) => {
-                if !self.program_graphs.len() <= (effect.0).0 {
-                    return Err(CsError::MissingPg(effect.0));
-                }
-                (&effect.1).into()
-            }
+            Message::Send(expr) => self
+                .program_graphs
+                .get(pg_id.0)
+                .ok_or(CsError::MissingPg(pg_id))?
+                .r#type(&(pg_id, expr.to_owned()).try_into()?)
+                .map_err(|err| CsError::ProgramGraph(pg_id, err))?,
             Message::Receive(var) => {
                 if pg_id != var.0 {
                     return Err(CsError::VarNotInPg(*var, pg_id));
@@ -477,7 +356,7 @@ impl ChannelSystemBuilder {
 #[derive(Debug, Clone)]
 pub struct ChannelSystem {
     program_graphs: Vec<ProgramGraph>,
-    channels: Rc<Vec<(VarType, Option<usize>)>>,
+    channels: Rc<Vec<(Type, Option<usize>)>>,
     communications: Rc<HashMap<CsAction, (Channel, Message)>>,
     message_queue: Vec<Vec<Val>>,
 }
@@ -582,7 +461,10 @@ impl ChannelSystem {
                 .expect("communication has been verified before");
             match message {
                 Message::Send(effect) => {
-                    let val = pg.eval(&effect.1);
+                    let effect = (pg_id, effect.to_owned()).try_into()?;
+                    let val = pg
+                        .eval(&effect)
+                        .map_err(|err| CsError::ProgramGraph(pg_id, err))?;
                     queue.push(val);
                 }
                 Message::Receive(var) => {
@@ -604,8 +486,6 @@ impl ChannelSystem {
 
 #[cfg(test)]
 mod tests {
-    use crate::IntExpr;
-
     use super::*;
 
     #[test]
@@ -631,8 +511,8 @@ mod tests {
     fn new_var() -> Result<(), CsError> {
         let mut cs = ChannelSystemBuilder::new();
         let pg = cs.new_program_graph();
-        let _var1 = cs.new_var(pg, VarType::Boolean)?;
-        let _var2 = cs.new_var(pg, VarType::Integer)?;
+        let _var1 = cs.new_var(pg, Type::Boolean)?;
+        let _var2 = cs.new_var(pg, Type::Integer)?;
         Ok(())
     }
 
@@ -641,12 +521,12 @@ mod tests {
         let mut cs = ChannelSystemBuilder::new();
         let pg = cs.new_program_graph();
         let action = cs.new_action(pg)?;
-        let var1 = cs.new_var(pg, VarType::Boolean)?;
-        let var2 = cs.new_var(pg, VarType::Integer)?;
-        let effect_1 = CsExpr::from_expr(CsIntExpr(pg, IntExpr::Const(2)));
+        let var1 = cs.new_var(pg, Type::Boolean)?;
+        let var2 = cs.new_var(pg, Type::Integer)?;
+        let effect_1 = CsExpression::Const(Val::Integer(2));
         cs.add_effect(pg, action, var1, effect_1.clone())
             .expect_err("type mismatch");
-        let effect_2 = CsExpr::from_formula(CsFormula(pg, Formula::True));
+        let effect_2 = CsExpression::Const(Val::Boolean(true));
         cs.add_effect(pg, action, var1, effect_2.clone())?;
         cs.add_effect(pg, action, var2, effect_2)
             .expect_err("type mismatch");
@@ -670,45 +550,42 @@ mod tests {
         let pg = cs.new_program_graph();
         let initial = cs.initial_location(pg)?;
         let action = cs.new_action(pg)?;
-        let var1 = cs.new_var(pg, VarType::Boolean)?;
-        let var2 = cs.new_var(pg, VarType::Integer)?;
-        let effect_1 = CsExpr::from_expr(CsIntExpr(pg, IntExpr::Const(0)));
-        let effect_2 = CsExpr::from_formula(CsFormula::new_true(pg));
+        let var1 = cs.new_var(pg, Type::Boolean)?;
+        let var2 = cs.new_var(pg, Type::Integer)?;
+        let effect_1 = CsExpression::Const(Val::Integer(0));
+        let effect_2 = CsExpression::Const(Val::Boolean(true));
         cs.add_effect(pg, action, var1, effect_2)?;
         cs.add_effect(pg, action, var2, effect_1)?;
         let post = cs.new_location(pg)?;
-        let guard = CsFormula::new_true(pg);
-        cs.add_transition(pg, initial, action, post, guard)?;
+        cs.add_transition(pg, initial, action, post, None)?;
         Ok(())
     }
 
     #[test]
     fn add_communication() -> Result<(), CsError> {
         let mut cs = ChannelSystemBuilder::new();
-        let ch = cs.new_channel(VarType::Boolean, Some(1));
+        let ch = cs.new_channel(Type::Boolean, Some(1));
 
         let pg1 = cs.new_program_graph();
         let initial1 = cs.initial_location(pg1)?;
         let post1 = cs.new_location(pg1)?;
-        let guard1 = CsFormula::new_true(pg1);
-        let effect = CsExpr::from_formula(guard1.clone());
+        let effect = CsExpression::Const(Val::Boolean(true));
         let msg = Message::Send(effect);
         let send = cs.new_communication(pg1, ch, msg)?;
-        cs.add_transition(pg1, initial1, send, post1, guard1)?;
+        cs.add_transition(pg1, initial1, send, post1, None)?;
 
-        let var1 = cs.new_var(pg1, VarType::Integer)?;
-        let effect = CsExpr::from_expr(CsIntExpr(pg1, IntExpr::Const(0)));
+        let var1 = cs.new_var(pg1, Type::Integer)?;
+        let effect = CsExpression::Const(Val::Integer(0));
         cs.add_effect(pg1, send, var1, effect)
             .expect_err("send is a message so it cannot have effects");
 
         let pg2 = cs.new_program_graph();
         let initial2 = cs.initial_location(pg2)?;
         let post2 = cs.new_location(pg2)?;
-        let var2 = cs.new_var(pg2, VarType::Boolean)?;
+        let var2 = cs.new_var(pg2, Type::Boolean)?;
         let msg = Message::Receive(var2);
-        let guard2 = CsFormula::new_true(pg2);
         let receive = cs.new_communication(pg2, ch, msg)?;
-        cs.add_transition(pg2, initial2, receive, post2, guard2)?;
+        cs.add_transition(pg2, initial2, receive, post2, None)?;
 
         let mut cs = cs.build();
         assert_eq!(cs.possible_transitions().len(), 1);

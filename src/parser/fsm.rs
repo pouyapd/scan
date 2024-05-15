@@ -58,6 +58,7 @@ pub struct State {
 pub struct Transition {
     pub(crate) event: Option<String>,
     pub(crate) target: String,
+    pub(crate) param: Option<(String, String)>,
     pub(crate) cond: Option<boa_ast::Expression>,
     pub(crate) effects: Vec<Executable>,
 }
@@ -138,7 +139,7 @@ impl Fsm {
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
                         {
-                            fsm.parse_transition(tag, reader, &stack)?;
+                            fsm.parse_transition(tag, reader, type_annotation.take(), &stack)?;
                             stack.push(ScxmlTag::Transition);
                         }
                         TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
@@ -201,7 +202,7 @@ impl Fsm {
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
                         {
-                            fsm.parse_transition(tag, reader, &stack)?;
+                            fsm.parse_transition(tag, reader, type_annotation.take(), &stack)?;
                         }
                         // we `rev()` the iterator only because we expect the relevant tag to be towards the end of the stack
                         TAG_RAISE if stack.iter().rev().any(|tag| tag.is_executable()) => {
@@ -332,6 +333,7 @@ impl Fsm {
         &mut self,
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
+        param: Option<(String, String)>,
         stack: &[ScxmlTag],
     ) -> anyhow::Result<()> {
         let state: &str = stack
@@ -375,9 +377,7 @@ impl Fsm {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_TARGET.to_string())
         )))?;
-        // FIXME: This is really bad code!
-        let transition;
-        if let Some(cond) = cond {
+        let cond = if let Some(cond) = cond {
             if let StatementListItem::Statement(boa_ast::Statement::Expression(cond)) =
                 boa_parser::Parser::new(boa_parser::Source::from_bytes(cond.as_bytes()))
                     .parse_script(&mut self.interner)
@@ -387,12 +387,7 @@ impl Fsm {
                     .expect("hopefully there is a statement")
                     .to_owned()
             {
-                transition = Transition {
-                    event,
-                    target,
-                    cond: Some(cond),
-                    effects: Vec::new(),
-                };
+                Some(cond)
             } else {
                 return Err(anyhow!(ParserError(
                     reader.buffer_position(),
@@ -400,13 +395,15 @@ impl Fsm {
                 )));
             }
         } else {
-            transition = Transition {
-                event,
-                target,
-                cond: None,
-                effects: Vec::new(),
-            };
-        }
+            None
+        };
+        let transition = Transition {
+            event,
+            target,
+            param,
+            cond,
+            effects: Vec::new(),
+        };
         // Need to know current state
         self.states
             .get_mut(state)

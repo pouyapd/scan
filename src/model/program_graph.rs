@@ -1,5 +1,9 @@
+use super::grammar::*;
+
 // TODO: use fast hasher
-use std::{collections::HashMap, error::Error, fmt, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
+
+use thiserror::Error;
 
 // Use of "Newtype" pattern to define different types of indexes.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -13,126 +17,36 @@ pub struct Action(usize);
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Var(usize);
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum VarType {
-    Unit,
-    Boolean,
-    Integer,
-    Product(Vec<VarType>),
-}
+pub type PgExpression = super::grammar::Expression<Var>;
 
-impl VarType {
-    pub fn default_value(&self) -> Val {
-        match self {
-            VarType::Boolean => Val::Boolean(false),
-            VarType::Integer => Val::Integer(0),
-            VarType::Unit => Val::Unit,
-            VarType::Product(tuple) => {
-                Val::Tuple(Vec::from_iter(tuple.iter().map(|e| e.default_value())))
-            }
-        }
-    }
-}
-
-pub type Integer = i32;
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum Val {
-    Unit,
-    Boolean(bool),
-    Integer(Integer),
-    Tuple(Vec<Val>),
-}
-
-#[derive(Debug, Clone)]
-pub enum IntExpr {
-    Const(Integer),
-    Var(Var),
-    Opposite(Box<IntExpr>),
-    Sum(Box<IntExpr>, Box<IntExpr>),
-    Mult(Box<IntExpr>, Box<IntExpr>),
-}
-
-#[derive(Debug, Clone)]
-pub enum Formula {
-    And(Box<Formula>, Box<Formula>),
-    Or(Box<Formula>, Box<Formula>),
-    Implies(Box<Formula>, Box<Formula>),
-    Not(Box<Formula>),
-    Prop(Var),
-    Equal(IntExpr, IntExpr),
-    Greater(IntExpr, IntExpr),
-    GreaterEq(IntExpr, IntExpr),
-    Less(IntExpr, IntExpr),
-    LessEq(IntExpr, IntExpr),
-    True,
-    False,
-}
-
-#[derive(Debug, Clone)]
-pub enum Expression {
-    Unit,
-    Boolean(Formula),
-    Integer(IntExpr),
-    Tuple(Vec<Expression>),
-}
-
-impl From<&Expression> for VarType {
-    fn from(value: &Expression) -> Self {
-        match value {
-            Expression::Boolean(_) => VarType::Boolean,
-            Expression::Integer(_) => VarType::Integer,
-            Expression::Unit => VarType::Unit,
-            Expression::Tuple(tuple) => {
-                VarType::Product(Vec::from_iter(tuple.iter().map(|e| VarType::from(e))))
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Error)]
 pub enum PgError {
+    #[error("malformed expression {0:?}")]
+    BadExpression(PgExpression),
+    #[error("action {0:?} does not belong to this program graph")]
     MissingAction(Action),
+    #[error("location {0:?} does not belong to this program graph")]
     MissingLocation(Location),
+    #[error("type mismatch")]
     Mismatched,
+    #[error("location {0:?} does not belong to this program graph")]
     NonExistingVar(Var),
+    #[error("There is no such transition")]
     NoTransition,
+    #[error("The guard has not been satisfied")]
     UnsatisfiedGuard,
+    #[error("the tuple has no {0} component")]
+    MissingComponent(usize),
 }
-
-impl fmt::Display for PgError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PgError::MissingAction(action) => write!(
-                f,
-                "action {:?} does not belong to this program graph",
-                action
-            ),
-            PgError::MissingLocation(location) => write!(
-                f,
-                "location {:?} does not belong to this program graph",
-                location
-            ),
-            PgError::Mismatched => write!(f, "type mismatch"),
-            PgError::NonExistingVar(var) => {
-                write!(f, "var {:?} does not belong to this program graph", var)
-            }
-            PgError::NoTransition => write!(f, "There is no such transition"),
-            PgError::UnsatisfiedGuard => write!(f, "The guard has not been satisfied"),
-        }
-    }
-}
-
-impl Error for PgError {}
 
 #[derive(Debug, Clone)]
 pub struct ProgramGraphBuilder {
     // Effects are indexed by actions
-    effects: Vec<Vec<(Var, Expression)>>,
+    effects: Vec<Vec<(Var, PgExpression)>>,
     // Transitions are indexed by locations
     // We can assume there is at most one condition by logical disjunction
-    transitions: Vec<HashMap<(Action, Location), Formula>>,
-    vars: Vec<VarType>,
+    transitions: Vec<HashMap<(Action, Location), Option<PgExpression>>>,
+    vars: Vec<Type>,
 }
 
 impl Default for ProgramGraphBuilder {
@@ -157,14 +71,14 @@ impl ProgramGraphBuilder {
         pgb
     }
 
-    pub fn var_type(&self, var: Var) -> Result<VarType, PgError> {
+    pub fn var_type(&self, var: Var) -> Result<Type, PgError> {
         self.vars
             .get(var.0)
             .ok_or(PgError::NonExistingVar(var))
             .cloned()
     }
 
-    pub fn new_var(&mut self, var_type: VarType) -> Var {
+    pub fn new_var(&mut self, var_type: Type) -> Var {
         let idx = self.vars.len();
         self.vars.push(var_type);
         Var(idx)
@@ -181,20 +95,19 @@ impl ProgramGraphBuilder {
         &mut self,
         action: Action,
         var: Var,
-        effect: Expression,
+        effect: PgExpression,
     ) -> Result<(), PgError> {
-        match self.vars.get(var.0).ok_or(PgError::NonExistingVar(var))? {
-            VarType::Boolean if !matches!(effect, Expression::Boolean(_)) => {
-                Err(PgError::Mismatched)
-            }
-            VarType::Integer if !matches!(effect, Expression::Integer(_)) => {
-                Err(PgError::Mismatched)
-            }
-            _ => self
-                .effects
+        let var_type = self
+            .vars
+            .get(var.0)
+            .ok_or_else(|| PgError::NonExistingVar(var.to_owned()))?;
+        if *var_type == self.r#type(&effect)? {
+            self.effects
                 .get_mut(action.0)
                 .ok_or(PgError::MissingAction(action))
-                .map(|effects| effects.push((var, effect))),
+                .map(|effects| effects.push((var, effect)))
+        } else {
+            Err(PgError::Mismatched)
         }
     }
 
@@ -210,75 +123,132 @@ impl ProgramGraphBuilder {
         pre: Location,
         action: Action,
         post: Location,
-        guard: Formula,
+        guard: Option<PgExpression>,
     ) -> Result<(), PgError> {
-        self.typecheck(&guard)?;
         // Check 'pre' and 'post' locations exists
         if self.transitions.len() <= pre.0 {
-            return Err(PgError::MissingLocation(pre));
-        }
-        if self.transitions.len() <= post.0 {
-            return Err(PgError::MissingLocation(post));
-        }
-        // Check 'action' exists
-        if self.effects.len() <= action.0 {
-            return Err(PgError::MissingAction(action));
-        }
-        let _ = self
-            .transitions
-            .get_mut(pre.0)
-            .expect("location existance already checked")
-            .entry((action, post))
-            .and_modify(|previous_guard| {
-                *previous_guard =
-                    Formula::Or(Box::new(previous_guard.clone()), Box::new(guard.clone()));
-            })
-            .or_insert(guard);
-        Ok(())
-    }
-
-    fn typecheck(&self, formula: &Formula) -> Result<(), PgError> {
-        match formula {
-            Formula::Not(subf) => self.typecheck(subf),
-            Formula::And(lhs, rhs) | Formula::Or(lhs, rhs) | Formula::Implies(lhs, rhs) => {
-                self.typecheck(lhs).and_then(|()| self.typecheck(rhs))
-            }
-            Formula::Prop(Var(idx)) => {
-                let var = self
-                    .vars
-                    .get(*idx)
-                    .ok_or(PgError::NonExistingVar(Var(*idx)))?;
-                if matches!(var, VarType::Boolean) {
-                    Ok(())
-                } else {
-                    Err(PgError::Mismatched)
-                }
-            }
-            Formula::Equal(lhs, rhs) | Formula::Less(lhs, rhs) | Formula::LessEq(lhs, rhs) => self
-                .typecheck_expr(lhs)
-                .and_then(|()| self.typecheck_expr(rhs)),
-            _ => Ok(()),
+            Err(PgError::MissingLocation(pre))
+        } else if self.transitions.len() <= post.0 {
+            Err(PgError::MissingLocation(post))
+        } else if self.effects.len() <= action.0 {
+            // Check 'action' exists
+            Err(PgError::MissingAction(action))
+        } else if guard.is_some() && !matches!(self.r#type(guard.as_ref().unwrap())?, Type::Boolean)
+        {
+            Err(PgError::Mismatched)
+        } else {
+            let _ = self
+                .transitions
+                .get_mut(pre.0)
+                .expect("location existance already checked")
+                .entry((action, post))
+                .and_modify(|previous_guard| {
+                    if let Some(guard) = guard.to_owned() {
+                        if let Some(previous_guard) = previous_guard {
+                            if let PgExpression::Or(exprs) = previous_guard {
+                                exprs.push(guard.to_owned());
+                            } else {
+                                *previous_guard = PgExpression::Or(vec![
+                                    previous_guard.to_owned(),
+                                    guard.to_owned(),
+                                ]);
+                            }
+                        } else {
+                            *previous_guard = Some(guard);
+                        }
+                    }
+                })
+                .or_insert(guard.to_owned());
+            Ok(())
         }
     }
 
-    fn typecheck_expr(&self, expr: &IntExpr) -> Result<(), PgError> {
+    pub fn r#type(&self, expr: &PgExpression) -> Result<Type, PgError> {
         match expr {
-            IntExpr::Const(_) => Ok(()),
-            IntExpr::Var(Var(idx)) => {
-                let var = self
-                    .vars
-                    .get(*idx)
-                    .ok_or(PgError::NonExistingVar(Var(*idx)))?;
-                if matches!(var, VarType::Integer) {
-                    Ok(())
+            PgExpression::Tuple(tuple) => Ok(Type::Product(
+                tuple
+                    .iter()
+                    .map(|e| self.r#type(e))
+                    .collect::<Result<Vec<Type>, PgError>>()?,
+            )),
+            PgExpression::Const(val) => Ok(val.r#type()),
+            PgExpression::Var(var) => self
+                .vars
+                .get(var.0)
+                .cloned()
+                .ok_or_else(|| PgError::NonExistingVar(var.to_owned())),
+            PgExpression::And(props) | PgExpression::Or(props) => {
+                if props
+                    .iter()
+                    .map(|prop| self.r#type(prop))
+                    .collect::<Result<Vec<Type>, PgError>>()?
+                    .iter()
+                    .all(|prop| matches!(prop, Type::Boolean))
+                {
+                    Ok(Type::Boolean)
                 } else {
                     Err(PgError::Mismatched)
                 }
             }
-            IntExpr::Opposite(expr) => self.typecheck_expr(expr),
-            IntExpr::Sum(lhs, rhs) | IntExpr::Mult(lhs, rhs) => self
-                .typecheck_expr(lhs)
-                .and_then(|()| self.typecheck_expr(rhs)),
+            PgExpression::Implies(props) => {
+                if matches!(self.r#type(&props.0)?, Type::Boolean)
+                    && matches!(self.r#type(&props.1)?, Type::Boolean)
+                {
+                    Ok(Type::Boolean)
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Not(prop) => {
+                if matches!(self.r#type(&prop)?, Type::Boolean) {
+                    Ok(Type::Boolean)
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Opposite(expr) => {
+                if matches!(self.r#type(&expr)?, Type::Integer) {
+                    Ok(Type::Integer)
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Sum(exprs) | PgExpression::Mult(exprs) => {
+                if exprs
+                    .iter()
+                    .map(|prop| self.r#type(prop))
+                    .collect::<Result<Vec<Type>, PgError>>()?
+                    .iter()
+                    .all(|prop| matches!(prop, Type::Integer))
+                {
+                    Ok(Type::Integer)
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Equal(exprs)
+            | PgExpression::Greater(exprs)
+            | PgExpression::GreaterEq(exprs)
+            | PgExpression::Less(exprs)
+            | PgExpression::LessEq(exprs) => {
+                if matches!(self.r#type(&exprs.0)?, Type::Integer)
+                    && matches!(self.r#type(&exprs.1)?, Type::Integer)
+                {
+                    Ok(Type::Integer)
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Component(index, expr) => {
+                if let Type::Product(components) = self.r#type(expr)? {
+                    components
+                        .get(*index)
+                        .cloned()
+                        .ok_or(PgError::MissingComponent(*index))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
         }
     }
 
@@ -294,7 +264,7 @@ impl ProgramGraphBuilder {
         // Build program graph
         ProgramGraph {
             current_location: Self::INITIAL_LOCATION,
-            vars: self.vars.iter().map(VarType::default_value).collect(),
+            vars: self.vars.iter().map(Type::default_value).collect(),
             effects: Rc::new(self.effects),
             transitions: Rc::new(self.transitions),
         }
@@ -310,8 +280,8 @@ pub struct ProgramGraph {
     current_location: Location,
     vars: Vec<Val>,
     // TODO: use SmallVec optimization
-    effects: Rc<Vec<Vec<(Var, Expression)>>>,
-    transitions: Rc<Vec<HashMap<(Action, Location), Formula>>>,
+    effects: Rc<Vec<Vec<(Var, PgExpression)>>>,
+    transitions: Rc<Vec<HashMap<(Action, Location), Option<PgExpression>>>>,
 }
 
 impl ProgramGraph {
@@ -321,10 +291,18 @@ impl ProgramGraph {
             .unwrap_or(&HashMap::new())
             .iter()
             .filter_map(|((action, post), guard)| {
-                if self.eval_formula(guard) {
-                    Some((*action, *post))
+                if let Some(guard) = guard {
+                    if let Val::Boolean(pass) = self.eval(guard).expect("guard must evaluate") {
+                        if pass {
+                            Some((*action, *post))
+                        } else {
+                            None
+                        }
+                    } else {
+                        panic!("guard is not a boolean");
+                    }
                 } else {
-                    None
+                    Some((*action, *post))
                 }
             })
             .collect::<Vec<_>>()
@@ -337,7 +315,13 @@ impl ProgramGraph {
             .expect("location must exist")
             .get(&(action, post_state))
             .ok_or(PgError::NoTransition)?;
-        if self.eval_formula(guard) {
+        if guard.as_ref().map_or(true, |guard| {
+            if let Val::Boolean(pass) = self.eval(guard).expect("guard must evaluate") {
+                pass
+            } else {
+                panic!("guard is not a boolean");
+            }
+        }) {
             for (var, effect) in self
                 .effects
                 .get(action.0)
@@ -349,7 +333,7 @@ impl ProgramGraph {
                 *self
                     .vars
                     .get_mut(var.0)
-                    .expect("effect has been validated before") = self.eval(effect);
+                    .expect("effect has been validated before") = self.eval(effect)?;
             }
             self.current_location = post_state;
             Ok(())
@@ -358,13 +342,152 @@ impl ProgramGraph {
         }
     }
 
-    pub(super) fn eval(&self, effect: &Expression) -> Val {
-        match effect {
-            Expression::Boolean(formula) => Val::Boolean(self.eval_formula(formula)),
-            Expression::Integer(expr) => Val::Integer(self.eval_expr(expr)),
-            Expression::Unit => Val::Unit,
-            Expression::Tuple(entries) => {
-                Val::Tuple(Vec::from_iter(entries.iter().map(|e| self.eval(e))))
+    pub(super) fn eval(&self, expr: &PgExpression) -> Result<Val, PgError> {
+        match expr {
+            PgExpression::Const(val) => Ok(val.to_owned()),
+            PgExpression::Var(var) => self
+                .vars
+                .get(var.0)
+                .ok_or_else(|| PgError::NonExistingVar(var.to_owned()))
+                .cloned(),
+            PgExpression::Tuple(entries) => entries
+                .iter()
+                .map(|e| self.eval(e))
+                .collect::<Result<Vec<Val>, PgError>>()
+                .map(|vals| Val::Tuple(vals)),
+            PgExpression::Component(index, expr) => {
+                if let Val::Tuple(components) = self.eval(expr)? {
+                    components
+                        .get(*index)
+                        .cloned()
+                        .ok_or(PgError::MissingComponent(*index))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::And(props) => Ok(Val::Boolean(
+                props
+                    .iter()
+                    .map(|prop| {
+                        if let Val::Boolean(val) = self.eval(prop)? {
+                            Ok(val)
+                        } else {
+                            Err(PgError::Mismatched)
+                        }
+                    })
+                    .collect::<Result<Vec<bool>, PgError>>()?
+                    .iter()
+                    .all(|val| *val),
+            )),
+            PgExpression::Or(props) => Ok(Val::Boolean(
+                props
+                    .iter()
+                    .map(|prop| {
+                        if let Val::Boolean(val) = self.eval(prop)? {
+                            Ok(val)
+                        } else {
+                            Err(PgError::Mismatched)
+                        }
+                    })
+                    .collect::<Result<Vec<bool>, PgError>>()?
+                    .iter()
+                    .any(|val| *val),
+            )),
+            PgExpression::Implies(props) => {
+                if let (Val::Boolean(lhs), Val::Boolean(rhs)) =
+                    (self.eval(&props.0)?, self.eval(&props.1)?)
+                {
+                    Ok(Val::Boolean(rhs || !lhs))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Not(prop) => {
+                if let Val::Boolean(arg) = self.eval(prop)? {
+                    Ok(Val::Boolean(!arg))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Opposite(expr) => {
+                if let Val::Integer(arg) = self.eval(expr)? {
+                    Ok(Val::Integer(-arg))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Sum(exprs) => Ok(Val::Integer(
+                exprs
+                    .iter()
+                    .map(|prop| {
+                        if let Val::Integer(val) = self.eval(prop)? {
+                            Ok(val)
+                        } else {
+                            Err(PgError::Mismatched)
+                        }
+                    })
+                    .collect::<Result<Vec<Integer>, PgError>>()?
+                    .iter()
+                    .sum(),
+            )),
+            PgExpression::Mult(exprs) => Ok(Val::Integer(
+                exprs
+                    .iter()
+                    .map(|prop| {
+                        if let Val::Integer(val) = self.eval(prop)? {
+                            Ok(val)
+                        } else {
+                            Err(PgError::Mismatched)
+                        }
+                    })
+                    .collect::<Result<Vec<Integer>, PgError>>()?
+                    .iter()
+                    .fold(0, |tot, val| tot * *val),
+            )),
+            PgExpression::Equal(exprs) => {
+                if let (Val::Integer(lhs), Val::Integer(rhs)) =
+                    (self.eval(&exprs.0)?, self.eval(&exprs.1)?)
+                {
+                    Ok(Val::Boolean(lhs == rhs))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Greater(exprs) => {
+                if let (Val::Integer(lhs), Val::Integer(rhs)) =
+                    (self.eval(&exprs.0)?, self.eval(&exprs.1)?)
+                {
+                    Ok(Val::Boolean(lhs > rhs))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::GreaterEq(exprs) => {
+                if let (Val::Integer(lhs), Val::Integer(rhs)) =
+                    (self.eval(&exprs.0)?, self.eval(&exprs.1)?)
+                {
+                    Ok(Val::Boolean(lhs >= rhs))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::Less(exprs) => {
+                if let (Val::Integer(lhs), Val::Integer(rhs)) =
+                    (self.eval(&exprs.0)?, self.eval(&exprs.1)?)
+                {
+                    Ok(Val::Boolean(lhs < rhs))
+                } else {
+                    Err(PgError::Mismatched)
+                }
+            }
+            PgExpression::LessEq(exprs) => {
+                if let (Val::Integer(lhs), Val::Integer(rhs)) =
+                    (self.eval(&exprs.0)?, self.eval(&exprs.1)?)
+                {
+                    Ok(Val::Boolean(lhs <= rhs))
+                } else {
+                    Err(PgError::Mismatched)
+                }
             }
         }
     }
@@ -373,62 +496,13 @@ impl ProgramGraph {
         let var_content = self
             .vars
             .get_mut(var.0)
-            .ok_or(PgError::NonExistingVar(var))?;
-        match var_content {
-            Val::Boolean(_) if !matches!(val, Val::Boolean(_)) => Err(PgError::Mismatched),
-            Val::Integer(_) if !matches!(val, Val::Integer(_)) => Err(PgError::Mismatched),
-            _ => {
-                let previous_val = var_content.clone();
-                *var_content = val;
-                Ok(previous_val)
-            }
-        }
-    }
-
-    fn eval_formula(&self, formula: &Formula) -> bool {
-        match formula {
-            Formula::And(lhs, rhs) => self.eval_formula(lhs) && self.eval_formula(rhs),
-            Formula::Or(lhs, rhs) => self.eval_formula(lhs) || self.eval_formula(rhs),
-            Formula::Implies(lhs, rhs) => !self.eval_formula(lhs) || self.eval_formula(rhs),
-            Formula::Not(subform) => !self.eval_formula(subform),
-            Formula::Prop(var) => {
-                let val = self
-                    .vars
-                    .get(var.0)
-                    .expect("formula has been validated before");
-                if let Val::Boolean(prop) = val {
-                    *prop
-                } else {
-                    unreachable!("formula has been validated before");
-                }
-            }
-            Formula::Equal(lhs, rhs) => self.eval_expr(lhs) == self.eval_expr(rhs),
-            Formula::Greater(lhs, rhs) => self.eval_expr(lhs) > self.eval_expr(rhs),
-            Formula::GreaterEq(lhs, rhs) => self.eval_expr(lhs) >= self.eval_expr(rhs),
-            Formula::Less(lhs, rhs) => self.eval_expr(lhs) < self.eval_expr(rhs),
-            Formula::LessEq(lhs, rhs) => self.eval_expr(lhs) <= self.eval_expr(rhs),
-            Formula::True => true,
-            Formula::False => false,
-        }
-    }
-
-    fn eval_expr(&self, expr: &IntExpr) -> Integer {
-        match expr {
-            IntExpr::Const(int) => *int,
-            IntExpr::Var(var) => {
-                if let Val::Integer(val) = self
-                    .vars
-                    .get(var.0)
-                    .expect("formula has been validated before")
-                {
-                    *val
-                } else {
-                    unreachable!("formula has been validated before");
-                }
-            }
-            IntExpr::Opposite(expr) => -self.eval_expr(expr),
-            IntExpr::Sum(lhs, rhs) => self.eval_expr(lhs) + self.eval_expr(rhs),
-            IntExpr::Mult(lhs, rhs) => self.eval_expr(lhs) * self.eval_expr(rhs),
+            .ok_or_else(|| PgError::NonExistingVar(var.to_owned()))?;
+        if var_content.r#type() == val.r#type() {
+            let previous_val = var_content.clone();
+            *var_content = val;
+            Ok(previous_val)
+        } else {
+            Err(PgError::Mismatched)
         }
     }
 }
@@ -442,7 +516,7 @@ mod tests {
         // Create Program Graph
         let mut builder = ProgramGraphBuilder::new();
         // Variables
-        let battery = builder.new_var(VarType::Integer);
+        let battery = builder.new_var(Type::Integer);
         // Locations
         let initial = builder.initial_location();
         let left = builder.new_location();
@@ -450,33 +524,40 @@ mod tests {
         let right = builder.new_location();
         // Actions
         let initialize = builder.new_action();
-        builder.add_effect(initialize, battery, Expression::Integer(IntExpr::Const(3)))?;
+        builder.add_effect(
+            initialize,
+            battery.to_owned(),
+            PgExpression::Const(Val::Integer(3)),
+        )?;
         let move_left = builder.new_action();
         builder.add_effect(
             move_left,
-            battery,
-            Expression::Integer(IntExpr::Sum(
-                Box::new(IntExpr::Var(battery)),
-                Box::new(IntExpr::Opposite(Box::new(IntExpr::Const(1)))),
-            )),
+            battery.to_owned(),
+            PgExpression::Sum(vec![
+                PgExpression::Var(battery.to_owned()),
+                PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
+            ]),
         )?;
         let move_right = builder.new_action();
         builder.add_effect(
             move_right,
-            battery,
-            Expression::Integer(IntExpr::Sum(
-                Box::new(IntExpr::Var(battery)),
-                Box::new(IntExpr::Opposite(Box::new(IntExpr::Const(1)))),
-            )),
+            battery.to_owned(),
+            PgExpression::Sum(vec![
+                PgExpression::Var(battery.to_owned()),
+                PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
+            ]),
         )?;
         // Guards
-        let out_of_charge = Formula::Less(IntExpr::Const(0), IntExpr::Var(battery));
+        let out_of_charge = PgExpression::Less(Box::new((
+            PgExpression::Const(Val::Integer(0)),
+            PgExpression::Var(battery),
+        )));
         // Program graph definition
-        builder.add_transition(initial, initialize, center, Formula::True)?;
-        builder.add_transition(left, move_right, center, out_of_charge.clone())?;
-        builder.add_transition(center, move_right, right, out_of_charge.clone())?;
-        builder.add_transition(right, move_left, center, out_of_charge.clone())?;
-        builder.add_transition(center, move_left, left, out_of_charge)?;
+        builder.add_transition(initial, initialize, center, None)?;
+        builder.add_transition(left, move_right, center, Some(out_of_charge.clone()))?;
+        builder.add_transition(center, move_right, right, Some(out_of_charge.clone()))?;
+        builder.add_transition(right, move_left, center, Some(out_of_charge.clone()))?;
+        builder.add_transition(center, move_left, left, Some(out_of_charge))?;
         // Execution
         let mut pg = builder.build();
         assert_eq!(pg.possible_transitions().len(), 1);
