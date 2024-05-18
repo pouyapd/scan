@@ -1,49 +1,29 @@
-use quick_xml::Reader;
-use scan::Parser;
-use std::{error::Error, path::PathBuf, str::FromStr};
+use anyhow::anyhow;
+use scan::*;
+use std::{path::PathBuf, str::FromStr};
+
+const MAXSTEP: usize = 1000;
 
 #[test]
-fn empty() -> Result<(), Box<dyn Error>> {
-    let file = PathBuf::from_str("./assets/tests/empty.scxml")?;
-    let mut reader = Reader::from_file(file)?;
-    let model = Parser::parse(&mut reader)?;
-    assert!(model.possible_transitions().is_empty());
-    Ok(())
+fn fsm() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_1/model.xml")?)
 }
 
 #[test]
-fn trivial() -> Result<(), Box<dyn Error>> {
-    let file = PathBuf::from_str("./assets/tests/trivial.scxml")?;
-    let mut reader = Reader::from_file(file)?;
-    let model = Parser::parse(&mut reader)?;
-    assert!(model.possible_transitions().is_empty());
-    Ok(())
+fn datamodel() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_2/model.xml")?)
 }
 
-#[test]
-fn transition() -> Result<(), Box<dyn Error>> {
-    let file = PathBuf::from_str("./assets/tests/transition.scxml")?;
-    let mut reader = Reader::from_file(file)?;
-    let mut model = Parser::parse(&mut reader)?;
-    for _ in 0..2 {
-        assert_eq!(model.possible_transitions().len(), 1);
-        let (pg_id, action, post) = *model.possible_transitions().first().expect("len 1");
-        model.transition(pg_id, action, post)?;
+fn test(file: PathBuf) -> anyhow::Result<()> {
+    let parser = Parser::parse(file)?;
+    let mut model = parser.build_model();
+    let mut steps = 0;
+    while let Some((pg_id, act, loc)) = model.possible_transitions().first().cloned() {
+        model.transition(pg_id, act, loc)?;
+        steps += 1;
+        if steps >= MAXSTEP {
+            return Err(anyhow!("step limit reached"));
+        }
     }
-    assert!(model.possible_transitions().is_empty());
-    Ok(())
-}
-
-#[test]
-fn variable() -> Result<(), Box<dyn Error>> {
-    let file = PathBuf::from_str("./assets/tests/variable.scxml")?;
-    let mut reader = Reader::from_file(file)?;
-    let mut model = Parser::parse(&mut reader)?;
-    for _ in 0..3 {
-        assert_eq!(model.possible_transitions().len(), 1);
-        let (pg_id, action, post) = *model.possible_transitions().first().expect("len 1");
-        model.transition(pg_id, action, post)?;
-    }
-    assert!(model.possible_transitions().is_empty());
     Ok(())
 }

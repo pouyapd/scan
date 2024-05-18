@@ -1,0 +1,18 @@
+<scxml 
+  version="1.0"
+  xmlns="http://www.w3.org/2005/07/scxml"
+  datamodel="ecmascript"
+  name="AlarmBatteryLow"
+  initial="idle">
+
+  <datamodel>
+  </datamodel>
+
+  <state id="idle">
+    <transition target="running"/>
+  </state>
+
+	<state id="running">
+	  <transition target="idle"/>
+  </state>
+</scxml>
