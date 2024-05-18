@@ -67,6 +67,8 @@ pub enum ParserErrorType {
     EcmaScriptParsing,
     #[error("required type annotation missing")]
     NoTypeAnnotation,
+    #[error("provided path is not a file")]
+    NotAFile,
 }
 
 #[derive(Error, Debug)]
@@ -98,6 +100,7 @@ impl From<ConvinceTag> for &'static str {
 
 #[derive(Debug)]
 pub struct Parser {
+    root_folder: PathBuf,
     pub(crate) process_list: HashMap<String, Process>,
     pub(crate) types: OmgTypes,
     // properties: PathBuf,
@@ -115,8 +118,14 @@ pub struct Process {
 }
 
 impl Parser {
-    pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Parser> {
+    pub fn parse(file: PathBuf) -> anyhow::Result<Parser> {
+        let mut reader = Reader::from_file(file.to_owned())?;
+        let root_folder = file
+            .parent()
+            .ok_or(ParserError(0, ParserErrorType::NotAFile))?
+            .to_path_buf();
         let mut spec = Parser {
+            root_folder,
             process_list: HashMap::new(),
             types: OmgTypes::new(),
         };
@@ -183,10 +192,10 @@ impl Parser {
                                 .last()
                                 .is_some_and(|tag| *tag == ConvinceTag::ProcessList) =>
                         {
-                            spec.parse_process(tag, reader)?;
+                            spec.parse_process(tag, &mut reader)?;
                         }
                         TAG_TYPES if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) => {
-                            spec.parse_types(tag, reader)?;
+                            spec.parse_types(tag, &mut reader)?;
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -265,25 +274,28 @@ impl Parser {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_PATH.to_string())
         )))?;
-        let path = PathBuf::from(path);
+        let mut root_path = self.root_folder.clone();
+        root_path.extend(PathBuf::from(path).into_iter());
         let moc = moc.ok_or(anyhow!(ParserError(
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_MOC.to_string())
         )))?;
         let moc = match moc.as_str() {
             "fsm" => {
-                info!("creating reader from file {0}", path.display());
-                let mut reader = Reader::from_file(path)?;
+                info!("creating reader from file {0}", root_path.display());
+                let mut reader = Reader::from_file(root_path)?;
                 let fsm = Fsm::parse(&mut reader)?;
                 MoC::Fsm(fsm)
             }
             "bt" => {
-                info!("creating reader from file {0}", path.display());
-                let mut reader = Reader::from_file(path)?;
+                info!("creating reader from file {0}", root_path.display());
+                let mut reader = Reader::from_file(root_path)?;
                 let bt = Bt::parse_skill(&mut reader)?.pop().unwrap();
                 MoC::Bt(bt)
             }
-            _ => todo!(),
+            moc => {
+                return Err(anyhow!("unknown MoC {moc}"));
+            }
         };
         let process = Process { moc };
         // Here it should be checked that no process was already in the list under the same name
@@ -318,9 +330,10 @@ impl Parser {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_PATH.to_string())
         )))?;
-        let path = PathBuf::from(path);
-        info!("creating reader from file {0}", path.display());
-        let mut reader = Reader::from_file(path)?;
+        let mut root_path = self.root_folder.clone();
+        root_path.extend(PathBuf::from(path).into_iter());
+        info!("creating reader from file {0}", root_path.display());
+        let mut reader = Reader::from_file(root_path)?;
         self.types.parse(&mut reader)?;
         Ok(())
     }

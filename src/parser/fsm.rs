@@ -48,7 +48,6 @@ impl ScxmlTag {
 
 #[derive(Debug, Clone)]
 pub struct State {
-    pub(crate) id: String,
     pub(crate) transitions: Vec<Transition>,
     pub(crate) on_entry: Vec<Executable>,
     pub(crate) on_exit: Vec<Executable>,
@@ -58,9 +57,14 @@ pub struct State {
 pub struct Transition {
     pub(crate) event: Option<String>,
     pub(crate) target: String,
-    pub(crate) param: Option<(String, String)>,
     pub(crate) cond: Option<boa_ast::Expression>,
     pub(crate) effects: Vec<Executable>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Target {
+    Id(String),
+    Expr(boa_ast::Expression),
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +78,7 @@ pub enum Executable {
     },
     Send {
         event: String,
-        target: String,
+        target: Target,
         params: Vec<Param>,
     },
 }
@@ -139,7 +143,7 @@ impl Fsm {
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
                         {
-                            fsm.parse_transition(tag, reader, type_annotation.take(), &stack)?;
+                            fsm.parse_transition(tag, reader, &stack)?;
                             stack.push(ScxmlTag::Transition);
                         }
                         TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
@@ -197,12 +201,19 @@ impl Fsm {
                             ))?;
                             fsm.parse_data(tag, ident, omg_type, reader)?;
                         }
+                        TAG_STATE
+                            if stack
+                                .last()
+                                .is_some_and(|tag| matches!(*tag, ScxmlTag::Scxml)) =>
+                        {
+                            let _id = fsm.parse_state(tag, reader)?;
+                        }
                         TAG_TRANSITION
                             if stack
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
                         {
-                            fsm.parse_transition(tag, reader, type_annotation.take(), &stack)?;
+                            fsm.parse_transition(tag, reader, &stack)?;
                         }
                         // we `rev()` the iterator only because we expect the relevant tag to be towards the end of the stack
                         TAG_RAISE if stack.iter().rev().any(|tag| tag.is_executable()) => {
@@ -319,7 +330,6 @@ impl Fsm {
             self.initial = id.to_owned();
         }
         let state = State {
-            id: id.to_owned(),
             transitions: Vec::new(),
             on_entry: Vec::new(),
             on_exit: Vec::new(),
@@ -333,7 +343,6 @@ impl Fsm {
         &mut self,
         tag: events::BytesStart<'_>,
         reader: &mut Reader<R>,
-        param: Option<(String, String)>,
         stack: &[ScxmlTag],
     ) -> anyhow::Result<()> {
         let state: &str = stack
@@ -400,7 +409,6 @@ impl Fsm {
         let transition = Transition {
             event,
             target,
-            param,
             cond,
             effects: Vec::new(),
         };
@@ -454,6 +462,7 @@ impl Fsm {
     ) -> anyhow::Result<()> {
         let mut event: Option<String> = None;
         let mut target: Option<String> = None;
+        let mut targetexpr: Option<String> = None;
         for attr in tag
             .attributes()
             .collect::<Result<Vec<Attribute>, AttrError>>()?
@@ -466,8 +475,7 @@ impl Fsm {
                     target = Some(String::from_utf8(attr.value.into_owned())?);
                 }
                 ATTR_TARGETEXPR => {
-                    // TODO: implement target expressions
-                    return Ok(());
+                    targetexpr = Some(String::from_utf8(attr.value.into_owned())?);
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_TRANSITION}");
@@ -482,10 +490,31 @@ impl Fsm {
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_EVENT.to_string())
         )))?;
-        let target = target.ok_or(anyhow!(ParserError(
-            reader.buffer_position(),
-            ParserErrorType::MissingAttr(ATTR_TARGET.to_string())
-        )))?;
+        let target = if let Some(target) = target {
+            Target::Id(target)
+        } else if let Some(targetexpr) = targetexpr {
+            if let StatementListItem::Statement(boa_ast::Statement::Expression(targetexpr)) =
+                boa_parser::Parser::new(boa_parser::Source::from_bytes(targetexpr.as_bytes()))
+                    .parse_script(&mut self.interner)
+                    .expect("hope this works")
+                    .statements()
+                    .first()
+                    .expect("hopefully there is a statement")
+                    .to_owned()
+            {
+                Target::Expr(targetexpr)
+            } else {
+                return Err(anyhow!(ParserError(
+                    reader.buffer_position(),
+                    ParserErrorType::EcmaScriptParsing,
+                )));
+            }
+        } else {
+            return Err(anyhow!(ParserError(
+                reader.buffer_position(),
+                ParserErrorType::MissingAttr(ATTR_TARGETEXPR.to_string())
+            )));
+        };
         let executable = Executable::Send {
             event,
             target,

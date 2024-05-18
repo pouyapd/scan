@@ -216,10 +216,10 @@ impl ProgramGraphBuilder {
             PgExpression::Sum(exprs) | PgExpression::Mult(exprs) => {
                 if exprs
                     .iter()
-                    .map(|prop| self.r#type(prop))
+                    .map(|expr| self.r#type(expr))
                     .collect::<Result<Vec<Type>, PgError>>()?
                     .iter()
-                    .all(|prop| matches!(prop, Type::Integer))
+                    .all(|expr| matches!(expr, Type::Integer))
                 {
                     Ok(Type::Integer)
                 } else {
@@ -234,7 +234,7 @@ impl ProgramGraphBuilder {
                 if matches!(self.r#type(&exprs.0)?, Type::Integer)
                     && matches!(self.r#type(&exprs.1)?, Type::Integer)
                 {
-                    Ok(Type::Integer)
+                    Ok(Type::Boolean)
                 } else {
                     Err(PgError::Mismatched)
                 }
@@ -442,7 +442,7 @@ impl ProgramGraph {
                     })
                     .collect::<Result<Vec<Integer>, PgError>>()?
                     .iter()
-                    .fold(0, |tot, val| tot * *val),
+                    .fold(1, |tot, val| tot * *val),
             )),
             PgExpression::Equal(exprs) => {
                 if let (Val::Integer(lhs), Val::Integer(rhs)) =
@@ -524,33 +524,31 @@ mod tests {
         let right = builder.new_location();
         // Actions
         let initialize = builder.new_action();
-        builder.add_effect(
-            initialize,
-            battery.to_owned(),
-            PgExpression::Const(Val::Integer(3)),
-        )?;
+        builder.add_effect(initialize, battery, PgExpression::Const(Val::Integer(3)))?;
         let move_left = builder.new_action();
         builder.add_effect(
             move_left,
-            battery.to_owned(),
+            battery,
             PgExpression::Sum(vec![
-                PgExpression::Var(battery.to_owned()),
-                PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
+                PgExpression::Var(battery),
+                // PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
+                PgExpression::Const(Val::Integer(-1)),
             ]),
         )?;
         let move_right = builder.new_action();
         builder.add_effect(
             move_right,
-            battery.to_owned(),
+            battery,
             PgExpression::Sum(vec![
-                PgExpression::Var(battery.to_owned()),
-                PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
+                PgExpression::Var(battery),
+                // PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
+                PgExpression::Const(Val::Integer(-1)),
             ]),
         )?;
         // Guards
-        let out_of_charge = PgExpression::Less(Box::new((
-            PgExpression::Const(Val::Integer(0)),
+        let out_of_charge = PgExpression::Greater(Box::new((
             PgExpression::Var(battery),
+            PgExpression::Const(Val::Integer(0)),
         )));
         // Program graph definition
         builder.add_transition(initial, initialize, center, None)?;

@@ -13,7 +13,7 @@ impl Type {
             Type::Integer => Val::Integer(0),
             Type::Unit => Val::Unit,
             Type::Product(tuple) => {
-                Val::Tuple(Vec::from_iter(tuple.iter().map(|e| e.default_value())))
+                Val::Tuple(Vec::from_iter(tuple.iter().map(Self::default_value)))
             }
         }
     }

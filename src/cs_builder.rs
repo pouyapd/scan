@@ -1,6 +1,6 @@
-use std::{collections::HashMap, str::FromStr};
+use std::collections::{HashMap, HashSet};
 
-use crate::{parser::vocabulary::*, CsAction, Val};
+use crate::{CsAction, Val};
 use anyhow::{anyhow, Ok, Result};
 use log::{info, trace};
 
@@ -19,6 +19,21 @@ pub struct CsModel {
     // component_names: HashMap<PgId, String>,
 }
 
+#[derive(Debug, Clone)]
+struct FsmBuilder {
+    pg_id: PgId,
+    ext_queue: Channel,
+    index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct EventBuilder {
+    params: HashMap<String, Type>,
+    senders: HashSet<PgId>,
+    receivers: HashSet<PgId>,
+    index: usize,
+}
+
 #[derive(Debug)]
 pub struct Sc2CsVisitor {
     cs: ChannelSystemBuilder,
@@ -27,16 +42,11 @@ pub struct Sc2CsVisitor {
     enums: HashMap<(String, String), Integer>,
     // Each State Chart has an associated Program Graph,
     // and an arbitrary, progressive index
-    moc_ids: HashMap<String, usize>,
-    moc_pgid: Vec<PgId>,
-    // skill_ids: HashMap<String, PgId>,
-    // component_ids: HashMap<String, PgId>,
-    // Each State Chart has an associated external event queue.
-    channels: HashMap<String, Channel>,
-    // Each event is associated to a unique global index.
-    events: HashMap<String, Integer>,
-    // For each State Chart, each variable is associated to an index.
-    vars: HashMap<(PgId, String), (CsVar, Type)>,
+    fsm_builders: HashMap<String, FsmBuilder>,
+    // Each event is associated to a unique global index and parameter(s).
+    // WARN FIXME TODO: name clashes
+    events: Vec<EventBuilder>,
+    event_indexes: HashMap<String, usize>,
     // Events carrying parameters have dedicated channels for them,
     // one for each:
     // - senderStateChart
@@ -44,7 +54,7 @@ pub struct Sc2CsVisitor {
     // - sentEvent (index)
     // - paramName
     // that is needed
-    parameters: HashMap<(PgId, PgId, Integer, String), Channel>,
+    parameters: HashMap<(PgId, PgId, usize, String), Channel>,
 }
 
 impl Sc2CsVisitor {
@@ -55,28 +65,25 @@ impl Sc2CsVisitor {
             enums: HashMap::new(),
             // skill_ids: HashMap::new(),
             // component_ids: HashMap::new(),
-            moc_ids: HashMap::new(),
-            moc_pgid: Vec::new(),
-            channels: HashMap::new(),
-            events: HashMap::new(),
+            fsm_builders: HashMap::new(),
+            events: Vec::new(),
+            event_indexes: HashMap::new(),
             parameters: HashMap::new(),
-            vars: HashMap::new(),
         };
 
         // FIXME: Is there a better way? Const object?
+        // Add base types
         model
             .scan_types
-            .insert(String::from_str("int32").unwrap(), Type::Integer);
+            .insert(String::from("int32"), Type::Integer);
+        model.scan_types.insert(String::from("URI"), Type::Integer);
         model
             .scan_types
-            .insert(String::from_str("URI").unwrap(), Type::Integer);
-        model
-            .scan_types
-            .insert(String::from_str("Boolean").unwrap(), Type::Boolean);
+            .insert(String::from("Boolean"), Type::Boolean);
 
         model.build_types(&parser.types)?;
 
-        model.build_channels(&parser)?;
+        model.prebuild_processes(&parser)?;
 
         info!("Visit process list");
         for (id, declaration) in parser.process_list.iter() {
@@ -111,115 +118,94 @@ impl Sc2CsVisitor {
         Ok(())
     }
 
-    fn event_idx(&mut self, id: &str) -> Integer {
-        self.events.get(id).cloned().unwrap_or_else(|| {
-            let idx = self.events.len() as Integer;
-            self.events.insert(id.to_owned(), idx);
-            idx
+    fn event_index(&mut self, id: &str) -> usize {
+        self.event_indexes.get(id).cloned().unwrap_or_else(|| {
+            let index = self.events.len();
+            self.events.push(EventBuilder {
+                params: HashMap::new(),
+                index,
+                senders: HashSet::new(),
+                receivers: HashSet::new(),
+            });
+            index
         })
     }
 
-    fn moc_pgid(&mut self, id: &str) -> PgId {
-        self.moc_ids
-            .get(id)
-            .map(|idx| self.moc_pgid[*idx])
-            .unwrap_or_else(|| {
-                let idx = self.moc_pgid.len();
-                self.moc_ids.insert(id.to_owned(), idx);
-                let pg_id = self.cs.new_program_graph();
-                self.moc_pgid.push(pg_id);
-                pg_id
-            })
-    }
-
-    fn channel(&mut self, id: &str, ch_type: Type, capacity: Option<usize>) -> Channel {
-        self.channels.get(id).cloned().unwrap_or_else(|| {
-            let channel = self.cs.new_channel(ch_type, capacity);
-            self.channels.insert(id.to_owned(), channel);
-            channel
-        })
-    }
-
-    fn external_queue(&mut self, pg_id: PgId) -> Channel {
-        let ext_queue_name = format!("BLDR:{pg_id:?}:external_queue");
-        self.channel(
-            &ext_queue_name,
-            Type::Product(vec![Type::Integer, Type::Integer]),
-            None,
-        )
-    }
-
-    fn var(&self, pg_id: PgId, id: &str) -> anyhow::Result<(CsVar, Type)> {
-        self.vars
-            .get(&(pg_id, id.to_string()))
-            .cloned()
-            .ok_or(anyhow!("non-existing variable"))
-    }
-
-    fn new_var(&mut self, pg_id: PgId, id: &str, var_type: Type) -> anyhow::Result<CsVar> {
-        if self.vars.contains_key(&(pg_id, id.to_owned())) {
-            Err(anyhow!("variable named {id} already exists"))
-        } else {
-            let var = self.cs.new_var(pg_id, var_type.to_owned())?;
-            self.vars.insert((pg_id, id.to_string()), (var, var_type));
-            Ok(var)
+    fn fsm_builder(&mut self, id: &str) -> &FsmBuilder {
+        if !self.fsm_builders.contains_key(id) {
+            let index = self.fsm_builders.len();
+            let pg_id = self.cs.new_program_graph();
+            let ext_queue = self
+                .cs
+                .new_channel(Type::Product(vec![Type::Integer, Type::Integer]), None);
+            let fsm = FsmBuilder {
+                pg_id,
+                ext_queue,
+                index,
+            };
+            self.fsm_builders.insert(id.to_string(), fsm);
         }
+        self.fsm_builders.get(id).expect("just inserted")
     }
 
-    // fn param_channel(
+    // fn get_or_add_param(
     //     &mut self,
     //     sender: PgId,
     //     receiver: PgId,
+    //     event: usize,
+    //     param: String,
+    //     par_type: Type,
+    // ) -> anyhow::Result<Channel> {
+    //     todo!()
+    // }
+
+    // fn param_var(
+    //     &mut self,
+    //     pg_id: PgId,
     //     event_name: String,
     //     ident: String,
     //     var_type: Type,
-    // ) -> Channel {
-    //     let param = format!("BLDR_CH:{sender:?}:{receiver:?}:{event_name}:{ident}");
-    //     self.channel(&param, var_type, None)
+    // ) -> anyhow::Result<CsVar> {
+    //     let var_name = format!("BLDR_VAR:{pg_id:?}:{event_name}:{ident}");
+    //     self.var(pg_id, &var_name)
+    //         .map(|(v, _)| v)
+    //         .or_else(|_| self.new_var(pg_id, &var_name, var_type))
     // }
 
-    fn param_var(
-        &mut self,
-        pg_id: PgId,
-        event_name: String,
-        ident: String,
-        var_type: Type,
-    ) -> anyhow::Result<CsVar> {
-        let var_name = format!("BLDR_VAR:{pg_id:?}:{event_name}:{ident}");
-        self.var(pg_id, &var_name)
-            .map(|(v, _)| v)
-            .or_else(|_| self.new_var(pg_id, &var_name, var_type))
-    }
-
-    fn build_channels(&mut self, parser: &Parser) -> anyhow::Result<()> {
+    fn prebuild_processes(&mut self, parser: &Parser) -> anyhow::Result<()> {
         for (id, declaration) in parser.process_list.iter() {
-            let pg_id = self.moc_pgid(id);
+            let pg_id = self.fsm_builder(id).pg_id;
             match &declaration.moc {
-                MoC::Fsm(fsm) => self.build_channels_fsm(pg_id, fsm)?,
+                MoC::Fsm(fsm) => self.prebuild_fsms(pg_id, fsm)?,
                 MoC::Bt(bt) => self.build_channels_bt(pg_id, bt)?,
             }
         }
         Ok(())
     }
 
-    fn build_channels_fsm(&mut self, pg_id: PgId, fmt: &Fsm) -> anyhow::Result<()> {
+    fn prebuild_fsms(&mut self, pg_id: PgId, fmt: &Fsm) -> anyhow::Result<()> {
         for (_, state) in fmt.states.iter() {
             for exec in state.on_entry.iter() {
-                self.build_channels_exec(pg_id, exec)?;
+                self.prebuild_params(pg_id, exec)?;
             }
             for transition in state.transitions.iter() {
+                if let Some(ref event) = transition.event {
+                    let event_index = self.event_index(event);
+                    let builder = self.events.get_mut(event_index).expect("index must exist");
+                    builder.receivers.insert(pg_id);
+                }
                 for exec in transition.effects.iter() {
-                    self.build_channels_exec(pg_id, exec)?;
+                    self.prebuild_params(pg_id, exec)?;
                 }
             }
             for exec in state.on_exit.iter() {
-                self.build_channels_exec(pg_id, exec)?;
+                self.prebuild_params(pg_id, exec)?;
             }
         }
         Ok(())
     }
 
-    fn build_channels_exec(&mut self, pg_id: PgId, executable: &Executable) -> anyhow::Result<()> {
+    fn prebuild_params(&mut self, pg_id: PgId, executable: &Executable) -> anyhow::Result<()> {
         match executable {
             Executable::Assign {
                 location: _,
@@ -228,20 +214,28 @@ impl Sc2CsVisitor {
             Executable::Raise { event: _ } => Ok(()),
             Executable::Send {
                 event,
-                target,
+                target: _,
                 params,
             } => {
-                let event_id = self.event_idx(event);
-                let target_id = self.moc_pgid(target);
+                // WARN FIXME target could be an expression!
+                let event_index = self.event_index(event);
+                let builder = self.events.get_mut(event_index).expect("index must exist");
+                builder.senders.insert(pg_id);
                 for param in params {
                     let var_type = self
                         .scan_types
                         .get(&param.omg_type)
                         .ok_or(anyhow!("type not found"))?
                         .clone();
-                    self.parameters
-                        .entry((pg_id, target_id, event_id, param.name.to_owned()))
-                        .or_insert(self.cs.new_channel(var_type, None));
+                    let prev_type = self.events[event_index]
+                        .params
+                        .insert(param.name.to_owned(), var_type.to_owned());
+                    // Type parameters should not change type
+                    if let Some(prev_type) = prev_type {
+                        if prev_type != var_type {
+                            return Err(anyhow!("type parameter mismatch"));
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -294,7 +288,8 @@ impl Sc2CsVisitor {
     fn build_bt(&mut self, bt: &Bt) -> anyhow::Result<()> {
         trace!("build bt {}", bt.id);
         // Initialize bt.
-        let pg_id = self.moc_pgid(&bt.id);
+        let pg_builder = self.fsm_builder(&bt.id);
+        let pg_id = pg_builder.pg_id;
         let loc_tick = self.cs.initial_location(pg_id)?;
         let loc_success = self.cs.new_location(pg_id)?;
         let loc_running = self.cs.new_location(pg_id)?;
@@ -304,11 +299,11 @@ impl Sc2CsVisitor {
         let step = self.cs.new_action(pg_id)?;
         self.cs
             .add_transition(pg_id, loc_running, step, loc_tick, None)?;
-        let tick_response_chn = self.external_queue(pg_id);
-        let tick_response = self.cs.new_var(pg_id, Type::Integer)?;
-        let receive_response =
-            self.cs
-                .new_communication(pg_id, tick_response_chn, Message::Receive(tick_response))?;
+        // let tick_response_chn = self.external_queue(pg_id);
+        // let tick_response = self.cs.new_var(pg_id, Type::Integer)?;
+        // let receive_response =
+        //     self.cs
+        //         .new_communication(pg_id, tick_response_chn, Message::Receive(tick_response))?;
         // self.build_bt_node(
         //     pg_id,
         //     loc_tick,
@@ -512,244 +507,184 @@ impl Sc2CsVisitor {
             }
             BtNode::LAct(id) | BtNode::LCnd(id) => {
                 // let ev_tick = self.get_event_idx(&"TICK");
-                let ev_tick_success = self.event_idx(&"SUCCESS");
-                let ev_tick_running = self.event_idx(&"RUNNING");
-                let ev_tick_failure = self.event_idx(&"FAILURE");
+                // let ev_tick_success = self.event_index(&"SUCCESS");
+                // let ev_tick_running = self.event_index(&"RUNNING");
+                // let ev_tick_failure = self.event_index(&"FAILURE");
                 // let ev_halt = self.get_event_idx(&"HALT");
                 // let ev_halt_ack = self.get_event_idx(&"ACK");
-                let loc_tick = self.cs.new_location(pg_id)?;
-                let loc_response = self.cs.new_location(pg_id)?;
-                // Build external queue for skill, if it does not exist already.
-                let skill_id = self.moc_pgid(id);
-                let external_queue = self.external_queue(skill_id);
-                // Create tick event, if it does not exist already.
-                let tick_call_event = self.event_idx(TICK_CALL);
-                // Send a tickCall event to the skill.
-                let tick_skill = self.cs.new_communication(
-                    pg_id,
-                    external_queue,
-                    Message::Send(CsExpression::Const(Val::Integer(tick_call_event))),
-                )?;
-                self.cs
-                    .add_transition(pg_id, pt_tick, tick_skill, loc_tick, None)?;
-                // Now leaf waits for response on its own channel
-                self.cs
-                    .add_transition(pg_id, loc_tick, receive_response, loc_response, None)?;
-                self.cs.add_transition(
-                    pg_id,
-                    loc_response,
-                    step,
-                    pt_success,
-                    Some(CsExpression::Equal(Box::new((
-                        CsExpression::Const(Val::Integer(ev_tick_success)),
-                        CsExpression::Var(tick_response),
-                    )))),
-                )?;
-                self.cs.add_transition(
-                    pg_id,
-                    loc_response,
-                    step,
-                    pt_running,
-                    Some(CsExpression::Equal(Box::new((
-                        CsExpression::Const(Val::Integer(ev_tick_running)),
-                        CsExpression::Var(tick_response),
-                    )))),
-                )?;
-                self.cs.add_transition(
-                    pg_id,
-                    loc_response,
-                    step,
-                    pt_failure,
-                    Some(CsExpression::Equal(Box::new((
-                        CsExpression::Const(Val::Integer(ev_tick_failure)),
-                        CsExpression::Var(tick_response),
-                    )))),
-                )?;
+                // let loc_tick = self.cs.new_location(pg_id)?;
+                // let loc_response = self.cs.new_location(pg_id)?;
+                // // Build external queue for skill, if it does not exist already.
+                // let skill_id = self.fsm_builder(id);
+                // // let external_queue = self.external_queue(skill_id);
+                // // Create tick event, if it does not exist already.
+                // let tick_call_event = self.event_index(TICK_CALL);
+                // // Send a tickCall event to the skill.
+                // // let tick_skill = self.cs.new_communication(
+                // //     pg_id,
+                // //     external_queue,
+                // //     Message::Send(CsExpression::Const(Val::Integer(tick_call_event))),
+                // // )?;
+                // // self.cs
+                // //     .add_transition(pg_id, pt_tick, tick_skill, loc_tick, None)?;
+                // // Now leaf waits for response on its own channel
+                // self.cs
+                //     .add_transition(pg_id, loc_tick, receive_response, loc_response, None)?;
+                // self.cs.add_transition(
+                //     pg_id,
+                //     loc_response,
+                //     step,
+                //     pt_success,
+                //     Some(CsExpression::Equal(Box::new((
+                //         CsExpression::Const(Val::Integer(ev_tick_success)),
+                //         CsExpression::Var(tick_response),
+                //     )))),
+                // )?;
+                // self.cs.add_transition(
+                //     pg_id,
+                //     loc_response,
+                //     step,
+                //     pt_running,
+                //     Some(CsExpression::Equal(Box::new((
+                //         CsExpression::Const(Val::Integer(ev_tick_running)),
+                //         CsExpression::Var(tick_response),
+                //     )))),
+                // )?;
+                // self.cs.add_transition(
+                //     pg_id,
+                //     loc_response,
+                //     step,
+                //     pt_failure,
+                //     Some(CsExpression::Equal(Box::new((
+                //         CsExpression::Const(Val::Integer(ev_tick_failure)),
+                //         CsExpression::Var(tick_response),
+                //     )))),
+                // )?;
             }
         }
 
         Ok(())
     }
 
-    // fn build_bt_node(
-    //     &mut self,
-    //     pg_id: PgId,
-    //     loc_tick: CsLocation,
-    //     loc_success: CsLocation,
-    //     loc_running: CsLocation,
-    //     loc_failure: CsLocation,
-    //     loc_halt: CsLocation,
-    //     loc_ack: CsLocation,
-    //     node: &BtNode,
-    // ) -> anyhow::Result<(CsLocation, CsLocation)> {
-    //     let tick_in = self.cs.new_location(pg_id)?;
-    //     let tick_out = self.cs.new_location(pg_id)?;
-
-    //     match node {
-    //         BtNode::RSeq(branches) => {}
-    //         BtNode::RFbk(branches) => {}
-    //         BtNode::MSeq(branches) => {}
-    //         BtNode::MFbk(branches) => {}
-    //         BtNode::Invr(branch) => {
-    //             // Recursively build branch BT and get its PoE location.
-    //             let (tick_child_in, tick_child_out) =
-    //                 self.build_bt_node(pg_id, tick_response, receive_response, branch)?;
-    //             // Propagate the tick to the branch.
-    //             let tick = self.cs.new_action(pg_id)?;
-    //             self.cs.add_transition(
-    //                 pg_id,
-    //                 tick_in,
-    //                 tick,
-    //                 tick_child_in,
-    //                 None,
-    //             )?;
-    //             // Inverting the tick_response:
-    //             // -1 ->  1
-    //             //  0 ->  0
-    //             //  1 -> -1
-    //             let invert = self.cs.new_action(pg_id)?;
-    //             self.cs.add_effect(
-    //                 pg_id,
-    //                 invert,
-    //                 tick_response,
-    //                 CsExpr::from_expr(CsIntExpr::opposite(CsIntExpr::new_var(tick_response))),
-    //             )?;
-    //             self.cs.add_transition(
-    //                 pg_id,
-    //                 tick_child_out,
-    //                 invert,
-    //                 tick_out,
-    //                 None,
-    //             )?;
-    //         }
-    //         BtNode::LAct(id) | BtNode::LCnd(id) => {
-    //             // Build external queue for skill, if it does not exist already.
-    //             let external_queue = self.external_queues.get(id).cloned().unwrap_or_else(|| {
-    //                 let external_queue = self.cs.new_channel(Type::Integer, None);
-    //                 self.external_queues.insert(id.to_owned(), external_queue);
-    //                 external_queue
-    //             });
-    //             // Create tick event, if it does not exist already.
-    //             let tick_call_event = self.get_event_idx(TICK_CALL);
-    //             // Send a tickCall event to the skill.
-    //             let tick_skill = self.cs.new_communication(
-    //                 pg_id,
-    //                 external_queue,
-    //                 Message::Send(CsExpr::from_expr(CsIntExpr::new_const(
-    //                     pg_id,
-    //                     tick_call_event,
-    //                 ))),
-    //             )?;
-    //             let wait_response_loc = self.cs.new_location(pg_id)?;
-    //             self.cs.add_transition(
-    //                 pg_id,
-    //                 tick_in,
-    //                 tick_skill,
-    //                 wait_response_loc,
-    //                 None,
-    //             )?;
-    //             // Now leaf waits for response on its own channel
-    //             self.cs.add_transition(
-    //                 pg_id,
-    //                 wait_response_loc,
-    //                 receive_response,
-    //                 tick_out,
-    //                 None,
-    //             )?;
-    //         }
-    //     }
-
-    //     Ok((tick_in, tick_out))
-    // }
-
-    // TODO: Optimize CS by removing unnecessary states
+    // TODO: Optimize CS by removing unnecessary states:
+    // - initialize state if empty datamodel
     fn build_fsm(&mut self, fsm: &Fsm) -> anyhow::Result<()> {
         trace!("build fsm {}", fsm.id);
         // Initialize fsm.
-        let pg_id = self.moc_pgid(&fsm.id);
-        let pg_idx = *self.moc_ids.get(&fsm.id).expect("should exist") as Integer;
+        let pg_builder = self.fsm_builder(&fsm.id);
+        let pg_id = pg_builder.pg_id;
+        let pg_index = pg_builder.index as Integer;
+        let ext_queue = pg_builder.ext_queue;
         // Initial location of Program Graph.
         let initial_loc = self.cs.initial_location(pg_id)?;
         let initialize = self.cs.new_action(pg_id)?;
         // Initialize variables from datamodel
+        let mut vars = HashMap::new();
         for (location, (type_name, expr)) in fsm.datamodel.iter() {
             let scan_type = self
                 .scan_types
                 .get(type_name)
                 .ok_or(anyhow!("unknown type"))?;
-            let var = self.cs.new_var(pg_id, scan_type.to_owned())?;
-            self.vars
-                .insert((pg_id, location.to_owned()), (var, scan_type.to_owned()));
+            let var = self
+                .cs
+                .new_var(pg_id, scan_type.to_owned())
+                .expect("program graph exists!");
+            vars.insert(location.to_owned(), (var, scan_type.to_owned()));
             // Initialize variable with `expr`, if any, by adding it as effect of `initialize` action.
             if let Some(expr) = expr {
-                let expr = self.expression(pg_id, expr, &fsm.interner, None, None)?;
+                let expr =
+                    self.expression(pg_id, expr, &fsm.interner, &vars, None, &HashMap::new())?;
+                // This might fail if `expr` does not typecheck.
                 self.cs.add_effect(pg_id, initialize, var, expr)?;
             }
         }
         // Transition initializing datamodel variables.
         // After initializing datamodel, transition to location representing point-of-entry of initial state of State Chart.
-        let initial_state = self.cs.new_location(pg_id)?;
+        let initial_state = self.cs.new_location(pg_id).expect("program graph exists!");
         self.cs
-            .add_transition(pg_id, initial_loc, initialize, initial_state, None)?;
+            .add_transition(pg_id, initial_loc, initialize, initial_state, None)
+            .expect("hand-coded args");
         // Map fsm's state ids to corresponding CS's locations.
         let mut states = HashMap::new();
         // Conventionally, the entry-point for a state is a location associated to the id of the state.
         // In particular, the id of the initial state of the fsm has to correspond to the initial location of the program graph.
         states.insert(fsm.initial.to_owned(), initial_state);
         // Var representing the current event and origin pair
-        let current_event_and_origin = self
+        let current_event_and_origin_var = self
             .cs
-            .new_var(pg_id, Type::Product(vec![Type::Integer, Type::Integer]))?;
+            .new_var(pg_id, Type::Product(vec![Type::Integer, Type::Integer]))
+            .expect("program graph exists!");
         // Var representing the current event
-        let current_event = self.cs.new_var(pg_id, Type::Integer)?;
+        let current_event_var = self
+            .cs
+            .new_var(pg_id, Type::Integer)
+            .expect("program graph exists!");
         // Implement internal queue
         let int_queue = self.cs.new_channel(Type::Integer, None);
-        let dequeue_int =
-            self.cs
-                .new_communication(pg_id, int_queue, Message::Receive(current_event))?;
+        let dequeue_int = self
+            .cs
+            .new_communication(pg_id, int_queue, Message::Receive(current_event_var))
+            .expect("hand-coded args");
         // Variable that will store origin of last processed event.
-        let origin_var = self.cs.new_var(pg_id, Type::Integer)?;
-        let set_int_origin = self.cs.new_action(pg_id)?;
-        self.cs.add_effect(
-            pg_id,
-            set_int_origin,
-            origin_var,
-            CsExpression::Const(Val::Integer(pg_idx)),
-        )?;
+        let origin_var = self
+            .cs
+            .new_var(pg_id, Type::Integer)
+            .expect("program graph exists!");
+        let set_int_origin = self.cs.new_action(pg_id).expect("program graph exists!");
+        self.cs
+            .add_effect(
+                pg_id,
+                set_int_origin,
+                origin_var,
+                CsExpression::Const(Val::Integer(pg_index)),
+            )
+            .expect("hand-coded args");
         // Implement external queue
-        let ext_queue = self.external_queue(pg_id);
-        let dequeue_ext = self.cs.new_communication(
-            pg_id,
-            ext_queue,
-            Message::Receive(current_event_and_origin),
-        )?;
+        let dequeue_ext = self
+            .cs
+            .new_communication(
+                pg_id,
+                ext_queue,
+                Message::Receive(current_event_and_origin_var),
+            )
+            .expect("hand-coded args");
         // Process external event to assign event and origin values to respective vars
         let process_ext_event = self.cs.new_action(pg_id)?;
-        self.cs.add_effect(
-            pg_id,
-            process_ext_event,
-            current_event,
-            CsExpression::Component(0, Box::new(CsExpression::Var(current_event_and_origin))),
-        )?;
-        self.cs.add_effect(
-            pg_id,
-            process_ext_event,
-            origin_var,
-            CsExpression::Component(1, Box::new(CsExpression::Var(current_event_and_origin))),
-        )?;
+        self.cs
+            .add_effect(
+                pg_id,
+                process_ext_event,
+                current_event_var,
+                CsExpression::Component(
+                    0,
+                    Box::new(CsExpression::Var(current_event_and_origin_var)),
+                ),
+            )
+            .expect("hand-coded args");
+        self.cs
+            .add_effect(
+                pg_id,
+                process_ext_event,
+                origin_var,
+                CsExpression::Component(
+                    1,
+                    Box::new(CsExpression::Var(current_event_and_origin_var)),
+                ),
+            )
+            .expect("hand-coded args");
         // Action representing checking the next transition
-        let next_transition = self.cs.new_action(pg_id)?;
+        let next_transition = self.cs.new_action(pg_id).expect("program graph exists!");
 
         // Consider each of the fsm's states
-        for (_, state) in fsm.states.iter() {
-            trace!("build state {}", state.id);
+        for (state_id, state) in fsm.states.iter() {
+            trace!("build state {}", state_id);
             // Each state is modeled by multiple locations connected by transitions
             // A starting location is used as a point-of-entry to the execution of the state.
-            let start_loc = if let Some(start_loc) = states.get(&state.id) {
+            let start_loc = if let Some(start_loc) = states.get(state_id) {
                 *start_loc
             } else {
-                let start_loc = self.cs.new_location(pg_id)?;
-                states.insert(state.id.to_owned(), start_loc);
+                let start_loc = self.cs.new_location(pg_id).expect("program graph exists!");
+                states.insert(state_id.to_owned(), start_loc);
                 start_loc
             };
             // Execute the state's `onentry` executable content
@@ -760,11 +695,12 @@ impl Sc2CsVisitor {
                 onentry_loc = self.add_executable(
                     executable,
                     pg_id,
-                    pg_idx,
+                    pg_index,
                     int_queue,
                     onentry_loc,
+                    &vars,
                     None,
-                    None,
+                    &HashMap::new(),
                     &fsm.interner,
                 )?;
             }
@@ -772,47 +708,121 @@ impl Sc2CsVisitor {
             // Location where eventless/NULL transitions activate
             let mut null_trans = onentry_loc;
             // Location where internal events are dequeued
-            let int_queue_loc = self.cs.new_location(pg_id)?;
+            let int_queue_loc = self.cs.new_location(pg_id).expect("program graph exists!");
             // Location where the origin of internal events is set as own.
-            let int_origin_loc = self.cs.new_location(pg_id)?;
+            let int_origin_loc = self.cs.new_location(pg_id).expect("program graph exists!");
             // Location where external events are dequeued
-            let ext_queue_loc = self.cs.new_location(pg_id)?;
-            // Location where the origin of external events is dequeued
-            let ext_queue_origin_loc = self.cs.new_location(pg_id)?;
+            let ext_queue_loc = self.cs.new_location(pg_id).expect("program graph exists!");
+            // Location where the index/origin of external events are dequeued
+            let ext_event_processing_loc =
+                self.cs.new_location(pg_id).expect("program graph exists!");
             // Location where eventful transitions activate
-            let mut eventful_trans = self.cs.new_location(pg_id)?;
+            let mut eventful_trans = self.cs.new_location(pg_id).expect("program graph exists!");
             // Transition dequeueing a new internal event and searching for first active eventful transition
             self.cs
-                .add_transition(pg_id, int_queue_loc, dequeue_int, int_origin_loc, None)?;
+                .add_transition(pg_id, int_queue_loc, dequeue_int, int_origin_loc, None)
+                .expect("hand-coded args");
             // Transition dequeueing a new internal event and searching for first active eventful transition
             self.cs
-                .add_transition(pg_id, int_origin_loc, set_int_origin, eventful_trans, None)?;
+                .add_transition(pg_id, int_origin_loc, set_int_origin, eventful_trans, None)
+                .expect("hand-coded args");
             // Action denoting checking if internal queue is empty;
             // if so, move to external queue.
             // Notice that one and only one of `int_dequeue` and `empty_int_queue` can be executed at a given time.
-            let empty_int_queue =
-                self.cs
-                    .new_communication(pg_id, int_queue, crate::Message::ProbeEmptyQueue)?;
+            let empty_int_queue = self
+                .cs
+                .new_communication(pg_id, int_queue, crate::Message::ProbeEmptyQueue)
+                .expect("hand-coded args");
             self.cs
-                .add_transition(pg_id, int_queue_loc, empty_int_queue, ext_queue_loc, None)?;
+                .add_transition(pg_id, int_queue_loc, empty_int_queue, ext_queue_loc, None)
+                .expect("hand-coded args");
             // Dequeue a new external event and search for first active named transition.
-            self.cs.add_transition(
-                pg_id,
-                ext_queue_loc,
-                dequeue_ext,
-                ext_queue_origin_loc,
-                None,
-            )?;
+            self.cs
+                .add_transition(
+                    pg_id,
+                    ext_queue_loc,
+                    dequeue_ext,
+                    ext_event_processing_loc,
+                    None,
+                )
+                .expect("hand-coded args");
             // Dequeue the origin of the corresponding external event.
-            self.cs.add_transition(
-                pg_id,
-                ext_queue_origin_loc,
-                process_ext_event,
-                eventful_trans,
-                None,
-            )?;
+            let mut ext_event_processing_param =
+                self.cs.new_location(pg_id).expect("program graph exists!");
+            self.cs
+                .add_transition(
+                    pg_id,
+                    ext_event_processing_loc,
+                    process_ext_event,
+                    ext_event_processing_param,
+                    None,
+                )
+                .expect("hand-coded args");
             // Retreive external event's parameters
-            // todo!();
+            // We need to set up the parameter-passing channel for every possible event that could be sent,
+            // from any possible other fsm,
+            // and for any parameter of the event.
+            let mut params: HashMap<(usize, String), (CsVar, Type)> = HashMap::new();
+            for event_builder in self
+                .events
+                .iter()
+                .filter(|eb| eb.receivers.contains(&pg_id))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter()
+            {
+                for (param_name, param_type) in event_builder.params.iter() {
+                    // Variable where to store parameter.
+                    let param_var = self
+                        .cs
+                        .new_var(pg_id, param_type.to_owned())
+                        .expect("hand-made input");
+                    // Record param for future executables
+                    params.insert(
+                        (event_builder.index, param_name.to_owned()),
+                        (param_var, param_type.to_owned()),
+                    );
+                    for sender_id in event_builder.senders.iter() {
+                        // Channel where to retreive the parameter from.
+                        let channel = *self
+                            .parameters
+                            .get(&(
+                                *sender_id,
+                                pg_id,
+                                event_builder.index,
+                                param_name.to_owned(),
+                                // param_type.to_owned(),
+                            ))
+                            .expect("hand-made input");
+                        let next = self.cs.new_location(pg_id).expect("program graph exists!");
+                        let read_param = self
+                            .cs
+                            .new_communication(pg_id, channel, Message::Receive(param_var))
+                            .expect("hard-coded input");
+                        self.cs
+                            .add_transition(
+                                pg_id,
+                                ext_event_processing_param,
+                                read_param,
+                                next,
+                                None,
+                            )
+                            .expect("hand-coded args");
+                        ext_event_processing_param = next;
+                    }
+                }
+            }
+
+            // Now we can start looking for transitions activated by the external event.
+            self.cs
+                .add_transition(
+                    pg_id,
+                    ext_event_processing_param,
+                    process_ext_event,
+                    eventful_trans,
+                    None,
+                )
+                .expect("hand-coded args");
 
             // Consider each of the state's transitions.
             for transition in state.transitions.iter() {
@@ -831,27 +841,52 @@ impl Sc2CsVisitor {
                 let exec_transition = self.cs.new_action(pg_id)?;
                 // Location corresponding to verifying the transition is not active and moving to next one.
                 let next_trans_loc = self.cs.new_location(pg_id)?;
+
+                // Set up origin and parameters for conditional/executable content.
+                let exec_origin;
+                let mut exec_params = HashMap::new();
+                if let Some(event_index) = transition
+                    .event
+                    .as_ref()
+                    .and_then(|ev| self.event_indexes.get(ev))
+                {
+                    exec_origin = Some(origin_var);
+                    for ((_, param_name), (var, var_type)) in params
+                        .iter()
+                        .filter(|((ev_ix, _), _)| *ev_ix == *event_index)
+                    {
+                        exec_params.insert(param_name.to_owned(), (*var, var_type.to_owned()));
+                    }
+                } else {
+                    exec_origin = None;
+                }
                 // Condition activating the transition.
                 // It has to be parsed/built as a Boolean expression.
-                let cond: Option<CsExpression> = if let Some(cond) = &transition.cond {
-                    let cond = self.expression(pg_id, cond, &fsm.interner, None, None)?;
-                    Some(
-                        cond.try_into()
-                            .expect("cond was built as a Boolean expression"),
-                    )
-                } else {
-                    None
-                };
+                // Could fail if `expr` is invalid.
+                let cond: Option<CsExpression> = transition
+                    .cond
+                    .as_ref()
+                    .map(|cond| {
+                        self.expression(
+                            pg_id,
+                            cond,
+                            &fsm.interner,
+                            &vars,
+                            exec_origin,
+                            &exec_params,
+                        )
+                    })
+                    .transpose()?;
                 // Guard for transition.
                 // Has to be defined depending on the type of transition, etc...
                 let guard;
                 // Proceed on whether the transition is eventless or activated by event.
                 if let Some(event) = &transition.event {
-                    // Create tick event, if it does not exist already.
-                    let event_idx = self.event_idx(event);
+                    // Create event, if it does not exist already.
+                    let event_idx = self.event_index(event) as Integer;
                     // Check if the current event (internal or external) corresponds to the event activating the transition.
                     let event_match = CsExpression::Equal(Box::new((
-                        CsExpression::Var(current_event),
+                        CsExpression::Var(current_event_var),
                         CsExpression::Const(Val::Integer(event_idx)),
                     )));
                     // TODO FIXME ugly code!
@@ -882,39 +917,18 @@ impl Sc2CsVisitor {
                     exec_trans_loc,
                     guard.to_owned(),
                 )?;
-                // Before executing executable content, we need to load the event's origin and parameters
-                let param: Option<(String, CsVar, Type)> =
-                    if let Some((ref ident, ref omg_type)) = transition.param {
-                        let var_type = self
-                            .scan_types
-                            .get(omg_type)
-                            .ok_or(anyhow!("unknown type"))?
-                            .to_owned();
-                        let event_name = transition
-                            .event
-                            .clone()
-                            .ok_or(anyhow!("unnamed events cannot have parameters"))?;
-                        let param_var = self.param_var(
-                            pg_id,
-                            event_name.to_owned(),
-                            ident.to_owned(),
-                            var_type.to_owned(),
-                        )?;
-                        Some((ident.to_string(), param_var, var_type.to_owned()))
-                    } else {
-                        None
-                    };
                 // First execute the executable content of the state's `on_exit` tag,
                 // then that of the `transition` tag.
                 for exec in state.on_exit.iter().chain(transition.effects.iter()) {
                     exec_trans_loc = self.add_executable(
                         exec,
                         pg_id,
-                        pg_idx,
+                        pg_index,
                         int_queue,
                         exec_trans_loc,
-                        Some(origin_var),
-                        param.to_owned(),
+                        &vars,
+                        exec_origin,
+                        &exec_params,
                         &fsm.interner,
                     )?;
                 }
@@ -953,18 +967,19 @@ impl Sc2CsVisitor {
         pg_idx: Integer,
         int_queue: Channel,
         loc: CsLocation,
+        vars: &HashMap<String, (CsVar, Type)>,
         origin: Option<CsVar>,
-        param: Option<(String, CsVar, Type)>,
+        params: &HashMap<String, (CsVar, Type)>,
         interner: &boa_interner::Interner,
     ) -> Result<CsLocation, anyhow::Error> {
         match executable {
             Executable::Raise { event } => {
                 // Create event, if it does not exist already.
-                let event_idx = self.event_idx(event);
+                let event_idx = self.event_index(event);
                 let raise = self.cs.new_communication(
                     pg_id,
                     int_queue,
-                    crate::Message::Send(CsExpression::Const(Val::Integer(event_idx))),
+                    crate::Message::Send(CsExpression::Const(Val::Integer(event_idx as Integer))),
                 )?;
                 let next_loc = self.cs.new_location(pg_id)?;
                 // queue the internal event
@@ -974,42 +989,96 @@ impl Sc2CsVisitor {
             Executable::Send {
                 event,
                 target,
-                params,
-            } => {
-                let target_id = self.moc_pgid(target);
-                // Create event, if it does not exist already.
-                let event_idx = self.event_idx(event);
-                let target_ext_queue = self.external_queue(target_id);
-                let send_event = self.cs.new_communication(
-                    pg_id,
-                    target_ext_queue,
-                    crate::Message::Send(CsExpression::Const(Val::Tuple(vec![
-                        Val::Integer(event_idx),
-                        Val::Integer(pg_idx),
-                    ]))),
-                )?;
+                params: send_params,
+            } => match target {
+                Target::Id(target) => {
+                    let target_builder = self.fsm_builder(target);
+                    let target_id = target_builder.pg_id;
+                    let target_ext_queue = target_builder.ext_queue;
+                    // Create event, if it does not exist already.
+                    let event_idx = self.event_index(event);
+                    let send_event = self.cs.new_communication(
+                        pg_id,
+                        target_ext_queue,
+                        crate::Message::Send(CsExpression::Const(Val::Tuple(vec![
+                            Val::Integer(event_idx as Integer),
+                            Val::Integer(pg_idx),
+                        ]))),
+                    )?;
 
-                // Send event and event origin before moving on to next location.
-                let mut next_loc = self.cs.new_location(pg_id)?;
-                self.cs
-                    .add_transition(pg_id, loc, send_event, next_loc, None)?;
+                    // Send event and event origin before moving on to next location.
+                    let mut next_loc = self.cs.new_location(pg_id)?;
+                    self.cs
+                        .add_transition(pg_id, loc, send_event, next_loc, None)?;
 
-                // Pass parameters.
-                for param in params {
-                    // Updates next location.
-                    next_loc =
-                        self.send_param(pg_id, target_id, param, event_idx, next_loc, interner)?;
+                    // Pass parameters.
+                    for param in send_params {
+                        // Updates next location.
+                        next_loc = self.send_param(
+                            pg_id, target_id, param, event_idx, next_loc, vars, interner,
+                        )?;
+                    }
+
+                    Ok(next_loc)
                 }
+                Target::Expr(targetexpr) => {
+                    let targetexpr =
+                        self.expression(pg_id, targetexpr, interner, vars, origin, params)?;
+                    let event_idx = self.event_index(event);
+                    // Location representing having sent the event to the correct target after evaluating expression.
+                    let done_loc = self.cs.new_location(pg_id).expect("PG exists");
+                    for &target_id in self.events[event_idx].receivers.clone().iter() {
+                        // FIXME TODO: there should be an indexing to avoid search
+                        let (_target_name, target_builder) = self
+                            .fsm_builders
+                            .iter()
+                            .find(|(_, b)| b.pg_id == target_id)
+                            .expect("fsm has to be here");
+                        let target_index = target_builder.index;
+                        let target_ext_queue = target_builder.ext_queue;
+                        let send_event = self.cs.new_communication(
+                            pg_id,
+                            target_ext_queue,
+                            crate::Message::Send(CsExpression::Const(Val::Tuple(vec![
+                                Val::Integer(event_idx as Integer),
+                                Val::Integer(pg_idx),
+                            ]))),
+                        )?;
 
-                Ok(next_loc)
-            }
+                        // Send event and event origin before moving on to next location.
+                        let mut next_loc = self.cs.new_location(pg_id)?;
+                        self.cs.add_transition(
+                            pg_id,
+                            loc,
+                            send_event,
+                            next_loc,
+                            Some(CsExpression::Equal(Box::new((
+                                CsExpression::Const(Val::Integer(target_index as Integer)),
+                                targetexpr.to_owned(),
+                            )))),
+                        )?;
+
+                        // Pass parameters.
+                        for param in send_params {
+                            // Updates next location.
+                            next_loc = self.send_param(
+                                pg_id, target_id, param, event_idx, next_loc, vars, interner,
+                            )?;
+                        }
+                        // Once sending event and args done, get to exit-point
+                        self.cs
+                            .add_transition(pg_id, next_loc, send_event, done_loc, None)
+                            .expect("hand-made args");
+                    }
+
+                    // Return exit point
+                    Ok(done_loc)
+                }
+            },
             Executable::Assign { location, expr } => {
                 // Add a transition that perform the assignment via the effect of the `assign` action.
-                let expr = self.expression(pg_id, expr, interner, origin, param)?;
-                let (var, scan_type) = self
-                    .vars
-                    .get(&(pg_id, location.to_owned()))
-                    .ok_or(anyhow!("undefined variable"))?;
+                let expr = self.expression(pg_id, expr, interner, &vars, origin, params)?;
+                let (var, _scan_type) = vars.get(location).ok_or(anyhow!("undefined variable"))?;
                 let assign = self.cs.new_action(pg_id)?;
                 self.cs.add_effect(pg_id, assign, *var, expr)?;
                 let next_loc = self.cs.new_location(pg_id)?;
@@ -1024,8 +1093,9 @@ impl Sc2CsVisitor {
         pg_id: PgId,
         target_id: PgId,
         param: &Param,
-        event_idx: i32,
+        event_idx: usize,
         next_loc: CsLocation,
+        vars: &HashMap<String, (CsVar, Type)>,
         interner: &boa_interner::Interner,
     ) -> Result<CsLocation, anyhow::Error> {
         // Get param type.
@@ -1035,7 +1105,7 @@ impl Sc2CsVisitor {
             .cloned()
             .ok_or(anyhow!("undefined type"))?;
         // Build expression from ECMAScript expression.
-        let expr = self.expression(pg_id, &param.expr, interner, None, None)?;
+        let expr = self.expression(pg_id, &param.expr, interner, &vars, None, &HashMap::new())?;
         // Create channel for parameter passing.
         let param_chn = *self
             .parameters
@@ -1057,8 +1127,9 @@ impl Sc2CsVisitor {
         pg_id: PgId,
         expr: &boa_ast::Expression,
         interner: &boa_interner::Interner,
+        vars: &HashMap<String, (CsVar, Type)>,
         origin: Option<CsVar>,
-        param: Option<(String, CsVar, Type)>,
+        params: &HashMap<String, (CsVar, Type)>,
     ) -> anyhow::Result<CsExpression> {
         let expr = match expr {
             boa_ast::Expression::This => todo!(),
@@ -1070,9 +1141,8 @@ impl Sc2CsVisitor {
                     .ok_or(anyhow!("not utf8"))?;
                 match ident {
                     "_event" => todo!(),
-                    var_ident => self
-                        .vars
-                        .get(&(pg_id, var_ident.to_string()))
+                    var_ident => vars
+                        .get(var_ident)
                         .ok_or(anyhow!("unknown variable"))
                         .map(|(var, _)| CsExpression::Var(*var))?,
                 }
@@ -1118,19 +1188,15 @@ impl Sc2CsVisitor {
                                     CsExpression::Var(origin)
                                 }
                                 var_ident => {
-                                    if let Some((param_ident, param_var, var_type)) = param {
-                                        if param_ident == var_ident {
-                                            match var_type {
-                                                Type::Unit => todo!(),
-                                                Type::Boolean => CsExpression::Var(param_var),
-                                                Type::Integer => CsExpression::Var(param_var),
-                                                Type::Product(_) => todo!(),
-                                            }
-                                        } else {
-                                            return Err(anyhow!("parameter not found"));
+                                    if let Some((param_var, var_type)) = params.get(var_ident) {
+                                        match var_type {
+                                            Type::Unit => todo!(),
+                                            Type::Boolean => CsExpression::Var(*param_var),
+                                            Type::Integer => CsExpression::Var(*param_var),
+                                            Type::Product(_) => todo!(),
                                         }
                                     } else {
-                                        return Err(anyhow!("no parameter found"));
+                                        return Err(anyhow!("no parameter {ident} found"));
                                     }
                                 }
                             }
@@ -1157,8 +1223,9 @@ impl Sc2CsVisitor {
                 match bin.op() {
                     BinaryOp::Arithmetic(ar_bin) => {
                         let lhs =
-                            self.expression(pg_id, bin.lhs(), interner, origin, param.to_owned())?;
-                        let rhs = self.expression(pg_id, bin.rhs(), interner, origin, param)?;
+                            self.expression(pg_id, bin.lhs(), interner, vars, origin, params)?;
+                        let rhs =
+                            self.expression(pg_id, bin.rhs(), interner, vars, origin, params)?;
                         match ar_bin {
                             ArithmeticOp::Add => CsExpression::Sum(vec![lhs, rhs]),
                             ArithmeticOp::Sub => todo!(),
@@ -1172,8 +1239,9 @@ impl Sc2CsVisitor {
                     BinaryOp::Relational(rel_bin) => {
                         // WARN FIXME TODO: this assumes relations are between integers
                         let lhs =
-                            self.expression(pg_id, bin.lhs(), interner, origin, param.to_owned())?;
-                        let rhs = self.expression(pg_id, bin.rhs(), interner, origin, param)?;
+                            self.expression(pg_id, bin.lhs(), interner, vars, origin, params)?;
+                        let rhs =
+                            self.expression(pg_id, bin.rhs(), interner, vars, origin, params)?;
                         match rel_bin {
                             RelationalOp::Equal => CsExpression::Equal(Box::new((lhs, rhs))),
                             RelationalOp::NotEqual => todo!(),
@@ -1209,9 +1277,9 @@ impl Sc2CsVisitor {
 
     fn build(self) -> CsModel {
         let fsm_names = self
-            .moc_ids
+            .fsm_builders
             .iter()
-            .map(|(name, id)| (self.moc_pgid[*id], name.to_owned()))
+            .map(|(name, id)| (id.pg_id, name.to_owned()))
             .collect();
         // let skill_names = self
         //     .skill_ids

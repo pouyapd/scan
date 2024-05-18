@@ -1,6 +1,5 @@
 use clap::{Parser as ClapParser, Subcommand};
 use log::info;
-use quick_xml::Reader;
 use scan::{Parser, Sc2CsVisitor};
 use std::{error::Error, path::PathBuf};
 
@@ -39,10 +38,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Validating model");
 
             info!("creating reader from file {0}", cli.model.display());
-            let mut reader = Reader::from_file(cli.model)?;
+            // let mut reader = Reader::from_file(cli.model)?;
 
             info!("parsing model");
-            let model = Parser::parse(&mut reader)?;
+            let model = Parser::parse(cli.model.to_owned())?;
+            // let model = Parser::parse(&mut reader)?;
             println!("{model:#?}");
             let cs = Sc2CsVisitor::visit(model)?;
             println!("{cs:#?}");
@@ -67,10 +67,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Validating model");
 
             info!("creating reader from file {0}", cli.model.display());
-            let mut reader = Reader::from_file(cli.model)?;
+            // let mut reader = Reader::from_file(cli.model)?;
 
             info!("parsing model");
-            let model = Parser::parse(&mut reader)?;
+            // let model = Parser::parse(&mut reader)?;
+            let model = Parser::parse(cli.model.to_owned())?;
             println!("{model:#?}");
 
             info!("building CS representation");
