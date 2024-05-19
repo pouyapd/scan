@@ -4,14 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = ["scan_core", "scan_fmt_xml"]
 
 [dependencies]
+scan_fmt_xml = { path = "scan_fmt_xml" }
 anyhow = "1.0.79"
-boa_ast = "0.18.0"
-boa_interner = "0.18.0"
-boa_parser = "0.18.0"
 clap = { version = "4.4.14", features = ["derive"] }
-env_logger = "0.11.0"
-log = "0.4.20"
-quick-xml = "0.31.0"
-thiserror = "1.0.56"
+log = "0.4.21"
+env_logger = "0.11.3"

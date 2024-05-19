@@ -1,13 +1,9 @@
+use anyhow::anyhow;
 use std::collections::{HashMap, HashSet};
 
-use crate::{CsAction, Val};
-use anyhow::{anyhow, Ok, Result};
+use crate::parser::*;
 use log::{info, trace};
-
-use crate::{
-    parser::*, Channel, ChannelSystem, ChannelSystemBuilder, CsExpression, CsLocation, CsVar,
-    Integer, Message, PgId, Type,
-};
+use scan_core::*;
 
 #[derive(Debug)]
 pub struct CsModel {
@@ -731,7 +727,7 @@ impl Sc2CsVisitor {
             // Notice that one and only one of `int_dequeue` and `empty_int_queue` can be executed at a given time.
             let empty_int_queue = self
                 .cs
-                .new_communication(pg_id, int_queue, crate::Message::ProbeEmptyQueue)
+                .new_communication(pg_id, int_queue, Message::ProbeEmptyQueue)
                 .expect("hand-coded args");
             self.cs
                 .add_transition(pg_id, int_queue_loc, empty_int_queue, ext_queue_loc, None)
@@ -979,7 +975,7 @@ impl Sc2CsVisitor {
                 let raise = self.cs.new_communication(
                     pg_id,
                     int_queue,
-                    crate::Message::Send(CsExpression::Const(Val::Integer(event_idx as Integer))),
+                    Message::Send(CsExpression::Const(Val::Integer(event_idx as Integer))),
                 )?;
                 let next_loc = self.cs.new_location(pg_id)?;
                 // queue the internal event
@@ -1000,7 +996,7 @@ impl Sc2CsVisitor {
                     let send_event = self.cs.new_communication(
                         pg_id,
                         target_ext_queue,
-                        crate::Message::Send(CsExpression::Const(Val::Tuple(vec![
+                        Message::Send(CsExpression::Const(Val::Tuple(vec![
                             Val::Integer(event_idx as Integer),
                             Val::Integer(pg_idx),
                         ]))),
@@ -1039,7 +1035,7 @@ impl Sc2CsVisitor {
                         let send_event = self.cs.new_communication(
                             pg_id,
                             target_ext_queue,
-                            crate::Message::Send(CsExpression::Const(Val::Tuple(vec![
+                            Message::Send(CsExpression::Const(Val::Tuple(vec![
                                 Val::Integer(event_idx as Integer),
                                 Val::Integer(pg_idx),
                             ]))),

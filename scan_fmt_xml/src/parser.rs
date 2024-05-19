@@ -1,8 +1,7 @@
 mod bt;
 mod fsm;
 mod omg_types;
-
-pub(crate) mod vocabulary;
+mod vocabulary;
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -20,8 +19,8 @@ use thiserror::Error;
 pub use self::bt::*;
 pub use self::fsm::*;
 pub use self::omg_types::*;
-use self::vocabulary::*;
-use super::model::{ChannelSystem, ChannelSystemBuilder, CsError};
+pub use self::vocabulary::*;
+use scan_core::{ChannelSystem, ChannelSystemBuilder, CsError};
 
 #[derive(Error, Debug)]
 pub enum ParserErrorType {

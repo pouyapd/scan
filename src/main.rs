@@ -1,6 +1,6 @@
 use clap::{Parser as ClapParser, Subcommand};
 use log::info;
-use scan::{Parser, Sc2CsVisitor};
+use scan_fmt_xml::{Parser, Sc2CsVisitor};
 use std::{error::Error, path::PathBuf};
 
 #[derive(ClapParser)]

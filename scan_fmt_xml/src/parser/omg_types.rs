@@ -13,9 +13,8 @@ use quick_xml::{
 use std::str;
 
 use crate::{
-    parser::ConvinceTag,
-    vocabulary::{ATTR_ID, TAG_DATA_TYPE_LIST, TAG_ENUMERATION, TAG_LABEL},
-    ParserError, ParserErrorType,
+    parser::ConvinceTag, ParserError, ParserErrorType, ATTR_ID, TAG_DATA_TYPE_LIST,
+    TAG_ENUMERATION, TAG_LABEL,
 };
 
 #[derive(Debug, Clone)]

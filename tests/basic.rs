@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use scan::*;
+use scan_fmt_xml::Parser;
 use std::{path::PathBuf, str::FromStr};
 
 const MAXSTEP: usize = 1000;
