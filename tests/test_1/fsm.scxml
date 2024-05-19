@@ -13,6 +13,8 @@
   </state>
 
 	<state id="running">
-	  <transition target="idle"/>
+	  <transition target="finished"/>
   </state>
+
+  <state id="finished"/>
 </scxml>
