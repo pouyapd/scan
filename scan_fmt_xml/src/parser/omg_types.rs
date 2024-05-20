@@ -12,10 +12,8 @@ use quick_xml::{
 };
 use std::str;
 
-use crate::{
-    parser::ConvinceTag, ParserError, ParserErrorType, ATTR_ID, TAG_DATA_TYPE_LIST,
-    TAG_ENUMERATION, TAG_LABEL,
-};
+use crate::parser::vocabulary::{ATTR_ID, TAG_DATA_TYPE_LIST, TAG_ENUMERATION, TAG_LABEL};
+use crate::parser::{ConvinceTag, ParserError, ParserErrorType};
 
 #[derive(Debug, Clone)]
 pub enum OmgType {

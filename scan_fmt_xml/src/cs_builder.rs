@@ -1,18 +1,13 @@
-use anyhow::anyhow;
-use std::collections::{HashMap, HashSet};
-
 use crate::parser::*;
+use anyhow::anyhow;
 use log::{info, trace};
 use scan_core::*;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
 pub struct CsModel {
-    cs: ChannelSystem,
-    fsm_names: HashMap<PgId, String>,
-    // skill_ids: HashMap<String, PgId>,
-    // skill_names: HashMap<PgId, String>,
-    // component_ids: HashMap<String, PgId>,
-    // component_names: HashMap<PgId, String>,
+    pub cs: ChannelSystem,
+    pub fsm_names: HashMap<PgId, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,27 +50,23 @@ pub struct Sc2CsVisitor {
 
 impl Sc2CsVisitor {
     pub fn visit(parser: Parser) -> anyhow::Result<CsModel> {
+        // Add base types
+        // FIXME: Is there a better way? Const object?
+        let base_types: [(String, Type); 3] = [
+            (String::from("Boolean"), Type::Boolean),
+            (String::from("int32"), Type::Integer),
+            (String::from("URI"), Type::Integer),
+        ];
+
         let mut model = Sc2CsVisitor {
             cs: ChannelSystemBuilder::new(),
-            scan_types: HashMap::new(),
+            scan_types: HashMap::from_iter(base_types.into_iter()),
             enums: HashMap::new(),
-            // skill_ids: HashMap::new(),
-            // component_ids: HashMap::new(),
             fsm_builders: HashMap::new(),
             events: Vec::new(),
             event_indexes: HashMap::new(),
             parameters: HashMap::new(),
         };
-
-        // FIXME: Is there a better way? Const object?
-        // Add base types
-        model
-            .scan_types
-            .insert(String::from("int32"), Type::Integer);
-        model.scan_types.insert(String::from("URI"), Type::Integer);
-        model
-            .scan_types
-            .insert(String::from("Boolean"), Type::Boolean);
 
         model.build_types(&parser.types)?;
 
@@ -186,6 +177,7 @@ impl Sc2CsVisitor {
             }
             for transition in state.transitions.iter() {
                 if let Some(ref event) = transition.event {
+                    // Event may or may not have been processed before
                     let event_index = self.event_index(event);
                     let builder = self.events.get_mut(event_index).expect("index must exist");
                     builder.receivers.insert(pg_id);
@@ -213,7 +205,6 @@ impl Sc2CsVisitor {
                 target: _,
                 params,
             } => {
-                // WARN FIXME target could be an expression!
                 let event_index = self.event_index(event);
                 let builder = self.events.get_mut(event_index).expect("index must exist");
                 builder.senders.insert(pg_id);
@@ -567,13 +558,19 @@ impl Sc2CsVisitor {
     fn build_fsm(&mut self, fsm: &Fsm) -> anyhow::Result<()> {
         trace!("build fsm {}", fsm.id);
         // Initialize fsm.
-        let pg_builder = self.fsm_builder(&fsm.id);
+        let pg_builder = self
+            .fsm_builders
+            .get(&fsm.id)
+            .expect("builder must already exist");
         let pg_id = pg_builder.pg_id;
         let pg_index = pg_builder.index as Integer;
         let ext_queue = pg_builder.ext_queue;
         // Initial location of Program Graph.
-        let initial_loc = self.cs.initial_location(pg_id)?;
-        let initialize = self.cs.new_action(pg_id)?;
+        let initial_loc = self
+            .cs
+            .initial_location(pg_id)
+            .expect("program graph must exist");
+        let initialize = self.cs.new_action(pg_id).expect("program graph must exist");
         // Initialize variables from datamodel
         let mut vars = HashMap::new();
         for (location, (type_name, expr)) in fsm.datamodel.iter() {
@@ -822,7 +819,14 @@ impl Sc2CsVisitor {
 
             // Consider each of the state's transitions.
             for transition in state.transitions.iter() {
-                trace!("build transition {transition:#?}");
+                trace!(
+                    "build {} transition to {}",
+                    transition
+                        .event
+                        .as_ref()
+                        .unwrap_or(&"eventless".to_string()),
+                    transition.target
+                );
                 // Get or create the location corresponding to the target state.
                 let target_loc = states.get(&transition.target).cloned().unwrap_or_else(|| {
                     let target_loc = self.cs.new_location(pg_id).expect("pg_id should exist");
@@ -1137,6 +1141,9 @@ impl Sc2CsVisitor {
                     .ok_or(anyhow!("not utf8"))?;
                 match ident {
                     "_event" => todo!(),
+                    // enum_const if self.enums.contains_key(&(enum_type, enum_const.to_owned())) => {
+                    //     todo!()
+                    // }
                     var_ident => vars
                         .get(var_ident)
                         .ok_or(anyhow!("unknown variable"))
@@ -1277,23 +1284,9 @@ impl Sc2CsVisitor {
             .iter()
             .map(|(name, id)| (id.pg_id, name.to_owned()))
             .collect();
-        // let skill_names = self
-        //     .skill_ids
-        //     .iter()
-        //     .map(|(name, id)| (*id, name.to_owned()))
-        //     .collect();
-        // let component_names = self
-        //     .component_ids
-        //     .iter()
-        //     .map(|(name, id)| (*id, name.to_owned()))
-        //     .collect();
         CsModel {
             cs: self.cs.build(),
             fsm_names,
-            // skill_ids: self.skill_ids,
-            // skill_names,
-            // component_ids: self.component_ids,
-            // component_names,
         }
     }
 }

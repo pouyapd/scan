@@ -13,5 +13,3 @@
 // - [ ] use fast hasher for hashmap and hashset
 // - [ ] smallvec optimization
 // - [ ] multi-threading
-
-pub use scan_fmt_xml;

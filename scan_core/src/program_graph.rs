@@ -512,6 +512,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn transitions() -> Result<(), PgError> {
+        let mut builder = ProgramGraphBuilder::new();
+        let initial = builder.initial_location();
+        let r#final = builder.new_location();
+        let action = builder.new_action();
+        builder.add_transition(initial, action, r#final, None)?;
+        let mut pg = builder.build();
+        assert_eq!(pg.possible_transitions(), vec![(action, r#final)]);
+        pg.transition(action, r#final)?;
+        assert!(pg.possible_transitions().is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn program_graph() -> Result<(), PgError> {
         // Create Program Graph
         let mut builder = ProgramGraphBuilder::new();

@@ -1,16 +1,14 @@
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::io::{BufRead, Read};
-use std::str;
-
+use super::vocabulary::*;
+use crate::parser::{ParserError, ParserErrorType};
 use anyhow::anyhow;
 use boa_ast::{Expression as BoaExpression, StatementListItem};
 use log::{error, info, trace, warn};
 use quick_xml::events::attributes::{AttrError, Attribute};
 use quick_xml::{events, events::Event, Reader};
-
-use super::vocabulary::*;
-use crate::{ParserError, ParserErrorType};
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::io::{BufRead, Read};
+use std::str;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScxmlTag {

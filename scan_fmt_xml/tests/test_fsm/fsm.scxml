@@ -1,0 +1,17 @@
+<scxml 
+  version="1.0"
+  xmlns="http://www.w3.org/2005/07/scxml"
+  datamodel="ecmascript"
+  name="fsm"
+  initial="idle">
+
+  <state id="idle">
+    <transition target="running"/>
+  </state>
+
+  <state id="running">
+    <transition target="finished"/>
+  </state>
+
+  <state id="finished"/>
+</scxml>

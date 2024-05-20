@@ -1,0 +1,28 @@
+<scxml 
+  version="1.0"
+  xmlns="http://www.w3.org/2005/07/scxml"
+  datamodel="ecmascript"
+  name="fsm"
+  initial="idle">
+
+  <datamodel>
+    <!-- TYPE state:TickResponse -->
+    <data id="state" expr="FAILURE"/>
+  </datamodel>
+
+  <state id="idle">
+	  <transition target="running" cond="state == FAILURE"/>
+  </state>
+
+	<state id="running">
+	  <onentry>
+	    <assign location="state" expr="RUNNING"/>
+	  </onentry>
+	  <transition target="finished" cond="state == RUNNING"/>
+	  <onexit>
+	    <assign location="state" expr="SUCCESS"/>
+	  </onexit>
+  </state>
+
+  <state id="finished"/>
+</scxml>

@@ -2,7 +2,7 @@
   version="1.0"
   xmlns="http://www.w3.org/2005/07/scxml"
   datamodel="ecmascript"
-  name="AlarmBatteryLow"
+  name="fsm"
   initial="idle">
 
   <datamodel>

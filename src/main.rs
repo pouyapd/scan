@@ -24,6 +24,8 @@ enum Commands {
     },
     /// Parse and validate model XML file
     Validate,
+    /// Executes model once
+    Execute,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -66,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Validate => {
             println!("Validating model");
 
-            info!("creating reader from file {0}", cli.model.display());
+            // info!("creating reader from file {0}", cli.model.display());
             // let mut reader = Reader::from_file(cli.model)?;
 
             info!("parsing model");
@@ -79,6 +81,34 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("{cs:#?}");
 
             println!("Model successfully validated");
+        }
+        Commands::Execute => {
+            // info!("creating reader from file {0}", cli.model.display());
+            // let mut reader = Reader::from_file(cli.model)?;
+
+            info!("parsing model");
+            // let model = Parser::parse(&mut reader)?;
+            let parser = Parser::parse(cli.model.to_owned())?;
+            info!("parsing successful");
+
+            info!("building CS representation");
+            let mut model = Sc2CsVisitor::visit(parser)?;
+            info!("building successful");
+
+            println!("Executing model");
+            while let Some((pg_id, action, destination)) =
+                model.cs.possible_transitions().first().cloned()
+            {
+                let pg = model
+                    .fsm_names
+                    .get(&pg_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{pg_id:?}"));
+                println!("transition PG {pg} by {action:?} to {destination:?}");
+                model.cs.transition(pg_id, action, destination)?;
+            }
+
+            println!("Model run to termination");
         }
     }
 

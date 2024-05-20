@@ -2,18 +2,11 @@
   version="1.0"
   xmlns="http://www.w3.org/2005/07/scxml"
   datamodel="ecmascript"
-  name="AlarmBatteryLow"
+  name="fsm_2"
   initial="idle">
 
-  <datamodel>
-  </datamodel>
-
   <state id="idle">
-    <transition target="running"/>
-  </state>
-
-	<state id="running">
-	  <transition target="finished"/>
+    <transition event="message" target="finished"/>
   </state>
 
   <state id="finished"/>

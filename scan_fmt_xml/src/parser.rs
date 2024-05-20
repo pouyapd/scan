@@ -229,11 +229,6 @@ impl Parser {
         Ok(spec)
     }
 
-    pub fn build_model(self) -> ChannelSystem {
-        let cs = ChannelSystemBuilder::new();
-        cs.build()
-    }
-
     fn parse_process<R: BufRead>(
         &mut self,
         tag: events::BytesStart<'_>,
