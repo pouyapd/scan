@@ -24,6 +24,11 @@ fn send() -> anyhow::Result<()> {
     test(PathBuf::from_str("./tests/test_send/model.xml")?)
 }
 
+#[test]
+fn param() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_param/model.xml")?)
+}
+
 fn test(file: PathBuf) -> anyhow::Result<()> {
     let parser = Parser::parse(file)?;
     let mut model = Sc2CsVisitor::visit(parser)?;
