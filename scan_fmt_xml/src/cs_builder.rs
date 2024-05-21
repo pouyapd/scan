@@ -30,7 +30,8 @@ pub struct Sc2CsVisitor {
     cs: ChannelSystemBuilder,
     // Represent OMG types
     scan_types: HashMap<String, Type>,
-    enums: HashMap<(String, String), Integer>,
+    // WARN FIXME TODO: simplistic implementation of enums
+    enums: HashMap<String, Integer>,
     // Each State Chart has an associated Program Graph,
     // and an arbitrary, progressive index
     fsm_builders: HashMap<String, FsmBuilder>,
@@ -94,8 +95,7 @@ impl Sc2CsVisitor {
                 OmgType::Structure() => todo!(),
                 OmgType::Enumeration(labels) => {
                     for (idx, label) in labels.iter().enumerate() {
-                        self.enums
-                            .insert((name.to_owned(), label.to_owned()), idx as Integer);
+                        self.enums.insert(label.to_owned(), idx as Integer);
                     }
                     Type::Integer
                 }
@@ -1141,6 +1141,9 @@ impl Sc2CsVisitor {
                     .ok_or(anyhow!("not utf8"))?;
                 match ident {
                     "_event" => todo!(),
+                    enum_var if self.enums.contains_key(enum_var) => Expression::Const(
+                        Val::Integer(*self.enums.get(enum_var).expect("map contains key")),
+                    ),
                     var_ident => vars
                         .get(var_ident)
                         .ok_or(anyhow!("unknown variable"))

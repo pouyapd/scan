@@ -14,10 +14,10 @@ fn datamodel() -> anyhow::Result<()> {
     test(PathBuf::from_str("./tests/test_datamodel/model.xml")?)
 }
 
-// #[test]
-// fn enumdata() -> anyhow::Result<()> {
-//     test(PathBuf::from_str("./tests/test_enumdata/model.xml")?)
-// }
+#[test]
+fn enumdata() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_enumdata/model.xml")?)
+}
 
 #[test]
 fn send() -> anyhow::Result<()> {
