@@ -20,7 +20,7 @@ pub use self::bt::*;
 pub use self::fsm::*;
 pub use self::omg_types::*;
 pub use self::vocabulary::*;
-use scan_core::{ChannelSystem, ChannelSystemBuilder, CsError};
+use scan_core::channel_system::*;
 
 #[derive(Error, Debug)]
 pub enum ParserErrorType {
@@ -56,8 +56,6 @@ pub enum ParserErrorType {
     AlreadyDeclared(String),
     #[error("unknown model of computation: `{0}`")]
     UnknownMoC(String),
-    #[error("unknown type of skill: `{0}`")]
-    UnknownSkillType(String),
     #[error("not in a state")]
     NotAState,
     #[error("behavior tree missing root node")]
@@ -288,13 +286,26 @@ impl Parser {
                 MoC::Bt(bt)
             }
             moc => {
-                return Err(anyhow!("unknown MoC {moc}"));
+                return Err(anyhow::Error::new(ParserError(
+                    reader.buffer_position(),
+                    ParserErrorType::UnknownMoC(moc.to_string()),
+                )));
             }
         };
         let process = Process { moc };
-        // Here it should be checked that no process was already in the list under the same name
-        self.process_list.insert(process_id, process);
-        Ok(())
+        // Add process to list and check that no process was already in the list under the same name
+        if self
+            .process_list
+            .insert(process_id.to_owned(), process)
+            .is_none()
+        {
+            Ok(())
+        } else {
+            Err(anyhow::Error::new(ParserError(
+                reader.buffer_position(),
+                ParserErrorType::AlreadyDeclared(process_id),
+            )))
+        }
     }
 
     fn parse_types<R: BufRead>(

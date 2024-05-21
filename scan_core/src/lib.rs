@@ -1,7 +1,8 @@
-mod channel_system;
-mod grammar;
-mod program_graph;
+//! Implementation of *program graphs* (PG) and *channel systems* (CS) formalisms
+//! for use in the SCAN model checker.
 
-pub use channel_system::*;
+pub mod channel_system;
+mod grammar;
+pub mod program_graph;
+
 pub use grammar::*;
-pub use program_graph::*;

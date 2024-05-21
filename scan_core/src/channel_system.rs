@@ -1,10 +1,18 @@
-use super::grammar::*;
+//! Implementation of the CS model of computation.
+//!
+//! Channel systems comprises multiple program graphs executing asynchronously
+//! and sending and retreiving messages from channels.
+//!
+//! Analogously to PGs, a CS is defined through a [`ChannelSystemBuilder`],
+//! by adding new PGs and channels.
+//! Each PG in the CS can be given new locations, actions, effects, guards and transitions.
+//! Then, a [`ChannelSystem`] is built from the [`ChannelSystemBuilder`]
+//! and can be executed by performing transitions,
+//! though the definition of the CS itself can no longer be altered.
 
+use crate::grammar::*;
+use crate::program_graph::*;
 use std::{collections::HashMap, error::Error, fmt, rc::Rc};
-
-use crate::{
-    Action, Location, PgError, PgExpression, ProgramGraph, ProgramGraphBuilder, Type, Val, Var,
-};
 
 // Use of "Newtype" pattern to define different types of indexes.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]

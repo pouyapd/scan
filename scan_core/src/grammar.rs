@@ -1,3 +1,10 @@
+//! The language used by PGs and CSs.
+//!
+//! The type [`Expression<V>`] encodes the used language,
+//! where `V` is the type parameter of variables.
+//! The language features base types and product types,
+//! Boolean logic and basic arithmetic expressions.
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Type {
     Unit,

@@ -1,8 +1,14 @@
+//! Implementation of the PG model of computation.
+//!
+//! A PG is defined through a [`ProgramGraphBuilder`],
+//! by adding new locations, actions, effects, guards and transitions.
+//! Then, a [`ProgramGraph`] is built from the [`ProgramGraphBuilder`]
+//! and can be executed by performing transitions,
+//! though the definition of the PG itself can no longer be altered.
+
+// TODO: use fast hasher (?)
 use super::grammar::*;
-
-// TODO: use fast hasher
 use std::{collections::HashMap, rc::Rc};
-
 use thiserror::Error;
 
 // Use of "Newtype" pattern to define different types of indexes.
@@ -17,7 +23,7 @@ pub struct Action(usize);
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Var(usize);
 
-pub type PgExpression = super::grammar::Expression<Var>;
+pub type PgExpression = Expression<Var>;
 
 #[derive(Debug, Clone, Error)]
 pub enum PgError {

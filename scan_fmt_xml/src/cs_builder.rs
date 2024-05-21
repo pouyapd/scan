@@ -1,7 +1,7 @@
 use crate::parser::*;
 use anyhow::anyhow;
 use log::{info, trace};
-use scan_core::*;
+use scan_core::{channel_system::*, *};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
@@ -1141,9 +1141,6 @@ impl Sc2CsVisitor {
                     .ok_or(anyhow!("not utf8"))?;
                 match ident {
                     "_event" => todo!(),
-                    // enum_const if self.enums.contains_key(&(enum_type, enum_const.to_owned())) => {
-                    //     todo!()
-                    // }
                     var_ident => vars
                         .get(var_ident)
                         .ok_or(anyhow!("unknown variable"))
