@@ -114,6 +114,7 @@ impl Sc2CsVisitor {
                 senders: HashSet::new(),
                 receivers: HashSet::new(),
             });
+            self.event_indexes.insert(id.to_owned(), index);
             index
         })
     }
@@ -668,6 +669,30 @@ impl Sc2CsVisitor {
         // Action representing checking the next transition
         let next_transition = self.cs.new_action(pg_id).expect("program graph exists!");
 
+        // Create variables for the storage of the parameters sent by external events.
+        let mut params: HashMap<(usize, String), (CsVar, Type)> = HashMap::new();
+        for event_builder in self
+            .events
+            .iter()
+            // only consider events that can activate some transition and that some other process is sending.
+            .filter(|eb| eb.receivers.contains(&pg_id) && !eb.senders.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+        {
+            for (param_name, param_type) in event_builder.params.iter() {
+                // Variable where to store parameter.
+                let param_var = self
+                    .cs
+                    .new_var(pg_id, param_type.to_owned())
+                    .expect("hand-made input");
+                params.insert(
+                    (event_builder.index, param_name.to_owned()),
+                    (param_var, param_type.to_owned()),
+                );
+            }
+        }
+
         // Consider each of the fsm's states
         for (state_id, state) in fsm.states.iter() {
             trace!("build state {}", state_id);
@@ -755,42 +780,30 @@ impl Sc2CsVisitor {
             // We need to set up the parameter-passing channel for every possible event that could be sent,
             // from any possible other fsm,
             // and for any parameter of the event.
-            let mut params: HashMap<(usize, String), (CsVar, Type)> = HashMap::new();
             for event_builder in self
                 .events
                 .iter()
-                .filter(|eb| eb.receivers.contains(&pg_id))
+                .filter(|eb| eb.receivers.contains(&pg_id) && !eb.senders.is_empty())
                 .cloned()
                 .collect::<Vec<_>>()
                 .into_iter()
             {
-                for (param_name, param_type) in event_builder.params.iter() {
-                    // Variable where to store parameter.
-                    let param_var = self
-                        .cs
-                        .new_var(pg_id, param_type.to_owned())
-                        .expect("hand-made input");
-                    // Record param for future executables
-                    params.insert(
-                        (event_builder.index, param_name.to_owned()),
-                        (param_var, param_type.to_owned()),
-                    );
+                for ((_event_id, param_name), (param_var, param_type)) in params.iter() {
                     for sender_id in event_builder.senders.iter() {
-                        // Channel where to retreive the parameter from.
+                        // Channel where to retreive the parameter from (it may or may not exist already).
                         let channel = *self
                             .parameters
-                            .get(&(
+                            .entry((
                                 *sender_id,
                                 pg_id,
                                 event_builder.index,
                                 param_name.to_owned(),
-                                // param_type.to_owned(),
                             ))
-                            .expect("hand-made input");
+                            .or_insert(self.cs.new_channel(param_type.to_owned(), None));
                         let next = self.cs.new_location(pg_id).expect("program graph exists!");
                         let read_param = self
                             .cs
-                            .new_communication(pg_id, channel, Message::Receive(param_var))
+                            .new_communication(pg_id, channel, Message::Receive(*param_var))
                             .expect("hard-coded input");
                         self.cs
                             .add_transition(
@@ -845,11 +858,11 @@ impl Sc2CsVisitor {
                 // Set up origin and parameters for conditional/executable content.
                 let exec_origin;
                 let mut exec_params = HashMap::new();
-                if let Some(event_index) = transition
-                    .event
-                    .as_ref()
-                    .and_then(|ev| self.event_indexes.get(ev))
-                {
+                if let Some(event_index) = transition.event.as_ref().map(|ev| {
+                    self.event_indexes
+                        .get(ev)
+                        .expect("event must be registered")
+                }) {
                     exec_origin = Some(origin_var);
                     for ((_, param_name), (var, var_type)) in params
                         .iter()
@@ -1106,12 +1119,11 @@ impl Sc2CsVisitor {
             .ok_or(anyhow!("undefined type"))?;
         // Build expression from ECMAScript expression.
         let expr = self.expression(pg_id, &param.expr, interner, &vars, None, &HashMap::new())?;
-        // Create channel for parameter passing.
+        // Retreive or create channel for parameter passing.
         let param_chn = *self
             .parameters
             .entry((pg_id, target_id, event_idx, param.name.to_owned()))
             .or_insert(self.cs.new_channel(scan_type, None));
-
         let pass_param = self
             .cs
             .new_communication(pg_id, param_chn, Message::Send(expr))?;
@@ -1141,13 +1153,12 @@ impl Sc2CsVisitor {
                     .ok_or(anyhow!("not utf8"))?;
                 match ident {
                     "_event" => todo!(),
-                    enum_var if self.enums.contains_key(enum_var) => Expression::Const(
-                        Val::Integer(*self.enums.get(enum_var).expect("map contains key")),
-                    ),
-                    var_ident => vars
-                        .get(var_ident)
-                        .ok_or(anyhow!("unknown variable"))
-                        .map(|(var, _)| CsExpression::Var(*var))?,
+                    ident => self
+                        .enums
+                        .get(ident)
+                        .map(|i| Expression::Const(Val::Integer(*i)))
+                        .or_else(|| vars.get(ident).map(|(var, _)| CsExpression::Var(*var)))
+                        .ok_or(anyhow!("unknown identifier"))?,
                 }
             }
             boa_ast::Expression::Literal(lit) => {
@@ -1199,7 +1210,9 @@ impl Sc2CsVisitor {
                                             Type::Product(_) => todo!(),
                                         }
                                     } else {
-                                        return Err(anyhow!("no parameter {ident} found"));
+                                        return Err(anyhow!(
+                                            "no parameter `{ident}` found among: {params:#?}"
+                                        ));
                                     }
                                 }
                             }
