@@ -3,6 +3,8 @@ use log::info;
 use scan_fmt_xml::{Parser, Sc2CsVisitor};
 use std::{error::Error, path::PathBuf};
 
+/// SCAN (StoChastic ANalyzer)
+/// is a statistical model checker based on channel systems
 #[derive(ClapParser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -37,21 +39,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match &cli.command {
         Commands::Verify { runs: _ } => {
-            println!("Validating model");
+            println!("Verifying model - NOT YET IMPLEMENTED");
 
-            info!("creating reader from file {0}", cli.model.display());
-            // let mut reader = Reader::from_file(cli.model)?;
-
-            info!("parsing model");
-            let model = Parser::parse(cli.model.to_owned())?;
-            // let model = Parser::parse(&mut reader)?;
-            println!("{model:#?}");
-            let cs = Sc2CsVisitor::visit(model)?;
-            println!("{cs:#?}");
-
-            println!("Model successfully validated");
-
-            todo!();
+            // info!("parsing model");
+            // let model = Parser::parse(cli.model.to_owned())?;
+            // let cs = Sc2CsVisitor::visit(model)?;
 
             // for run in 0..*runs {
             //     info!("verify model, run {run}");
