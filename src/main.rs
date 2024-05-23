@@ -24,9 +24,11 @@ enum Commands {
         #[arg(short, long)]
         runs: usize,
     },
+    /// Validate model XML file
+    Parse,
     /// Parse and validate model XML file
     Validate,
-    /// Executes model once
+    /// Execute model once
     Execute,
 }
 
@@ -57,37 +59,39 @@ fn main() -> Result<(), Box<dyn Error>> {
             //     info!("model verified");
             // }
         }
+        Commands::Parse => {
+            println!("Parsing model");
+
+            let model = Parser::parse(cli.model.to_owned())?;
+            println!("{model:#?}");
+            println!("Model successfully parsed");
+        }
         Commands::Validate => {
             println!("Validating model");
 
-            // info!("creating reader from file {0}", cli.model.display());
-            // let mut reader = Reader::from_file(cli.model)?;
-
             info!("parsing model");
-            // let model = Parser::parse(&mut reader)?;
             let model = Parser::parse(cli.model.to_owned())?;
-            println!("{model:#?}");
+            info!("model successfully parsed");
 
             info!("building CS representation");
-            let cs = Sc2CsVisitor::visit(model)?;
-            println!("{cs:#?}");
+            let model = Sc2CsVisitor::visit(model)?;
+            info!("CS representation successfully built");
+            println!("{model:#?}");
 
             println!("Model successfully validated");
         }
         Commands::Execute => {
-            // info!("creating reader from file {0}", cli.model.display());
-            // let mut reader = Reader::from_file(cli.model)?;
-
+            println!("Executing model");
             info!("parsing model");
-            // let model = Parser::parse(&mut reader)?;
-            let parser = Parser::parse(cli.model.to_owned())?;
-            info!("parsing successful");
+            let model = Parser::parse(cli.model.to_owned())?;
+            info!("model successfully parsed");
 
             info!("building CS representation");
-            let mut model = Sc2CsVisitor::visit(parser)?;
-            info!("building successful");
+            let mut model = Sc2CsVisitor::visit(model)?;
+            info!("CS representation successfully built");
 
-            println!("Executing model");
+            println!("Transitions list:");
+            let mut trans: u32 = 0;
             while let Some((pg_id, action, destination)) =
                 model.cs.possible_transitions().first().cloned()
             {
@@ -96,7 +100,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .get(&pg_id)
                     .cloned()
                     .unwrap_or_else(|| format!("{pg_id:?}"));
-                println!("transition PG {pg} by {action:?} to {destination:?}");
+                trans += 1;
+                println!("#{trans:04}: PG {pg} by {action:?} to {destination:?}");
                 model.cs.transition(pg_id, action, destination)?;
             }
 
