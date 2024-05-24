@@ -1,5 +1,4 @@
 use clap::{Parser as ClapParser, Subcommand};
-use log::info;
 use scan_fmt_xml::{Parser, Sc2CsVisitor};
 use std::{error::Error, path::PathBuf};
 
@@ -11,7 +10,6 @@ struct Cli {
     /// Action to perform on model
     #[command(subcommand)]
     command: Commands,
-
     /// Select model XML file
     model: PathBuf,
 }
@@ -33,12 +31,7 @@ enum Commands {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    env_logger::init();
-    info!("SCAN starting up");
-
     let cli = Cli::parse();
-    info!("cli arguments parsed");
-
     match &cli.command {
         Commands::Verify { runs: _ } => {
             println!("Verifying model - NOT YET IMPLEMENTED");
@@ -61,35 +54,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Commands::Parse => {
             println!("Parsing model");
-
             let model = Parser::parse(cli.model.to_owned())?;
             println!("{model:#?}");
             println!("Model successfully parsed");
         }
         Commands::Validate => {
             println!("Validating model");
-
-            info!("parsing model");
             let model = Parser::parse(cli.model.to_owned())?;
-            info!("model successfully parsed");
-
-            info!("building CS representation");
             let model = Sc2CsVisitor::visit(model)?;
-            info!("CS representation successfully built");
             println!("{model:#?}");
-
             println!("Model successfully validated");
         }
         Commands::Execute => {
             println!("Executing model");
-            info!("parsing model");
             let model = Parser::parse(cli.model.to_owned())?;
-            info!("model successfully parsed");
-
-            info!("building CS representation");
             let mut model = Sc2CsVisitor::visit(model)?;
-            info!("CS representation successfully built");
-
             println!("Transitions list:");
             let mut trans: u32 = 0;
             while let Some((pg_id, action, destination)) =
@@ -104,11 +83,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("#{trans:04}: PG {pg} by {action:?} to {destination:?}");
                 model.cs.transition(pg_id, action, destination)?;
             }
-
             println!("Model run to termination");
         }
     }
-
-    info!("SCAN terminating");
     Ok(())
 }
