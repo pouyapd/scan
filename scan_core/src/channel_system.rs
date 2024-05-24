@@ -10,9 +10,11 @@
 //! and can be executed by performing transitions,
 //! though the definition of the CS itself can no longer be altered.
 
+use thiserror::Error;
+
 use crate::grammar::*;
 use crate::program_graph::*;
-use std::{collections::HashMap, error::Error, fmt, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 
 // Use of "Newtype" pattern to define different types of indexes.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -117,77 +119,34 @@ pub enum Message {
     ProbeEmptyQueue,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum CsError {
-    ProgramGraph(PgId, PgError),
+    #[error("error from program graph {0:?}")]
+    ProgramGraph(PgId, #[source] PgError),
+    #[error("program graph {0:?} does not belong to the channel system")]
     MissingPg(PgId),
+    #[error("channel {0:?} is at full capacity")]
     OutOfCapacity(Channel),
+    #[error("channel {0:?} is empty")]
     Empty(Channel),
+    #[error("communication {0:?} has not been defined")]
     NoCommunication(CsAction),
+    #[error("action {0:?} does not belong to program graph {1:?}")]
     ActionNotInPg(CsAction, PgId),
+    #[error("variable {0:?} does not belong to program graph {1:?}")]
     VarNotInPg(CsVar, PgId),
+    #[error("location {0:?} does not belong to program graph {1:?}")]
     LocationNotInPg(CsLocation, PgId),
+    #[error("program graphs {0:?} and {1:?} do not match")]
     DifferentPgs(PgId, PgId),
+    #[error("action {0:?} is a communication")]
     ActionIsCommunication(CsAction),
+    #[error("channel {0:?} does not exists")]
     MissingChannel(Channel),
+    #[error("not a tuple")]
     NotATuple,
+    #[error("index out-of-bounds")]
     BadIndex,
-}
-
-// TODO: switch to `thiserror` crate
-impl fmt::Display for CsError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CsError::ProgramGraph(pg_id, _) => write!(f, "error from program graph {:?}", pg_id),
-            CsError::MissingPg(pg_id) => {
-                write!(
-                    f,
-                    "program graph {:?} does not belong to the channel system",
-                    pg_id
-                )
-            }
-            CsError::OutOfCapacity(channel) => {
-                write!(f, "channel {:?} is at full capacity", channel)
-            }
-            CsError::Empty(channel) => write!(f, "channel {:?} is empty", channel),
-            CsError::NoCommunication(comm) => {
-                write!(f, "communication {:?} has not been defined", comm)
-            }
-            CsError::ActionNotInPg(action, pg_id) => write!(
-                f,
-                "action {:?} does not belong to program graph {:?}",
-                action, pg_id
-            ),
-            CsError::VarNotInPg(var, pg_id) => write!(
-                f,
-                "variable {:?} does not belong to program graph {:?}",
-                var, pg_id
-            ),
-            CsError::LocationNotInPg(location, pg_id) => write!(
-                f,
-                "location {:?} does not belong to program graph {:?}",
-                location, pg_id
-            ),
-            CsError::DifferentPgs(id1, id2) => {
-                write!(f, "program graphs {id1:?} and {id2:?} do not match")
-            }
-            CsError::ActionIsCommunication(action) => {
-                write!(f, "action {action:?} is a communication")
-            }
-            CsError::MissingChannel(channel) => write!(f, "channel {channel:?} does not exists"),
-            CsError::NotATuple => todo!(),
-            CsError::BadIndex => todo!(),
-        }
-    }
-}
-
-impl Error for CsError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            CsError::ProgramGraph(_, err) => Some(err),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone)]
