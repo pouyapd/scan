@@ -25,6 +25,21 @@ fn send() -> anyhow::Result<()> {
 }
 
 #[test]
+fn send_onentry() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_send_onentry/model.xml")?)
+}
+
+#[test]
+fn origin() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_origin/model.xml")?)
+}
+
+#[test]
+fn origin_location() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_origin_location/model.xml")?)
+}
+
+#[test]
 fn param() -> anyhow::Result<()> {
     test(PathBuf::from_str("./tests/test_param/model.xml")?)
 }
