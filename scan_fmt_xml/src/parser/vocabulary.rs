@@ -73,5 +73,9 @@ pub const TAG_ACTION: &str = "Action";
 pub const TAG_CONDITION: &str = "Condition";
 pub const ATTR_BT_ID: &str = "ID";
 
-// pub const TICK_CALL: &str = "tickCall";
+pub const TICK_CALL: &str = "tickCall";
+pub const HALT_CALL: &str = "haltCall";
+pub const TICK_RETURN: &str = "tickReturn";
+pub const HALT_RETURN: &str = "haltReturn";
+pub const RESULT: &str = "result";
 // pub const TICK_GENERATOR: &str = "tickGenerator";

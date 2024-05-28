@@ -9,7 +9,7 @@ anyhow = "1.0.79"
 boa_ast = "0.18.0"
 boa_interner = "0.18.0"
 boa_parser = "0.18.0"
-env_logger = "0.11.0"
-log = "0.4.20"
+env_logger = { workspace = true }
+log = { workspace = true }
 quick-xml = "0.31.0"
 thiserror = "1.0.56"
