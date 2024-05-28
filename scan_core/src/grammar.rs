@@ -7,7 +7,6 @@
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Type {
-    Unit,
     Boolean,
     Integer,
     Product(Vec<Type>),
@@ -18,7 +17,6 @@ impl Type {
         match self {
             Type::Boolean => Val::Boolean(false),
             Type::Integer => Val::Integer(0),
-            Type::Unit => Val::Unit,
             Type::Product(tuple) => {
                 Val::Tuple(Vec::from_iter(tuple.iter().map(Self::default_value)))
             }
@@ -30,7 +28,6 @@ pub type Integer = i32;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Val {
-    Unit,
     Boolean(bool),
     Integer(Integer),
     Tuple(Vec<Val>),
@@ -39,7 +36,6 @@ pub enum Val {
 impl Val {
     pub fn r#type(&self) -> Type {
         match self {
-            Val::Unit => Type::Unit,
             Val::Boolean(_) => Type::Boolean,
             Val::Integer(_) => Type::Integer,
             Val::Tuple(comps) => Type::Product(comps.iter().map(Val::r#type).collect()),
@@ -52,8 +48,10 @@ pub enum Expression<V>
 where
     V: Clone + PartialEq + Eq,
 {
+    Boolean(bool),
+    Integer(Integer),
     // General expressions
-    Const(Val),
+    // Const(Val),
     Var(V),
     Tuple(Vec<Expression<V>>),
     Component(usize, Box<Expression<V>>),

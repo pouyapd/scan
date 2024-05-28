@@ -171,13 +171,15 @@ impl ProgramGraphBuilder {
 
     pub fn r#type(&self, expr: &PgExpression) -> Result<Type, PgError> {
         match expr {
+            PgExpression::Boolean(_) => Ok(Type::Boolean),
+            PgExpression::Integer(_) => Ok(Type::Integer),
             PgExpression::Tuple(tuple) => Ok(Type::Product(
                 tuple
                     .iter()
                     .map(|e| self.r#type(e))
                     .collect::<Result<Vec<Type>, PgError>>()?,
             )),
-            PgExpression::Const(val) => Ok(val.r#type()),
+            // PgExpression::Const(val) => Ok(val.r#type()),
             PgExpression::Var(var) => self
                 .vars
                 .get(var.0)
@@ -350,7 +352,8 @@ impl ProgramGraph {
 
     pub(super) fn eval(&self, expr: &PgExpression) -> Result<Val, PgError> {
         match expr {
-            PgExpression::Const(val) => Ok(val.to_owned()),
+            PgExpression::Boolean(b) => Ok(Val::Boolean(*b)),
+            PgExpression::Integer(i) => Ok(Val::Integer(*i)),
             PgExpression::Var(var) => self
                 .vars
                 .get(var.0)
@@ -544,7 +547,7 @@ mod tests {
         let right = builder.new_location();
         // Actions
         let initialize = builder.new_action();
-        builder.add_effect(initialize, battery, PgExpression::Const(Val::Integer(3)))?;
+        builder.add_effect(initialize, battery, PgExpression::Integer(3))?;
         let move_left = builder.new_action();
         builder.add_effect(
             move_left,
@@ -552,7 +555,7 @@ mod tests {
             PgExpression::Sum(vec![
                 PgExpression::Var(battery),
                 // PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
-                PgExpression::Const(Val::Integer(-1)),
+                PgExpression::Integer(-1),
             ]),
         )?;
         let move_right = builder.new_action();
@@ -562,13 +565,13 @@ mod tests {
             PgExpression::Sum(vec![
                 PgExpression::Var(battery),
                 // PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
-                PgExpression::Const(Val::Integer(-1)),
+                PgExpression::Integer(-1),
             ]),
         )?;
         // Guards
         let out_of_charge = PgExpression::Greater(Box::new((
             PgExpression::Var(battery),
-            PgExpression::Const(Val::Integer(0)),
+            PgExpression::Integer(0),
         )));
         // Program graph definition
         builder.add_transition(initial, initialize, center, None)?;

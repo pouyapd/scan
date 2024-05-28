@@ -43,7 +43,8 @@ impl TryFrom<(PgId, CsExpression)> for PgExpression {
 
     fn try_from((pg_id, expr): (PgId, CsExpression)) -> Result<Self, Self::Error> {
         match expr {
-            Expression::Const(val) => Ok(Expression::Const(val)),
+            Expression::Boolean(b) => Ok(Expression::Boolean(b)),
+            Expression::Integer(i) => Ok(Expression::Integer(i)),
             Expression::Var(cs_var) if cs_var.0 == pg_id => Ok(Expression::Var(cs_var.1)),
             Expression::Var(cs_var) => Err(CsError::VarNotInPg(cs_var, pg_id)),
             Expression::Tuple(comps) => Ok(Expression::Tuple(
@@ -490,10 +491,10 @@ mod tests {
         let action = cs.new_action(pg)?;
         let var1 = cs.new_var(pg, Type::Boolean)?;
         let var2 = cs.new_var(pg, Type::Integer)?;
-        let effect_1 = CsExpression::Const(Val::Integer(2));
+        let effect_1 = CsExpression::Integer(2);
         cs.add_effect(pg, action, var1, effect_1.clone())
             .expect_err("type mismatch");
-        let effect_2 = CsExpression::Const(Val::Boolean(true));
+        let effect_2 = CsExpression::Boolean(true);
         cs.add_effect(pg, action, var1, effect_2.clone())?;
         cs.add_effect(pg, action, var2, effect_2)
             .expect_err("type mismatch");
@@ -519,8 +520,8 @@ mod tests {
         let action = cs.new_action(pg)?;
         let var1 = cs.new_var(pg, Type::Boolean)?;
         let var2 = cs.new_var(pg, Type::Integer)?;
-        let effect_1 = CsExpression::Const(Val::Integer(0));
-        let effect_2 = CsExpression::Const(Val::Boolean(true));
+        let effect_1 = CsExpression::Integer(0);
+        let effect_2 = CsExpression::Boolean(true);
         cs.add_effect(pg, action, var1, effect_2)?;
         cs.add_effect(pg, action, var2, effect_1)?;
         let post = cs.new_location(pg)?;
@@ -536,13 +537,13 @@ mod tests {
         let pg1 = cs.new_program_graph();
         let initial1 = cs.initial_location(pg1)?;
         let post1 = cs.new_location(pg1)?;
-        let effect = CsExpression::Const(Val::Boolean(true));
+        let effect = CsExpression::Boolean(true);
         let msg = Message::Send(effect);
         let send = cs.new_communication(pg1, ch, msg)?;
         cs.add_transition(pg1, initial1, send, post1, None)?;
 
         let var1 = cs.new_var(pg1, Type::Integer)?;
-        let effect = CsExpression::Const(Val::Integer(0));
+        let effect = CsExpression::Integer(0);
         cs.add_effect(pg1, send, var1, effect)
             .expect_err("send is a message so it cannot have effects");
 
