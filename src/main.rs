@@ -31,6 +31,7 @@ enum Commands {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    env_logger::init();
     let cli = Cli::parse();
     match &cli.command {
         Commands::Verify { runs: _ } => {
