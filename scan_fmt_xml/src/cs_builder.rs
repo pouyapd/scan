@@ -154,7 +154,7 @@ impl Sc2CsVisitor {
     fn prebuild_fsms(&mut self, pg_id: PgId, fmt: &Fsm) -> anyhow::Result<()> {
         for (_, state) in fmt.states.iter() {
             for exec in state.on_entry.iter() {
-                self.prebuild_params(pg_id, exec)?;
+                self.prebuild_exec(pg_id, exec)?;
             }
             for transition in state.transitions.iter() {
                 if let Some(ref event) = transition.event {
@@ -164,17 +164,17 @@ impl Sc2CsVisitor {
                     builder.receivers.insert(pg_id);
                 }
                 for exec in transition.effects.iter() {
-                    self.prebuild_params(pg_id, exec)?;
+                    self.prebuild_exec(pg_id, exec)?;
                 }
             }
             for exec in state.on_exit.iter() {
-                self.prebuild_params(pg_id, exec)?;
+                self.prebuild_exec(pg_id, exec)?;
             }
         }
         Ok(())
     }
 
-    fn prebuild_params(&mut self, pg_id: PgId, executable: &Executable) -> anyhow::Result<()> {
+    fn prebuild_exec(&mut self, pg_id: PgId, executable: &Executable) -> anyhow::Result<()> {
         match executable {
             Executable::Assign {
                 location: _,
@@ -193,14 +193,13 @@ impl Sc2CsVisitor {
                     let var_type = self
                         .scan_types
                         .get(&param.omg_type)
-                        .ok_or(anyhow!("type not found"))?
-                        .clone();
+                        .ok_or(anyhow!("type not found"))?;
                     let prev_type = builder
                         .params
                         .insert(param.name.to_owned(), var_type.to_owned());
                     // Type parameters should not change type
                     if let Some(prev_type) = prev_type {
-                        if prev_type != var_type {
+                        if prev_type != *var_type {
                             return Err(anyhow!("type parameter mismatch"));
                         }
                     }
@@ -824,16 +823,13 @@ impl Sc2CsVisitor {
         // Action representing checking the next transition
         let next_transition = self.cs.new_action(pg_id).expect("program graph exists!");
 
-        // Create variables for the storage of the parameters sent by external events.
+        // Create variables and channels for the storage of the parameters sent by external events.
         let mut params: HashMap<(usize, String), (CsVar, Type)> = HashMap::new();
         for event_builder in self
             .events
             .iter()
             // only consider events that can activate some transition and that some other process is sending.
             .filter(|eb| eb.receivers.contains(&pg_id) && !eb.senders.is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
         {
             for (param_name, param_type) in event_builder.params.iter() {
                 // Variable where to store parameter.
@@ -841,12 +837,25 @@ impl Sc2CsVisitor {
                     .cs
                     .new_var(pg_id, param_type.to_owned())
                     .expect("hand-made input");
-                params.insert(
+                let old = params.insert(
                     (event_builder.index, param_name.to_owned()),
                     (param_var, param_type.to_owned()),
                 );
+                assert!(old.is_none());
+                for sender_id in event_builder.senders.iter() {
+                    self.parameters
+                        .entry((
+                            *sender_id,
+                            pg_id,
+                            event_builder.index,
+                            param_name.to_owned(),
+                        ))
+                        .or_insert_with(|| self.cs.new_channel(param_type.to_owned(), None));
+                }
             }
         }
+        // Make non-mut
+        let params = params;
 
         // Consider each of the fsm's states
         for (state_id, state) in fsm.states.iter() {
@@ -915,8 +924,7 @@ impl Sc2CsVisitor {
                     None,
                 )
                 .expect("hand-coded args");
-            // Dequeue the origin of the corresponding external event.
-            let mut ext_event_processing_param =
+            let ext_event_processing_param =
                 self.cs.new_location(pg_id).expect("program graph exists!");
             self.cs
                 .add_transition(
@@ -927,6 +935,7 @@ impl Sc2CsVisitor {
                     None,
                 )
                 .expect("hand-coded args");
+            let step = self.cs.new_action(pg_id).expect("PG exists");
             // Retreive external event's parameters
             // We need to set up the parameter-passing channel for every possible event that could be sent,
             // from any possible other fsm,
@@ -936,50 +945,62 @@ impl Sc2CsVisitor {
                 .iter()
                 .filter(|eb| eb.receivers.contains(&pg_id) && !eb.senders.is_empty())
             {
-                for (param_name, param_type) in event_builder.params.iter() {
-                    let (param_var, _) = params
-                        .get(&(event_builder.index, param_name.to_owned()))
-                        .expect("param should already be in");
-                    for sender_id in event_builder.senders.iter() {
-                        // Channel where to retreive the parameter from (it may or may not exist already).
+                for sender_id in event_builder.senders.iter() {
+                    // TODO FIXME fsm builders should be indexed
+                    let sender_index = self
+                        .fsm_builders
+                        .iter()
+                        .find(|(_, b)| b.pg_id == *sender_id)
+                        .expect("sender must exist")
+                        .1
+                        .index;
+                    let mut is_event_sender = Some(Expression::And(vec![
+                        Expression::Equal(Box::new((
+                            Expression::Integer(event_builder.index as Integer),
+                            Expression::Var(current_event_var),
+                        ))),
+                        Expression::Equal(Box::new((
+                            Expression::Integer(sender_index as Integer),
+                            Expression::Var(origin_var),
+                        ))),
+                    ]));
+                    let mut current_loc = ext_event_processing_param;
+                    for (param_name, _) in event_builder.params.iter() {
+                        let (param_var, _) = params
+                            .get(&(event_builder.index, param_name.to_owned()))
+                            .expect("param should already be in");
+                        // Channel where to retreive the parameter from.
                         let channel = *self
                             .parameters
-                            .entry((
+                            .get(&(
                                 *sender_id,
                                 pg_id,
                                 event_builder.index,
                                 param_name.to_owned(),
                             ))
-                            .or_insert(self.cs.new_channel(param_type.to_owned(), None));
-                        let next = self.cs.new_location(pg_id).expect("program graph exists!");
+                            .expect("parameters have already been registered");
                         let read_param = self
                             .cs
                             .new_communication(pg_id, channel, Message::Receive(*param_var))
                             .expect("hard-coded input");
+                        let next = self.cs.new_location(pg_id).expect("program graph exists!");
                         self.cs
                             .add_transition(
                                 pg_id,
-                                ext_event_processing_param,
+                                current_loc,
                                 read_param,
                                 next,
-                                None,
+                                // Need to check only once, so `take` Option
+                                is_event_sender.take(),
                             )
                             .expect("hand-coded args");
-                        ext_event_processing_param = next;
+                        current_loc = next;
                     }
+                    self.cs
+                        .add_transition(pg_id, current_loc, step, eventful_trans, None)
+                        .expect("has to work");
                 }
             }
-
-            // Now we can start looking for transitions activated by the external event.
-            self.cs
-                .add_transition(
-                    pg_id,
-                    ext_event_processing_param,
-                    process_ext_event,
-                    eventful_trans,
-                    None,
-                )
-                .expect("hand-coded args");
 
             // Consider each of the state's transitions.
             for transition in state.transitions.iter() {
@@ -1006,21 +1027,21 @@ impl Sc2CsVisitor {
 
                 // Set up origin and parameters for conditional/executable content.
                 let exec_origin;
-                let mut exec_params = HashMap::new();
-                if let Some(event_index) = transition.event.as_ref().map(|ev| {
-                    self.event_indexes
-                        .get(ev)
-                        .expect("event must be registered")
-                }) {
+                let exec_params;
+                if let Some(event_name) = transition.event.as_ref() {
+                    let event_index = *self
+                        .event_indexes
+                        .get(event_name)
+                        .expect("event must be registered");
                     exec_origin = Some(origin_var);
-                    for ((_, param_name), (var, var_type)) in params
+                    exec_params = params
                         .iter()
-                        .filter(|((ev_ix, _), _)| *ev_ix == *event_index)
-                    {
-                        exec_params.insert(param_name.to_owned(), (*var, var_type.to_owned()));
-                    }
+                        .filter(|((ev_ix, _), _)| *ev_ix == event_index)
+                        .map(|((_, name), (var, tp))| (name.to_owned(), (*var, tp.to_owned())))
+                        .collect::<HashMap<String, (CsVar, Type)>>();
                 } else {
                     exec_origin = None;
+                    exec_params = HashMap::new();
                 }
                 // Condition activating the transition.
                 // It has to be parsed/built as a Boolean expression.
@@ -1161,7 +1182,6 @@ impl Sc2CsVisitor {
                         // TODO FIXME This should be fallible because `target` is unvalidated user input
                         .expect(&format!("builder for {} already exists", target));
                     let target_id = target_builder.pg_id;
-                    // Create event, if it does not exist already.
                     let event_idx = *self
                         .event_indexes
                         .get(event)
@@ -1184,7 +1204,8 @@ impl Sc2CsVisitor {
                     for param in send_params {
                         // Updates next location.
                         next_loc = self.send_param(
-                            pg_id, target_id, param, event_idx, next_loc, vars, interner,
+                            pg_id, target_id, param, event_idx, next_loc, vars, origin, params,
+                            interner,
                         )?;
                     }
 
@@ -1193,9 +1214,13 @@ impl Sc2CsVisitor {
                 Target::Expr(targetexpr) => {
                     let targetexpr =
                         self.expression(pg_id, targetexpr, interner, vars, origin, params)?;
-                    let event_idx = self.event_index(event);
+                    let event_idx = *self
+                        .event_indexes
+                        .get(event)
+                        .ok_or(anyhow!("event not found"))?;
                     // Location representing having sent the event to the correct target after evaluating expression.
                     let done_loc = self.cs.new_location(pg_id).expect("PG exists");
+                    let complete_send = self.cs.new_action(pg_id).expect("PG exists");
                     for &target_id in self.events[event_idx].receivers.clone().iter() {
                         // FIXME TODO: there should be an indexing to avoid search
                         let (_target_name, target_builder) = self
@@ -1205,38 +1230,44 @@ impl Sc2CsVisitor {
                             .expect("fsm has to be here");
                         let target_index = target_builder.index;
                         let target_ext_queue = target_builder.ext_queue;
-                        let send_event = self.cs.new_communication(
-                            pg_id,
-                            target_ext_queue,
-                            Message::Send(CsExpression::Tuple(vec![
-                                Expression::Integer(event_idx as Integer),
-                                Expression::Integer(pg_idx),
-                            ])),
-                        )?;
+                        let send_event = self
+                            .cs
+                            .new_communication(
+                                pg_id,
+                                target_ext_queue,
+                                Message::Send(CsExpression::Tuple(vec![
+                                    Expression::Integer(event_idx as Integer),
+                                    Expression::Integer(pg_idx),
+                                ])),
+                            )
+                            .expect("params are hard-coded");
 
                         // Send event and event origin before moving on to next location.
-                        let mut next_loc = self.cs.new_location(pg_id)?;
-                        self.cs.add_transition(
-                            pg_id,
-                            loc,
-                            send_event,
-                            next_loc,
-                            Some(CsExpression::Equal(Box::new((
-                                CsExpression::Integer(target_index as Integer),
-                                targetexpr.to_owned(),
-                            )))),
-                        )?;
+                        let mut next_loc = self.cs.new_location(pg_id).expect("PG exists");
+                        self.cs
+                            .add_transition(
+                                pg_id,
+                                loc,
+                                send_event,
+                                next_loc,
+                                Some(CsExpression::Equal(Box::new((
+                                    CsExpression::Integer(target_index as Integer),
+                                    targetexpr.to_owned(),
+                                )))),
+                            )
+                            .expect("params are right");
 
-                        // Pass parameters.
+                        // Pass parameters. This could fail due to param content.
                         for param in send_params {
                             // Updates next location.
                             next_loc = self.send_param(
-                                pg_id, target_id, param, event_idx, next_loc, vars, interner,
+                                pg_id, target_id, param, event_idx, next_loc, vars, origin, params,
+                                interner,
                             )?;
                         }
                         // Once sending event and args done, get to exit-point
                         self.cs
-                            .add_transition(pg_id, next_loc, send_event, done_loc, None)
+                            .add_transition(pg_id, next_loc, complete_send, done_loc, None)
                             .expect("hand-made args");
                     }
 
@@ -1263,8 +1294,10 @@ impl Sc2CsVisitor {
         target_id: PgId,
         param: &Param,
         event_idx: usize,
-        next_loc: CsLocation,
+        param_loc: CsLocation,
         vars: &HashMap<String, (CsVar, Type)>,
+        origin: Option<CsVar>,
+        params: &HashMap<String, (CsVar, Type)>,
         interner: &boa_interner::Interner,
     ) -> Result<CsLocation, anyhow::Error> {
         // Get param type.
@@ -1274,7 +1307,7 @@ impl Sc2CsVisitor {
             .cloned()
             .ok_or(anyhow!("undefined type"))?;
         // Build expression from ECMAScript expression.
-        let expr = self.expression(pg_id, &param.expr, interner, &vars, None, &HashMap::new())?;
+        let expr = self.expression(pg_id, &param.expr, interner, &vars, origin, params)?;
         // Retreive or create channel for parameter passing.
         let param_chn = *self
             .parameters
@@ -1284,7 +1317,6 @@ impl Sc2CsVisitor {
         let pass_param = self
             .cs
             .new_communication(pg_id, param_chn, Message::Send(expr))?;
-        let param_loc = next_loc;
         let next_loc = self.cs.new_location(pg_id).expect("PG exists");
         self.cs
             .add_transition(pg_id, param_loc, pass_param, next_loc, None)
@@ -1401,7 +1433,9 @@ impl Sc2CsVisitor {
                             self.expression(pg_id, bin.rhs(), interner, vars, origin, params)?;
                         match ar_bin {
                             ArithmeticOp::Add => CsExpression::Sum(vec![lhs, rhs]),
-                            ArithmeticOp::Sub => todo!(),
+                            ArithmeticOp::Sub => {
+                                CsExpression::Sum(vec![lhs, CsExpression::Opposite(Box::new(rhs))])
+                            }
                             ArithmeticOp::Div => todo!(),
                             ArithmeticOp::Mul => todo!(),
                             ArithmeticOp::Exp => todo!(),

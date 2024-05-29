@@ -26,26 +26,26 @@ use scan_core::channel_system::*;
 pub enum ParserErrorType {
     #[error("reader failed")]
     Reader(#[from] XmlError),
-    #[error("an unknown or unexpected event was received: `{0:?}`")]
-    UnknownEvent(Event<'static>),
+    // #[error("an unknown or unexpected event was received: `{0:?}`")]
+    // UnknownEvent(Event<'static>),
     #[error("error from an attribute")]
     Attr(#[from] AttrError),
     #[error("unknown key: `{0}`")]
     UnknownKey(String),
-    #[error("unknown key val: `{0}`")]
-    UnknownVal(String),
+    // #[error("unknown key val: `{0}`")]
+    // UnknownVal(String),
     #[error("utf8 error")]
     Utf8(#[from] Utf8Error),
     #[error("channel system error")]
     Cs(#[from] CsError),
-    #[error("unexpected start tag: `{0}`")]
-    UnexpectedStartTag(String),
+    // #[error("unexpected start tag: `{0}`")]
+    // UnexpectedStartTag(String),
     #[error("unexpected end tag: `{0}`")]
     UnexpectedEndTag(String),
-    #[error("location does not exist")]
-    MissingLocation,
-    #[error("unknown variable `{0}`")]
-    UnknownVar(String),
+    // #[error("location does not exist")]
+    // MissingLocation,
+    // #[error("unknown variable `{0}`")]
+    // UnknownVar(String),
     #[error("missing `expr` attribute")]
     MissingExpr,
     #[error("missing attribute `{0}`")]
