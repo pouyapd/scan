@@ -25,6 +25,11 @@ fn send() -> anyhow::Result<()> {
 }
 
 #[test]
+fn send_triangle() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_send_triangle/model.xml")?)
+}
+
+#[test]
 fn send_onentry() -> anyhow::Result<()> {
     test(PathBuf::from_str("./tests/test_send_onentry/model.xml")?)
 }
@@ -42,6 +47,11 @@ fn origin_location() -> anyhow::Result<()> {
 #[test]
 fn param() -> anyhow::Result<()> {
     test(PathBuf::from_str("./tests/test_param/model.xml")?)
+}
+
+#[test]
+fn param_triangle() -> anyhow::Result<()> {
+    test(PathBuf::from_str("./tests/test_param_triangle/model.xml")?)
 }
 
 fn test(file: PathBuf) -> anyhow::Result<()> {
