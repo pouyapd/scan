@@ -65,7 +65,7 @@ impl Sc2CsVisitor {
 
         let mut model = Sc2CsVisitor {
             cs: ChannelSystemBuilder::new(),
-            scan_types: HashMap::from_iter(base_types.into_iter()),
+            scan_types: HashMap::from_iter(base_types),
             enums: HashMap::new(),
             fsm_builders: HashMap::new(),
             events: Vec::new(),
@@ -78,10 +78,10 @@ impl Sc2CsVisitor {
         model.prebuild_processes(&parser)?;
 
         info!("Visit process list");
-        for (id, declaration) in parser.process_list.iter() {
+        for (_id, declaration) in parser.process_list.iter() {
             match &declaration.moc {
                 MoC::Fsm(fsm) => model.build_fsm(fsm)?,
-                MoC::Bt(bt) => todo!(), // model.build_bt(bt)?,
+                MoC::Bt(_bt) => todo!(), // model.build_bt(bt)?,
             }
         }
 
@@ -144,7 +144,7 @@ impl Sc2CsVisitor {
             let pg_id = self.fsm_builder(id).pg_id;
             match &declaration.moc {
                 MoC::Fsm(fsm) => self.prebuild_fsms(pg_id, fsm)?,
-                MoC::Bt(bt) => todo!(), // self.prebuild_bt(pg_id, bt)?,
+                MoC::Bt(_bt) => todo!(), // self.prebuild_bt(pg_id, bt)?,
             }
         }
         Ok(())
@@ -701,14 +701,13 @@ impl Sc2CsVisitor {
         Ok(())
     }
 
-    // TODO: Optimize CS by removing unnecessary states:
     fn build_fsm(&mut self, fsm: &Fsm) -> anyhow::Result<()> {
         trace!("build fsm {}", fsm.id);
         // Initialize fsm.
         let pg_builder = self
             .fsm_builders
             .get(&fsm.id)
-            .expect(&format!("builder for {} must already exist", fsm.id));
+            .unwrap_or_else(|| panic!("builder for {} must already exist", fsm.id));
         let pg_id = pg_builder.pg_id;
         let pg_index = pg_builder.index as Integer;
         let ext_queue = pg_builder.ext_queue;
@@ -720,9 +719,11 @@ impl Sc2CsVisitor {
             .cs
             .initial_location(pg_id)
             .expect("program graph must exist");
+        // NOTE it is possible not to create `initialize` if the FSM has no datamodel
         let initialize = self.cs.new_action(pg_id).expect("program graph must exist");
         let mut need_to_initialize = false;
         // Initialize variables from datamodel
+        // NOTE vars cannot be initialized using previously defined vars because datamodel is an HashMap
         let mut vars = HashMap::new();
         for (location, (type_name, expr)) in fsm.datamodel.iter() {
             let scan_type = self
@@ -736,8 +737,7 @@ impl Sc2CsVisitor {
             vars.insert(location.to_owned(), (var, scan_type.to_owned()));
             // Initialize variable with `expr`, if any, by adding it as effect of `initialize` action.
             if let Some(expr) = expr {
-                let expr =
-                    self.expression(pg_id, expr, &fsm.interner, &vars, None, &HashMap::new())?;
+                let expr = self.expression(expr, &fsm.interner, &vars, None, &HashMap::new())?;
                 // This might fail if `expr` does not typecheck.
                 self.cs.add_effect(pg_id, initialize, var, expr)?;
                 // Initialize has at least an effect, so we need to perform it.
@@ -1052,14 +1052,7 @@ impl Sc2CsVisitor {
                     .cond
                     .as_ref()
                     .map(|cond| {
-                        self.expression(
-                            pg_id,
-                            cond,
-                            &fsm.interner,
-                            &vars,
-                            exec_origin,
-                            &exec_params,
-                        )
+                        self.expression(cond, &fsm.interner, &vars, exec_origin, &exec_params)
                     })
                     .transpose()?;
 
@@ -1222,8 +1215,7 @@ impl Sc2CsVisitor {
                     Ok(next_loc)
                 }
                 Target::Expr(targetexpr) => {
-                    let targetexpr =
-                        self.expression(pg_id, targetexpr, interner, vars, origin, params)?;
+                    let targetexpr = self.expression(targetexpr, interner, vars, origin, params)?;
                     let event_idx = *self
                         .event_indexes
                         .get(event)
@@ -1287,7 +1279,7 @@ impl Sc2CsVisitor {
             },
             Executable::Assign { location, expr } => {
                 // Add a transition that perform the assignment via the effect of the `assign` action.
-                let expr = self.expression(pg_id, expr, interner, &vars, origin, params)?;
+                let expr = self.expression(expr, interner, vars, origin, params)?;
                 let (var, _scan_type) = vars.get(location).ok_or(anyhow!("undefined variable"))?;
                 let assign = self.cs.new_action(pg_id).expect("PG exists");
                 self.cs.add_effect(pg_id, assign, *var, expr)?;
@@ -1317,7 +1309,7 @@ impl Sc2CsVisitor {
             .cloned()
             .ok_or(anyhow!("undefined type"))?;
         // Build expression from ECMAScript expression.
-        let expr = self.expression(pg_id, &param.expr, interner, &vars, origin, params)?;
+        let expr = self.expression(&param.expr, interner, vars, origin, params)?;
         // Retreive or create channel for parameter passing.
         let param_chn = *self
             .parameters
@@ -1336,7 +1328,6 @@ impl Sc2CsVisitor {
 
     fn expression(
         &mut self,
-        pg_id: PgId,
         expr: &boa_ast::Expression,
         interner: &boa_interner::Interner,
         vars: &HashMap<String, (CsVar, Type)>,
@@ -1433,10 +1424,8 @@ impl Sc2CsVisitor {
                 use boa_ast::expression::operator::binary::{ArithmeticOp, BinaryOp, RelationalOp};
                 match bin.op() {
                     BinaryOp::Arithmetic(ar_bin) => {
-                        let lhs =
-                            self.expression(pg_id, bin.lhs(), interner, vars, origin, params)?;
-                        let rhs =
-                            self.expression(pg_id, bin.rhs(), interner, vars, origin, params)?;
+                        let lhs = self.expression(bin.lhs(), interner, vars, origin, params)?;
+                        let rhs = self.expression(bin.rhs(), interner, vars, origin, params)?;
                         match ar_bin {
                             ArithmeticOp::Add => CsExpression::Sum(vec![lhs, rhs]),
                             ArithmeticOp::Sub => {
@@ -1451,10 +1440,8 @@ impl Sc2CsVisitor {
                     BinaryOp::Bitwise(_) => todo!(),
                     BinaryOp::Relational(rel_bin) => {
                         // WARN FIXME TODO: this assumes relations are between integers
-                        let lhs =
-                            self.expression(pg_id, bin.lhs(), interner, vars, origin, params)?;
-                        let rhs =
-                            self.expression(pg_id, bin.rhs(), interner, vars, origin, params)?;
+                        let lhs = self.expression(bin.lhs(), interner, vars, origin, params)?;
+                        let rhs = self.expression(bin.rhs(), interner, vars, origin, params)?;
                         match rel_bin {
                             RelationalOp::Equal => CsExpression::Equal(Box::new((lhs, rhs))),
                             RelationalOp::NotEqual => todo!(),

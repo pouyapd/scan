@@ -329,27 +329,23 @@ pub struct ChannelSystem {
 }
 
 impl ChannelSystem {
-    pub fn possible_transitions<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = (PgId, CsAction, CsLocation)> + 'a {
+    pub fn possible_transitions(&self) -> impl Iterator<Item = (PgId, CsAction, CsLocation)> + '_ {
         self.program_graphs
             .iter()
             .enumerate()
             .flat_map(move |(id, pg)| {
                 let pg_id = PgId(id);
-                pg.possible_transitions()
-                    .into_iter()
-                    .filter_map(move |(action, post)| {
-                        let action = CsAction(pg_id, action);
-                        let post = CsLocation(pg_id, post);
-                        if self.communications.contains_key(&action)
-                            && self.check_communication(pg_id, action).is_err()
-                        {
-                            None
-                        } else {
-                            Some((pg_id, action, post))
-                        }
-                    })
+                pg.possible_transitions().filter_map(move |(action, post)| {
+                    let action = CsAction(pg_id, action);
+                    let post = CsLocation(pg_id, post);
+                    if self.communications.contains_key(&action)
+                        && self.check_communication(pg_id, action).is_err()
+                    {
+                        None
+                    } else {
+                        Some((pg_id, action, post))
+                    }
+                })
             })
     }
 

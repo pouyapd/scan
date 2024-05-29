@@ -204,14 +204,14 @@ impl ProgramGraphBuilder {
                 }
             }
             PgExpression::Not(prop) => {
-                if matches!(self.r#type(&prop)?, Type::Boolean) {
+                if matches!(self.r#type(prop)?, Type::Boolean) {
                     Ok(Type::Boolean)
                 } else {
                     Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Opposite(expr) => {
-                if matches!(self.r#type(&expr)?, Type::Integer) {
+                if matches!(self.r#type(expr)?, Type::Integer) {
                     Ok(Type::Integer)
                 } else {
                     Err(PgError::TypeMismatch)
@@ -289,7 +289,7 @@ pub struct ProgramGraph {
 }
 
 impl ProgramGraph {
-    pub fn possible_transitions<'a>(&'a self) -> impl Iterator<Item = (Action, Location)> + 'a {
+    pub fn possible_transitions(&self) -> impl Iterator<Item = (Action, Location)> + '_ {
         self.transitions[self.current_location.0]
             .iter()
             .filter_map(|((action, post), guard)| {
@@ -325,7 +325,7 @@ impl ProgramGraph {
                 // - borrow checker
                 // - effects are validated before, so no need to type-check again
                 self.vars[var.0] = self
-                    .eval(&effect)
+                    .eval(effect)
                     .expect("effect has already been validated");
             }
             self.current_location = post_state;
@@ -348,7 +348,7 @@ impl ProgramGraph {
                 .iter()
                 .map(|e| self.eval(e))
                 .collect::<Result<Vec<Val>, PgError>>()
-                .map(|vals| Val::Tuple(vals)),
+                .map(Val::Tuple),
             PgExpression::Component(index, expr) => {
                 if let Val::Tuple(components) = self.eval(expr)? {
                     components

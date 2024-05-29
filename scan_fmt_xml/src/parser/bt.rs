@@ -9,10 +9,10 @@ use std::str;
 
 #[derive(Debug, Clone)]
 pub enum BtNode {
-    RSeq(Vec<Box<BtNode>>),
-    RFbk(Vec<Box<BtNode>>),
-    MSeq(Vec<Box<BtNode>>),
-    MFbk(Vec<Box<BtNode>>),
+    RSeq(Vec<BtNode>),
+    RFbk(Vec<BtNode>),
+    MSeq(Vec<BtNode>),
+    MFbk(Vec<BtNode>),
     Invr(Box<BtNode>),
     LAct(String),
     LCnd(String),
@@ -133,18 +133,12 @@ impl BtNode {
                         // }
                         TAG_REACTIVE_SEQUENCE => {
                             bts.push(BtNode::RSeq(
-                                Self::parse_skill(reader)?
-                                    .into_iter()
-                                    .map(Box::new)
-                                    .collect(),
+                                Self::parse_skill(reader)?.into_iter().collect(),
                             ));
                         }
                         TAG_REACTIVE_FALLBACK => {
                             bts.push(BtNode::RFbk(
-                                Self::parse_skill(reader)?
-                                    .into_iter()
-                                    .map(Box::new)
-                                    .collect(),
+                                Self::parse_skill(reader)?.into_iter().collect(),
                             ));
                         }
                         // Unknown tag: skip till maching end tag

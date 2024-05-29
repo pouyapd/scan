@@ -105,7 +105,7 @@ pub struct Parser {
 
 #[derive(Debug)]
 pub enum MoC {
-    Fsm(Fsm),
+    Fsm(Box<Fsm>),
     Bt(Bt),
 }
 
@@ -116,7 +116,7 @@ pub struct Process {
 
 impl Parser {
     pub fn parse(file: PathBuf) -> anyhow::Result<Parser> {
-        let mut reader = Reader::from_file(file.to_owned())?;
+        let mut reader = Reader::from_file(&file)?;
         let root_folder = file
             .parent()
             .ok_or(ParserError(0, ParserErrorType::NotAFile))?
@@ -267,7 +267,7 @@ impl Parser {
             ParserErrorType::MissingAttr(ATTR_PATH.to_string())
         )))?;
         let mut root_path = self.root_folder.clone();
-        root_path.extend(PathBuf::from(path).into_iter());
+        root_path.extend(&PathBuf::from(path));
         let moc = moc.ok_or(anyhow!(ParserError(
             reader.buffer_position(),
             ParserErrorType::MissingAttr(ATTR_MOC.to_string())
@@ -277,7 +277,7 @@ impl Parser {
                 info!("creating reader from file {0}", root_path.display());
                 let mut reader = Reader::from_file(root_path)?;
                 let fsm = Fsm::parse(&mut reader)?;
-                MoC::Fsm(fsm)
+                MoC::Fsm(Box::new(fsm))
             }
             "bt" => {
                 info!("creating reader from file {0}", root_path.display());
@@ -336,7 +336,7 @@ impl Parser {
             ParserErrorType::MissingAttr(ATTR_PATH.to_string())
         )))?;
         let mut root_path = self.root_folder.clone();
-        root_path.extend(PathBuf::from(path).into_iter());
+        root_path.extend(&PathBuf::from(path));
         info!("creating reader from file {0}", root_path.display());
         let mut reader = Reader::from_file(root_path)?;
         self.types.parse(&mut reader)?;

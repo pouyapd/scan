@@ -214,17 +214,19 @@ impl Fsm {
                             fsm.parse_transition(tag, reader, &stack)?;
                         }
                         // we `rev()` the iterator only because we expect the relevant tag to be towards the end of the stack
-                        TAG_RAISE if stack.iter().rev().any(|tag| tag.is_executable()) => {
+                        TAG_RAISE if stack.last().is_some_and(|tag| tag.is_executable()) => {
                             fsm.parse_raise(tag, reader, &stack)?;
                         }
-                        TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
+                        TAG_SEND if stack.last().is_some_and(|tag| tag.is_executable()) => {
                             fsm.parse_send(tag, reader, &stack)?;
                         }
-                        TAG_ASSIGN if stack.iter().rev().any(|tag| tag.is_executable()) => {
+                        TAG_ASSIGN if stack.last().is_some_and(|tag| tag.is_executable()) => {
                             fsm.parse_assign(tag, reader, &stack)?;
                         }
                         TAG_PARAM
-                            if stack.iter().rev().any(|tag| matches!(*tag, ScxmlTag::Send)) =>
+                            if stack
+                                .last()
+                                .is_some_and(|tag| matches!(*tag, ScxmlTag::Send)) =>
                         {
                             let (ident, omg_type) = type_annotation.take().ok_or(ParserError(
                                 reader.buffer_position(),
@@ -325,7 +327,7 @@ impl Fsm {
         )))?;
         // Check if it is the initial state
         if self.initial.is_empty() {
-            self.initial = id.to_owned();
+            id.clone_into(&mut self.initial);
         }
         let state = State {
             transitions: Vec::new(),
@@ -595,29 +597,28 @@ impl Fsm {
             .states
             .get_mut(state_id)
             .expect("State in stack has to exist");
-        Ok(
-            match stack
-                .iter()
-                .rfind(|tag| tag.is_executable())
-                .expect("there must be an executable tag")
-            {
-                ScxmlTag::OnEntry => {
-                    state.on_entry.push(executable);
-                }
-                ScxmlTag::OnExit => {
-                    state.on_exit.push(executable);
-                }
-                ScxmlTag::Transition => {
-                    state
-                        .transitions
-                        .last_mut()
-                        .expect("inside a `Transition` tag")
-                        .effects
-                        .push(executable);
-                }
-                _ => panic!("non executable tag"),
-            },
-        )
+        match stack
+            .iter()
+            .rfind(|tag| tag.is_executable())
+            .expect("there must be an executable tag")
+        {
+            ScxmlTag::OnEntry => {
+                state.on_entry.push(executable);
+            }
+            ScxmlTag::OnExit => {
+                state.on_exit.push(executable);
+            }
+            ScxmlTag::Transition => {
+                state
+                    .transitions
+                    .last_mut()
+                    .expect("inside a `Transition` tag")
+                    .effects
+                    .push(executable);
+            }
+            _ => panic!("non executable tag"),
+        }
+        Ok(())
     }
 
     fn parse_param<R: BufRead>(
@@ -816,7 +817,7 @@ impl Fsm {
     }
 
     fn parse_comment(&mut self, comment: String) -> anyhow::Result<Option<(String, String)>> {
-        let mut iter = comment.trim().split_whitespace();
+        let mut iter = comment.split_whitespace();
         let keyword = iter.next().ok_or(anyhow!("no keyword"))?;
         if keyword == "TYPE" {
             trace!("parsing TYPE magic comment");
