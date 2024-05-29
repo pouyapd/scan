@@ -7,6 +7,11 @@ edition = "2021"
 [workspace]
 members = ["scan_core", "scan_fmt_xml"]
 
+[workspace.dependencies]
+env_logger = "0.11.0"
+log = "0.4.20"
+
 [dependencies]
 scan_fmt_xml = { path = "scan_fmt_xml" }
 clap = { version = "4.4.14", features = ["derive"] }
+env_logger = { workspace = true }
