@@ -79,7 +79,6 @@ impl Sc2CsVisitor {
 
         info!("Visit process list");
         for (id, declaration) in parser.process_list.iter() {
-            info!("Visit process {id}");
             match &declaration.moc {
                 MoC::Fsm(fsm) => model.build_fsm(fsm)?,
                 MoC::Bt(bt) => todo!(), // model.build_bt(bt)?,
@@ -703,7 +702,6 @@ impl Sc2CsVisitor {
     }
 
     // TODO: Optimize CS by removing unnecessary states:
-    // - initialize state if empty datamodel
     fn build_fsm(&mut self, fsm: &Fsm) -> anyhow::Result<()> {
         trace!("build fsm {}", fsm.id);
         // Initialize fsm.
@@ -714,6 +712,9 @@ impl Sc2CsVisitor {
         let pg_id = pg_builder.pg_id;
         let pg_index = pg_builder.index as Integer;
         let ext_queue = pg_builder.ext_queue;
+        // Generic action that progresses the execution of the FSM.
+        // WARN DO NOT ADD EFFECTS!
+        let step = self.cs.new_action(pg_id).expect("PG exists");
         // Initial location of Program Graph.
         let initial_loc = self
             .cs
@@ -739,9 +740,12 @@ impl Sc2CsVisitor {
                     self.expression(pg_id, expr, &fsm.interner, &vars, None, &HashMap::new())?;
                 // This might fail if `expr` does not typecheck.
                 self.cs.add_effect(pg_id, initialize, var, expr)?;
+                // Initialize has at least an effect, so we need to perform it.
                 need_to_initialize = true;
             }
         }
+        // Make vars immutable
+        let vars = vars;
         // Transition initializing datamodel variables.
         // After initializing datamodel, transition to location representing point-of-entry of initial state of State Chart.
         let initial_state;
@@ -767,17 +771,18 @@ impl Sc2CsVisitor {
             .cs
             .new_var(pg_id, Type::Integer)
             .expect("program graph exists!");
+        // Variable that will store origin of last processed event.
+        let origin_var = self
+            .cs
+            .new_var(pg_id, Type::Integer)
+            .expect("program graph exists!");
         // Implement internal queue
         let int_queue = self.cs.new_channel(Type::Integer, None);
         let dequeue_int = self
             .cs
             .new_communication(pg_id, int_queue, Message::Receive(current_event_var))
             .expect("hand-coded args");
-        // Variable that will store origin of last processed event.
-        let origin_var = self
-            .cs
-            .new_var(pg_id, Type::Integer)
-            .expect("program graph exists!");
+        // For events from the internal queue, origin is self
         let set_int_origin = self.cs.new_action(pg_id).expect("program graph exists!");
         self.cs
             .add_effect(
@@ -820,42 +825,48 @@ impl Sc2CsVisitor {
                 ),
             )
             .expect("hand-coded args");
-        // Action representing checking the next transition
-        let next_transition = self.cs.new_action(pg_id).expect("program graph exists!");
 
         // Create variables and channels for the storage of the parameters sent by external events.
-        let mut params: HashMap<(usize, String), (CsVar, Type)> = HashMap::new();
+        let mut param_vars: HashMap<(usize, String), (CsVar, Type)> = HashMap::new();
+        let mut param_actions: HashMap<(PgId, usize, String), CsAction> = HashMap::new();
         for event_builder in self
             .events
             .iter()
             // only consider events that can activate some transition and that some other process is sending.
             .filter(|eb| eb.receivers.contains(&pg_id) && !eb.senders.is_empty())
         {
+            let event_index = event_builder.index;
             for (param_name, param_type) in event_builder.params.iter() {
                 // Variable where to store parameter.
                 let param_var = self
                     .cs
                     .new_var(pg_id, param_type.to_owned())
                     .expect("hand-made input");
-                let old = params.insert(
-                    (event_builder.index, param_name.to_owned()),
+                let old = param_vars.insert(
+                    (event_index, param_name.to_owned()),
                     (param_var, param_type.to_owned()),
                 );
                 assert!(old.is_none());
-                for sender_id in event_builder.senders.iter() {
-                    self.parameters
-                        .entry((
-                            *sender_id,
-                            pg_id,
-                            event_builder.index,
-                            param_name.to_owned(),
-                        ))
+                for &sender_id in event_builder.senders.iter() {
+                    let chn = self
+                        .parameters
+                        .entry((sender_id, pg_id, event_index, param_name.to_owned()))
+                        // entry may be present if the sender fsm has been built already,
+                        // and it might be missing otherwise.
                         .or_insert_with(|| self.cs.new_channel(param_type.to_owned(), None));
+                    let read = self
+                        .cs
+                        .new_communication(pg_id, *chn, Message::Receive(param_var))
+                        .expect("must work");
+                    let old =
+                        param_actions.insert((sender_id, event_index, param_name.to_owned()), read);
+                    assert!(old.is_none());
                 }
             }
         }
         // Make non-mut
-        let params = params;
+        let param_vars = param_vars;
+        let param_actions = param_actions;
 
         // Consider each of the fsm's states
         for (state_id, state) in fsm.states.iter() {
@@ -877,65 +888,77 @@ impl Sc2CsVisitor {
                     int_queue,
                     onentry_loc,
                     &vars,
-                    Some(origin_var),
+                    None,
                     &HashMap::new(),
                     &fsm.interner,
                 )?;
             }
+            // Make immutable
+            let onentry_loc = onentry_loc;
 
-            // Location where eventless/NULL transitions activate
+            // Location where autonomous/eventless/NULL transitions activate
             let mut null_trans = onentry_loc;
             // Location where internal events are dequeued
             let int_queue_loc = self.cs.new_location(pg_id).expect("program graph exists!");
-            // Location where the origin of internal events is set as own.
-            let int_origin_loc = self.cs.new_location(pg_id).expect("program graph exists!");
             // Location where external events are dequeued
             let ext_queue_loc = self.cs.new_location(pg_id).expect("program graph exists!");
-            // Location where the index/origin of external events are dequeued
-            let ext_event_processing_loc =
-                self.cs.new_location(pg_id).expect("program graph exists!");
             // Location where eventful transitions activate
             let mut eventful_trans = self.cs.new_location(pg_id).expect("program graph exists!");
-            // Transition dequeueing a new internal event and searching for first active eventful transition
-            self.cs
-                .add_transition(pg_id, int_queue_loc, dequeue_int, int_origin_loc, None)
-                .expect("hand-coded args");
-            // Transition dequeueing a new internal event and searching for first active eventful transition
-            self.cs
-                .add_transition(pg_id, int_origin_loc, set_int_origin, eventful_trans, None)
-                .expect("hand-coded args");
+            // int_origin_loc will not be needed outside of this scope
+            {
+                // Location where the origin of internal events is set as own.
+                let int_origin_loc = self.cs.new_location(pg_id).expect("program graph exists!");
+                // Transition dequeueing a new internal event and searching for first active eventful transition
+                self.cs
+                    .add_transition(pg_id, int_queue_loc, dequeue_int, int_origin_loc, None)
+                    .expect("hand-coded args");
+                // Transition dequeueing a new internal event and searching for first active eventful transition
+                self.cs
+                    .add_transition(pg_id, int_origin_loc, set_int_origin, eventful_trans, None)
+                    .expect("hand-coded args");
+            }
             // Action denoting checking if internal queue is empty;
             // if so, move to external queue.
             // Notice that one and only one of `int_dequeue` and `empty_int_queue` can be executed at a given time.
-            let empty_int_queue = self
-                .cs
-                .new_communication(pg_id, int_queue, Message::ProbeEmptyQueue)
-                .expect("hand-coded args");
-            self.cs
-                .add_transition(pg_id, int_queue_loc, empty_int_queue, ext_queue_loc, None)
-                .expect("hand-coded args");
-            // Dequeue a new external event and search for first active named transition.
-            self.cs
-                .add_transition(
-                    pg_id,
-                    ext_queue_loc,
-                    dequeue_ext,
-                    ext_event_processing_loc,
-                    None,
-                )
-                .expect("hand-coded args");
+            // empty_int_queue will not be needed outside of this scope
+            {
+                let empty_int_queue = self
+                    .cs
+                    .new_communication(pg_id, int_queue, Message::ProbeEmptyQueue)
+                    .expect("hand-coded args");
+                self.cs
+                    .add_transition(pg_id, int_queue_loc, empty_int_queue, ext_queue_loc, None)
+                    .expect("hand-coded args");
+            }
+            // Location where parameters of events are read into suitable variables.
             let ext_event_processing_param =
                 self.cs.new_location(pg_id).expect("program graph exists!");
-            self.cs
-                .add_transition(
-                    pg_id,
-                    ext_event_processing_loc,
-                    process_ext_event,
-                    ext_event_processing_param,
-                    None,
-                )
-                .expect("hand-coded args");
-            let step = self.cs.new_action(pg_id).expect("PG exists");
+            // Process external events by reading the (event, origin) pair and writing the components to the designated variables.
+            // ext_event_processing_loc will not be needed outside of this scope.
+            {
+                // Location where the index/origin of external events are dequeued
+                let ext_event_processing_loc =
+                    self.cs.new_location(pg_id).expect("program graph exists!");
+                // Dequeue a new external event and search for first active named transition.
+                self.cs
+                    .add_transition(
+                        pg_id,
+                        ext_queue_loc,
+                        dequeue_ext,
+                        ext_event_processing_loc,
+                        None,
+                    )
+                    .expect("hand-coded args");
+                self.cs
+                    .add_transition(
+                        pg_id,
+                        ext_event_processing_loc,
+                        process_ext_event,
+                        ext_event_processing_param,
+                        None,
+                    )
+                    .expect("hand-coded args");
+            }
             // Retreive external event's parameters
             // We need to set up the parameter-passing channel for every possible event that could be sent,
             // from any possible other fsm,
@@ -945,6 +968,7 @@ impl Sc2CsVisitor {
                 .iter()
                 .filter(|eb| eb.receivers.contains(&pg_id) && !eb.senders.is_empty())
             {
+                let event_index = event_builder.index;
                 for sender_id in event_builder.senders.iter() {
                     // TODO FIXME fsm builders should be indexed
                     let sender_index = self
@@ -956,7 +980,7 @@ impl Sc2CsVisitor {
                         .index;
                     let mut is_event_sender = Some(Expression::And(vec![
                         Expression::Equal(Box::new((
-                            Expression::Integer(event_builder.index as Integer),
+                            Expression::Integer(event_index as Integer),
                             Expression::Var(current_event_var),
                         ))),
                         Expression::Equal(Box::new((
@@ -966,35 +990,21 @@ impl Sc2CsVisitor {
                     ]));
                     let mut current_loc = ext_event_processing_param;
                     for (param_name, _) in event_builder.params.iter() {
-                        let (param_var, _) = params
-                            .get(&(event_builder.index, param_name.to_owned()))
-                            .expect("param should already be in");
-                        // Channel where to retreive the parameter from.
-                        let channel = *self
-                            .parameters
-                            .get(&(
-                                *sender_id,
-                                pg_id,
-                                event_builder.index,
-                                param_name.to_owned(),
-                            ))
-                            .expect("parameters have already been registered");
-                        let read_param = self
-                            .cs
-                            .new_communication(pg_id, channel, Message::Receive(*param_var))
-                            .expect("hard-coded input");
-                        let next = self.cs.new_location(pg_id).expect("program graph exists!");
+                        let read_param = *param_actions
+                            .get(&(*sender_id, event_index, param_name.to_owned()))
+                            .expect("has to be there");
+                        let next_loc = self.cs.new_location(pg_id).expect("program graph exists!");
                         self.cs
                             .add_transition(
                                 pg_id,
                                 current_loc,
                                 read_param,
-                                next,
+                                next_loc,
                                 // Need to check only once, so `take` Option
                                 is_event_sender.take(),
                             )
                             .expect("hand-coded args");
-                        current_loc = next;
+                        current_loc = next_loc;
                     }
                     self.cs
                         .add_transition(pg_id, current_loc, step, eventful_trans, None)
@@ -1017,14 +1027,6 @@ impl Sc2CsVisitor {
                     .entry(transition.target.to_owned())
                     .or_insert_with(|| self.cs.new_location(pg_id).expect("pg_id should exist"));
 
-                // Location corresponding to checking if the transition is active.
-                // Has to be defined depending on the type of transition.
-                let check_trans_loc;
-                // Action correponding to executing the transition.
-                let exec_transition = self.cs.new_action(pg_id).expect("{pg_id:?} exists");
-                // Location corresponding to verifying the transition is not active and moving to next one.
-                let next_trans_loc = self.cs.new_location(pg_id).expect("{pg_id:?} exists");
-
                 // Set up origin and parameters for conditional/executable content.
                 let exec_origin;
                 let exec_params;
@@ -1034,7 +1036,7 @@ impl Sc2CsVisitor {
                         .get(event_name)
                         .expect("event must be registered");
                     exec_origin = Some(origin_var);
-                    exec_params = params
+                    exec_params = param_vars
                         .iter()
                         .filter(|((ev_ix, _), _)| *ev_ix == event_index)
                         .map(|((_, name), (var, tp))| (name.to_owned(), (*var, tp.to_owned())))
@@ -1060,15 +1062,20 @@ impl Sc2CsVisitor {
                         )
                     })
                     .transpose()?;
+
+                // Location corresponding to checking if the transition is active.
+                // Has to be defined depending on the type of transition.
+                let check_trans_loc;
+                // Location corresponding to verifying the transition is not active and moving to next one.
+                let next_trans_loc = self.cs.new_location(pg_id).expect("{pg_id:?} exists");
+
                 // Guard for transition.
                 // Has to be defined depending on the type of transition, etc...
                 let guard;
                 // Proceed on whether the transition is eventless or activated by event.
                 if let Some(event) = &transition.event {
-                    // Create event, if it does not exist already.
                     let event_idx =
                         *self.event_indexes.get(event).expect("already exists") as Integer;
-                    // let event_idx = self.event_index(event) as Integer;
                     // Check if the current event (internal or external) corresponds to the event activating the transition.
                     let event_match = CsExpression::Equal(Box::new((
                         CsExpression::Var(current_event_var),
@@ -1097,12 +1104,12 @@ impl Sc2CsVisitor {
                 self.cs.add_transition(
                     pg_id,
                     check_trans_loc,
-                    exec_transition,
+                    step,
                     exec_trans_loc,
                     guard.to_owned(),
                 )?;
                 // First execute the executable content of the state's `on_exit` tag,
-                // then that of the `transition` tag.
+                // then that of the `transition` tag, following the specs.
                 for exec in state.on_exit.iter().chain(transition.effects.iter()) {
                     exec_trans_loc = self.add_executable(
                         exec,
@@ -1119,7 +1126,8 @@ impl Sc2CsVisitor {
                 // Transitioning to the target state/location.
                 // At this point, the transition cannot be stopped so there can be no guard.
                 self.cs
-                    .add_transition(pg_id, exec_trans_loc, exec_transition, target_loc, None)?;
+                    .add_transition(pg_id, exec_trans_loc, step, target_loc, None)
+                    .expect("has to work");
                 // If the current transition is not active, move on to check the next one.
                 let not_guard = guard
                     .map(|guard| CsExpression::Not(Box::new(guard)))
@@ -1127,7 +1135,7 @@ impl Sc2CsVisitor {
                 self.cs.add_transition(
                     pg_id,
                     check_trans_loc,
-                    next_transition,
+                    step,
                     next_trans_loc,
                     Some(not_guard),
                 )?;
@@ -1136,10 +1144,10 @@ impl Sc2CsVisitor {
             // Connect NULL events with named events
             // by transitioning from last "NUll" location to dequeuing event location.
             self.cs
-                .add_transition(pg_id, null_trans, next_transition, int_queue_loc, None)?;
+                .add_transition(pg_id, null_trans, step, int_queue_loc, None)?;
             // Return to dequeue a new (internal or external) event.
             self.cs
-                .add_transition(pg_id, eventful_trans, next_transition, int_queue_loc, None)?;
+                .add_transition(pg_id, eventful_trans, step, int_queue_loc, None)?;
         }
         Ok(())
     }
@@ -1179,21 +1187,23 @@ impl Sc2CsVisitor {
                     let target_builder = self
                         .fsm_builders
                         .get(target)
-                        // TODO FIXME This should be fallible because `target` is unvalidated user input
-                        .expect(&format!("builder for {} already exists", target));
+                        .ok_or(anyhow!(format!("target {target} not found")))?;
                     let target_id = target_builder.pg_id;
                     let event_idx = *self
                         .event_indexes
                         .get(event)
                         .expect("builder for {event} already exists");
-                    let send_event = self.cs.new_communication(
-                        pg_id,
-                        target_builder.ext_queue,
-                        Message::Send(CsExpression::Tuple(vec![
-                            Expression::Integer(event_idx as Integer),
-                            Expression::Integer(pg_idx),
-                        ])),
-                    )?;
+                    let send_event = self
+                        .cs
+                        .new_communication(
+                            pg_id,
+                            target_builder.ext_queue,
+                            Message::Send(CsExpression::Tuple(vec![
+                                Expression::Integer(event_idx as Integer),
+                                Expression::Integer(pg_idx),
+                            ])),
+                        )
+                        .expect("must work");
 
                     // Send event and event origin before moving on to next location.
                     let mut next_loc = self.cs.new_location(pg_id)?;
@@ -1279,7 +1289,7 @@ impl Sc2CsVisitor {
                 // Add a transition that perform the assignment via the effect of the `assign` action.
                 let expr = self.expression(pg_id, expr, interner, &vars, origin, params)?;
                 let (var, _scan_type) = vars.get(location).ok_or(anyhow!("undefined variable"))?;
-                let assign = self.cs.new_action(pg_id)?;
+                let assign = self.cs.new_action(pg_id).expect("PG exists");
                 self.cs.add_effect(pg_id, assign, *var, expr)?;
                 let next_loc = self.cs.new_location(pg_id)?;
                 self.cs.add_transition(pg_id, loc, assign, next_loc, None)?;
@@ -1392,12 +1402,8 @@ impl Sc2CsVisitor {
                                     CsExpression::Var(origin)
                                 }
                                 var_ident => {
-                                    if let Some((param_var, var_type)) = params.get(var_ident) {
-                                        match var_type {
-                                            Type::Boolean => CsExpression::Var(*param_var),
-                                            Type::Integer => CsExpression::Var(*param_var),
-                                            Type::Product(_) => todo!(),
-                                        }
+                                    if let Some((param_var, _var_type)) = params.get(var_ident) {
+                                        CsExpression::Var(*param_var)
                                     } else {
                                         return Err(anyhow!(
                                             "no parameter `{ident}` found among: {params:#?}"
