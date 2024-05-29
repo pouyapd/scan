@@ -34,7 +34,7 @@ pub enum PgError {
     #[error("location {0:?} does not belong to this program graph")]
     MissingLocation(Location),
     #[error("type mismatch")]
-    Mismatched,
+    TypeMismatch,
     #[error("location {0:?} does not belong to this program graph")]
     NonExistingVar(Var),
     #[error("There is no such transition")]
@@ -113,7 +113,7 @@ impl ProgramGraphBuilder {
                 .ok_or(PgError::MissingAction(action))
                 .map(|effects| effects.push((var, effect)))
         } else {
-            Err(PgError::Mismatched)
+            Err(PgError::TypeMismatch)
         }
     }
 
@@ -141,12 +141,9 @@ impl ProgramGraphBuilder {
             Err(PgError::MissingAction(action))
         } else if guard.is_some() && !matches!(self.r#type(guard.as_ref().unwrap())?, Type::Boolean)
         {
-            Err(PgError::Mismatched)
+            Err(PgError::TypeMismatch)
         } else {
-            let _ = self
-                .transitions
-                .get_mut(pre.0)
-                .expect("location existance already checked")
+            let _ = self.transitions[pre.0]
                 .entry((action, post))
                 .and_modify(|previous_guard| {
                     if let Some(guard) = guard.to_owned() {
@@ -164,7 +161,7 @@ impl ProgramGraphBuilder {
                         }
                     }
                 })
-                .or_insert(guard.to_owned());
+                .or_insert(guard);
             Ok(())
         }
     }
@@ -179,7 +176,6 @@ impl ProgramGraphBuilder {
                     .map(|e| self.r#type(e))
                     .collect::<Result<Vec<Type>, PgError>>()?,
             )),
-            // PgExpression::Const(val) => Ok(val.r#type()),
             PgExpression::Var(var) => self
                 .vars
                 .get(var.0)
@@ -195,7 +191,7 @@ impl ProgramGraphBuilder {
                 {
                     Ok(Type::Boolean)
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Implies(props) => {
@@ -204,21 +200,21 @@ impl ProgramGraphBuilder {
                 {
                     Ok(Type::Boolean)
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Not(prop) => {
                 if matches!(self.r#type(&prop)?, Type::Boolean) {
                     Ok(Type::Boolean)
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Opposite(expr) => {
                 if matches!(self.r#type(&expr)?, Type::Integer) {
                     Ok(Type::Integer)
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Sum(exprs) | PgExpression::Mult(exprs) => {
@@ -231,7 +227,7 @@ impl ProgramGraphBuilder {
                 {
                     Ok(Type::Integer)
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Equal(exprs)
@@ -244,7 +240,7 @@ impl ProgramGraphBuilder {
                 {
                     Ok(Type::Boolean)
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Component(index, expr) => {
@@ -254,7 +250,7 @@ impl ProgramGraphBuilder {
                         .cloned()
                         .ok_or(PgError::MissingComponent(*index))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
         }
@@ -293,10 +289,8 @@ pub struct ProgramGraph {
 }
 
 impl ProgramGraph {
-    pub fn possible_transitions(&self) -> Vec<(Action, Location)> {
-        self.transitions
-            .get(self.current_location.0)
-            .unwrap_or(&HashMap::new())
+    pub fn possible_transitions<'a>(&'a self) -> impl Iterator<Item = (Action, Location)> + 'a {
+        self.transitions[self.current_location.0]
             .iter()
             .filter_map(|((action, post), guard)| {
                 if let Some(guard) = guard {
@@ -313,14 +307,10 @@ impl ProgramGraph {
                     Some((*action, *post))
                 }
             })
-            .collect::<Vec<_>>()
     }
 
     pub fn transition(&mut self, action: Action, post_state: Location) -> Result<(), PgError> {
-        let guard = self
-            .transitions
-            .get(self.current_location.0)
-            .expect("location must exist")
+        let guard = self.transitions[self.current_location.0]
             .get(&(action, post_state))
             .ok_or(PgError::NoTransition)?;
         if guard.as_ref().map_or(true, |guard| {
@@ -330,18 +320,13 @@ impl ProgramGraph {
                 panic!("guard is not a boolean");
             }
         }) {
-            for (var, effect) in self
-                .effects
-                .get(action.0)
-                .expect("action has been validated before")
-            {
+            for (var, effect) in &self.effects[action.0] {
                 // Not using the 'Self::assign' method because:
                 // - borrow checker
                 // - effects are validated before, so no need to type-check again
-                *self
-                    .vars
-                    .get_mut(var.0)
-                    .expect("effect has been validated before") = self.eval(effect)?;
+                self.vars[var.0] = self
+                    .eval(&effect)
+                    .expect("effect has already been validated");
             }
             self.current_location = post_state;
             Ok(())
@@ -371,7 +356,7 @@ impl ProgramGraph {
                         .cloned()
                         .ok_or(PgError::MissingComponent(*index))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::And(props) => Ok(Val::Boolean(
@@ -381,7 +366,7 @@ impl ProgramGraph {
                         if let Val::Boolean(val) = self.eval(prop)? {
                             Ok(val)
                         } else {
-                            Err(PgError::Mismatched)
+                            Err(PgError::TypeMismatch)
                         }
                     })
                     .collect::<Result<Vec<bool>, PgError>>()?
@@ -395,7 +380,7 @@ impl ProgramGraph {
                         if let Val::Boolean(val) = self.eval(prop)? {
                             Ok(val)
                         } else {
-                            Err(PgError::Mismatched)
+                            Err(PgError::TypeMismatch)
                         }
                     })
                     .collect::<Result<Vec<bool>, PgError>>()?
@@ -408,21 +393,21 @@ impl ProgramGraph {
                 {
                     Ok(Val::Boolean(rhs || !lhs))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Not(prop) => {
                 if let Val::Boolean(arg) = self.eval(prop)? {
                     Ok(Val::Boolean(!arg))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Opposite(expr) => {
                 if let Val::Integer(arg) = self.eval(expr)? {
                     Ok(Val::Integer(-arg))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Sum(exprs) => Ok(Val::Integer(
@@ -432,7 +417,7 @@ impl ProgramGraph {
                         if let Val::Integer(val) = self.eval(prop)? {
                             Ok(val)
                         } else {
-                            Err(PgError::Mismatched)
+                            Err(PgError::TypeMismatch)
                         }
                     })
                     .collect::<Result<Vec<Integer>, PgError>>()?
@@ -446,7 +431,7 @@ impl ProgramGraph {
                         if let Val::Integer(val) = self.eval(prop)? {
                             Ok(val)
                         } else {
-                            Err(PgError::Mismatched)
+                            Err(PgError::TypeMismatch)
                         }
                     })
                     .collect::<Result<Vec<Integer>, PgError>>()?
@@ -459,7 +444,7 @@ impl ProgramGraph {
                 {
                     Ok(Val::Boolean(lhs == rhs))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Greater(exprs) => {
@@ -468,7 +453,7 @@ impl ProgramGraph {
                 {
                     Ok(Val::Boolean(lhs > rhs))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::GreaterEq(exprs) => {
@@ -477,7 +462,7 @@ impl ProgramGraph {
                 {
                     Ok(Val::Boolean(lhs >= rhs))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::Less(exprs) => {
@@ -486,7 +471,7 @@ impl ProgramGraph {
                 {
                     Ok(Val::Boolean(lhs < rhs))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
             PgExpression::LessEq(exprs) => {
@@ -495,7 +480,7 @@ impl ProgramGraph {
                 {
                     Ok(Val::Boolean(lhs <= rhs))
                 } else {
-                    Err(PgError::Mismatched)
+                    Err(PgError::TypeMismatch)
                 }
             }
         }
@@ -511,7 +496,7 @@ impl ProgramGraph {
             *var_content = val;
             Ok(previous_val)
         } else {
-            Err(PgError::Mismatched)
+            Err(PgError::TypeMismatch)
         }
     }
 }
@@ -528,9 +513,12 @@ mod tests {
         let action = builder.new_action();
         builder.add_transition(initial, action, r#final, None)?;
         let mut pg = builder.build();
-        assert_eq!(pg.possible_transitions(), vec![(action, r#final)]);
+        assert_eq!(
+            pg.possible_transitions().collect::<Vec<_>>(),
+            vec![(action, r#final)]
+        );
         pg.transition(action, r#final)?;
-        assert!(pg.possible_transitions().is_empty());
+        assert_eq!(pg.possible_transitions().count(), 0);
         Ok(())
     }
 
@@ -581,17 +569,17 @@ mod tests {
         builder.add_transition(center, move_left, left, Some(out_of_charge))?;
         // Execution
         let mut pg = builder.build();
-        assert_eq!(pg.possible_transitions().len(), 1);
+        assert_eq!(pg.possible_transitions().count(), 1);
         pg.transition(initialize, center)?;
-        assert_eq!(pg.possible_transitions().len(), 2);
+        assert_eq!(pg.possible_transitions().count(), 2);
         pg.transition(move_right, right)?;
-        assert_eq!(pg.possible_transitions().len(), 1);
+        assert_eq!(pg.possible_transitions().count(), 1);
         pg.transition(move_right, right).expect_err("already right");
-        assert_eq!(pg.possible_transitions().len(), 1);
+        assert_eq!(pg.possible_transitions().count(), 1);
         pg.transition(move_left, center)?;
-        assert_eq!(pg.possible_transitions().len(), 2);
+        assert_eq!(pg.possible_transitions().count(), 2);
         pg.transition(move_left, left)?;
-        assert_eq!(pg.possible_transitions().len(), 0);
+        assert_eq!(pg.possible_transitions().count(), 0);
         pg.transition(move_left, left).expect_err("battery = 0");
         Ok(())
     }

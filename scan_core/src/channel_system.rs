@@ -200,23 +200,22 @@ impl ChannelSystemBuilder {
         effect: CsExpression,
     ) -> Result<(), CsError> {
         if action.0 != pg_id {
-            return Err(CsError::ActionNotInPg(action, pg_id));
+            Err(CsError::ActionNotInPg(action, pg_id))
+        } else if var.0 != pg_id {
+            Err(CsError::VarNotInPg(var, pg_id))
+        } else if self.communications.contains_key(&action) {
+            // Communications cannot have effects
+            Err(CsError::ActionIsCommunication(action))
+        } else {
+            let effect = PgExpression::try_from((pg_id, effect))?;
+            self.program_graphs
+                .get_mut(pg_id.0)
+                .ok_or(CsError::MissingPg(pg_id))
+                .and_then(|pg| {
+                    pg.add_effect(action.1, var.1, effect)
+                        .map_err(|err| CsError::ProgramGraph(pg_id, err))
+                })
         }
-        if var.0 != pg_id {
-            return Err(CsError::VarNotInPg(var, pg_id));
-        }
-        let effect = PgExpression::try_from((pg_id, effect))?;
-        // Communications cannot have effects
-        if self.communications.contains_key(&action) {
-            return Err(CsError::ActionIsCommunication(action));
-        }
-        self.program_graphs
-            .get_mut(pg_id.0)
-            .ok_or(CsError::MissingPg(pg_id))
-            .and_then(|pg| {
-                pg.add_effect(action.1, var.1, effect)
-                    .map_err(|err| CsError::ProgramGraph(pg_id, err))
-            })
     }
 
     pub fn new_location(&mut self, pg_id: PgId) -> Result<CsLocation, CsError> {
@@ -235,25 +234,24 @@ impl ChannelSystemBuilder {
         guard: Option<CsExpression>,
     ) -> Result<(), CsError> {
         if action.0 != pg_id {
-            return Err(CsError::ActionNotInPg(action, pg_id));
+            Err(CsError::ActionNotInPg(action, pg_id))
+        } else if pre.0 != pg_id {
+            Err(CsError::LocationNotInPg(pre, pg_id))
+        } else if post.0 != pg_id {
+            Err(CsError::LocationNotInPg(post, pg_id))
+        } else {
+            // Turn CsExpression into a PgExpression for Program Graph pg_id
+            let guard = guard
+                .map(|guard| PgExpression::try_from((pg_id, guard)))
+                .transpose()?;
+            self.program_graphs
+                .get_mut(pg_id.0)
+                .ok_or(CsError::MissingPg(pg_id))
+                .and_then(|pg| {
+                    pg.add_transition(pre.1, action.1, post.1, guard)
+                        .map_err(|err| CsError::ProgramGraph(pg_id, err))
+                })
         }
-        if pre.0 != pg_id {
-            return Err(CsError::LocationNotInPg(pre, pg_id));
-        }
-        if post.0 != pg_id {
-            return Err(CsError::LocationNotInPg(post, pg_id));
-        }
-        // Turn CsExpression into a PgExpression for Program Graph pg_id
-        let guard = guard
-            .map(|guard| PgExpression::try_from((pg_id, guard)))
-            .transpose()?;
-        self.program_graphs
-            .get_mut(pg_id.0)
-            .ok_or(CsError::MissingPg(pg_id))
-            .and_then(|pg| {
-                pg.add_transition(pre.1, action.1, post.1, guard)
-                    .map_err(|err| CsError::ProgramGraph(pg_id, err))
-            })
     }
 
     pub fn new_channel(&mut self, var_type: Type, capacity: Option<usize>) -> Channel {
@@ -297,7 +295,7 @@ impl ChannelSystemBuilder {
             }
         };
         if channel_type != message_type {
-            return Err(CsError::ProgramGraph(pg_id, PgError::Mismatched));
+            return Err(CsError::ProgramGraph(pg_id, PgError::TypeMismatch));
         }
         let action = self.new_action(pg_id)?;
         self.communications.insert(action, (channel, message));
@@ -305,15 +303,16 @@ impl ChannelSystemBuilder {
     }
 
     pub fn build(mut self) -> ChannelSystem {
-        self.program_graphs.shrink_to_fit();
+        let mut program_graphs: Vec<ProgramGraph> = self
+            .program_graphs
+            .into_iter()
+            .map(|builder| builder.build())
+            .collect();
+        program_graphs.shrink_to_fit();
         self.channels.shrink_to_fit();
         self.communications.shrink_to_fit();
         ChannelSystem {
-            program_graphs: self
-                .program_graphs
-                .into_iter()
-                .map(|builder| builder.build())
-                .collect(),
+            program_graphs,
             communications: Rc::new(self.communications),
             message_queue: vec![Vec::default(); self.channels.len()],
             channels: Rc::new(self.channels),
@@ -330,18 +329,19 @@ pub struct ChannelSystem {
 }
 
 impl ChannelSystem {
-    // Is this function optimized? Does it unnecessarily copy data?
-    pub fn possible_transitions(&self) -> Vec<(PgId, CsAction, CsLocation)> {
+    pub fn possible_transitions<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = (PgId, CsAction, CsLocation)> + 'a {
         self.program_graphs
             .iter()
             .enumerate()
-            .flat_map(|(id, pg)| {
+            .flat_map(move |(id, pg)| {
                 let pg_id = PgId(id);
                 pg.possible_transitions()
-                    .iter()
-                    .filter_map(|(action, post)| {
-                        let action = CsAction(pg_id, *action);
-                        let post = CsLocation(pg_id, *post);
+                    .into_iter()
+                    .filter_map(move |(action, post)| {
+                        let action = CsAction(pg_id, action);
+                        let post = CsLocation(pg_id, post);
                         if self.communications.contains_key(&action)
                             && self.check_communication(pg_id, action).is_err()
                         {
@@ -350,49 +350,24 @@ impl ChannelSystem {
                             Some((pg_id, action, post))
                         }
                     })
-                    .collect::<Vec<(PgId, CsAction, CsLocation)>>()
             })
-            .collect::<Vec<(PgId, CsAction, CsLocation)>>()
     }
 
     fn check_communication(&self, pg_id: PgId, action: CsAction) -> Result<(), CsError> {
         if action.0 != pg_id {
-            return Err(CsError::ActionNotInPg(action, pg_id));
-        }
-        if let Some((channel, message)) = self.communications.get(&action) {
-            let (_, capacity) = self
-                .channels
-                .get(channel.0)
-                .expect("communication has been verified before");
-            let queue = self
-                .message_queue
-                .get(channel.0)
-                .expect("communication has been verified before");
+            Err(CsError::ActionNotInPg(action, pg_id))
+        } else if let Some((channel, message)) = self.communications.get(&action) {
+            let (_, capacity) = self.channels[channel.0];
+            let queue = &self.message_queue[channel.0];
+            // Channel capacity must never be exeeded!
+            assert!(capacity.is_none() || capacity.is_some_and(|cap| queue.len() <= cap));
             match message {
-                Message::Send(_) => {
-                    let len = queue.len();
-                    // Channel capacity must never be exeeded!
-                    assert!(capacity.is_none() || capacity.is_some_and(|c| len <= c));
-                    if capacity.is_some_and(|c| c == len) {
-                        Err(CsError::OutOfCapacity(*channel))
-                    } else {
-                        Ok(())
-                    }
+                Message::Send(_) if capacity.is_some_and(|cap| queue.len() == cap) => {
+                    Err(CsError::OutOfCapacity(*channel))
                 }
-                Message::Receive(_) => {
-                    if queue.is_empty() {
-                        Err(CsError::Empty(*channel))
-                    } else {
-                        Ok(())
-                    }
-                }
-                Message::ProbeEmptyQueue => {
-                    if queue.is_empty() {
-                        Ok(())
-                    } else {
-                        Err(CsError::Empty(*channel))
-                    }
-                }
+                Message::Receive(_) if queue.is_empty() => Err(CsError::Empty(*channel)),
+                Message::ProbeEmptyQueue if !queue.is_empty() => Err(CsError::Empty(*channel)),
+                _ => Ok(()),
             }
         } else {
             Err(CsError::NoCommunication(action))
@@ -423,10 +398,8 @@ impl ChannelSystem {
             .map_err(|err| CsError::ProgramGraph(pg_id, err))?;
         // If the action is a communication, send/receive the message
         if let Some((channel, message)) = self.communications.get(&action) {
-            let queue = self
-                .message_queue
-                .get_mut(channel.0)
-                .expect("communication has been verified before");
+            // communication has been verified before so there is a queue for channel.0
+            let queue = &mut self.message_queue[channel.0];
             match message {
                 Message::Send(effect) => {
                     let effect = (pg_id, effect.to_owned()).try_into()?;
@@ -556,11 +529,11 @@ mod tests {
         cs.add_transition(pg2, initial2, receive, post2, None)?;
 
         let mut cs = cs.build();
-        assert_eq!(cs.possible_transitions().len(), 1);
+        assert_eq!(cs.possible_transitions().count(), 1);
 
         cs.transition(pg1, send, post1)?;
         cs.transition(pg2, receive, post2)?;
-        assert!(cs.possible_transitions().is_empty());
+        assert_eq!(cs.possible_transitions().count(), 0);
         Ok(())
     }
 }

@@ -72,8 +72,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut model = Sc2CsVisitor::visit(model)?;
             println!("Transitions list:");
             let mut trans: u32 = 0;
-            while let Some((pg_id, action, destination)) =
-                model.cs.possible_transitions().first().cloned()
+            while let Some((pg_id, action, destination)) = model
+                .cs
+                .possible_transitions()
+                .take(1)
+                .collect::<Vec<_>>()
+                .pop()
             {
                 let pg = model
                     .fsm_names

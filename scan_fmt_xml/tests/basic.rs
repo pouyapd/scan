@@ -58,8 +58,14 @@ fn test(file: PathBuf) -> anyhow::Result<()> {
     let parser = Parser::parse(file)?;
     let mut model = Sc2CsVisitor::visit(parser)?;
     let mut steps = 0;
-    assert!(!model.cs.possible_transitions().is_empty());
-    while let Some((pg_id, act, loc)) = model.cs.possible_transitions().first().cloned() {
+    assert!(model.cs.possible_transitions().count() > 0);
+    while let Some((pg_id, act, loc)) = model
+        .cs
+        .possible_transitions()
+        .take(1)
+        .collect::<Vec<_>>()
+        .pop()
+    {
         model.cs.transition(pg_id, act, loc)?;
         steps += 1;
         if steps >= MAXSTEP {
