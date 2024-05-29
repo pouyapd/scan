@@ -11,18 +11,31 @@
   </datamodel>
 
   <state id="idle">
+	  <transition target="loop" cond="state == RUNNING"/>
+	  <transition target="loop" cond="state == SUCCESS"/>
 	  <transition target="running" cond="state == FAILURE"/>
+	  <transition target="loop"/>
   </state>
 
 	<state id="running">
 	  <onentry>
 	    <assign location="state" expr="RUNNING"/>
 	  </onentry>
+	  <transition target="loop" cond="state == SUCCESS"/>
+	  <transition target="loop" cond="state == FAILURE"/>
 	  <transition target="finished" cond="state == RUNNING"/>
+	  <transition target="loop"/>
 	  <onexit>
 	    <assign location="state" expr="SUCCESS"/>
 	  </onexit>
   </state>
 
-  <state id="finished"/>
+  <state id="finished">
+	  <transition target="loop" cond="state == RUNNING"/>
+	  <transition target="loop" cond="state == FAILURE"/>
+  </state>
+	
+  <state id="loop">
+	  <transition target="loop"/>
+  </state>
 </scxml>

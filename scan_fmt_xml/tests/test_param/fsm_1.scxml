@@ -17,7 +17,12 @@
         <param name="result" expr="p + 1"/>
       </send>
     </transition>
+    <transition target="loop"/>
   </state>
 
   <state id="finished"/>
+
+  <state id="loop">
+    <transition target="loop"/>
+  </state>
 </scxml>
