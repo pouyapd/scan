@@ -34,7 +34,7 @@ Currently, the only way to use SCAN is to build it from sources.
 
 SCAN is entirely written in [Rust](https://www.rust-lang.org/),
 so, to build it, you will need to install a recent version of the Rust toolchain.
-The easiest and recommended way to do so is by installing [Rustup](https://rustup.rs/)
+The easiest and recommended way to do so is by installing [rustup](https://rustup.rs/)
 either following the instructions on its homepage or through your OS's package manager.
 
 ### Building and running
