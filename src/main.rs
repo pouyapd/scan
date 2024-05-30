@@ -1,5 +1,5 @@
 use clap::{Parser as ClapParser, Subcommand};
-use scan_fmt_xml::{Parser, Sc2CsVisitor};
+use scan_fmt_xml::{ModelBuilder, Parser};
 use std::{error::Error, path::PathBuf};
 
 /// A statistical model checker for large concurrent systems
@@ -45,14 +45,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Build => {
             println!("Building model");
             let model = Parser::parse(cli.model.to_owned())?;
-            let model = Sc2CsVisitor::visit(model)?;
+            let model = ModelBuilder::visit(model)?;
             println!("{model:#?}");
             println!("Model successfully built");
         }
         Commands::Execute => {
             println!("Executing model");
             let model = Parser::parse(cli.model.to_owned())?;
-            let mut model = Sc2CsVisitor::visit(model)?;
+            let mut model = ModelBuilder::visit(model)?;
             println!("Transitions list:");
             let mut trans: u32 = 0;
             while let Some((pg_id, action, destination)) = model
