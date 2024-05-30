@@ -719,9 +719,7 @@ impl Sc2CsVisitor {
             .cs
             .initial_location(pg_id)
             .expect("program graph must exist");
-        // NOTE it is possible not to create `initialize` if the FSM has no datamodel
-        let initialize = self.cs.new_action(pg_id).expect("program graph must exist");
-        let mut need_to_initialize = false;
+        let mut initialize = None;
         // Initialize variables from datamodel
         // NOTE vars cannot be initialized using previously defined vars because datamodel is an HashMap
         let mut vars = HashMap::new();
@@ -738,10 +736,13 @@ impl Sc2CsVisitor {
             // Initialize variable with `expr`, if any, by adding it as effect of `initialize` action.
             if let Some(expr) = expr {
                 let expr = self.expression(expr, &fsm.interner, &vars, None, &HashMap::new())?;
+                // Initialization has at least an effect, so we need to perform it.
+                // Create action if there was none.
+                let initialize = *initialize.get_or_insert_with(|| {
+                    self.cs.new_action(pg_id).expect("program graph must exist")
+                });
                 // This might fail if `expr` does not typecheck.
                 self.cs.add_effect(pg_id, initialize, var, expr)?;
-                // Initialize has at least an effect, so we need to perform it.
-                need_to_initialize = true;
             }
         }
         // Make vars immutable
@@ -749,7 +750,7 @@ impl Sc2CsVisitor {
         // Transition initializing datamodel variables.
         // After initializing datamodel, transition to location representing point-of-entry of initial state of State Chart.
         let initial_state;
-        if need_to_initialize {
+        if let Some(initialize) = initialize {
             initial_state = self.cs.new_location(pg_id).expect("program graph exists!");
             self.cs
                 .add_transition(pg_id, initial_loc, initialize, initial_state, None)
