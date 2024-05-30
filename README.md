@@ -12,7 +12,7 @@ There is no released version yet.
 
 ## Formalism
 
-SCAN uses Channel Systems (CS) as models[^1],
+SCAN uses Channel Systems (CS) as models,[^1]
 and Metric Temporal Logic (MTL) as property specification language.
 
 [^1]: Baier, C., & Katoen, J. (2008). *Principles of model checking*. MIT Press.
