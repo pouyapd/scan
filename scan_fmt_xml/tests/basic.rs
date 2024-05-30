@@ -56,7 +56,7 @@ fn param_triangle() -> anyhow::Result<()> {
 
 fn test(file: PathBuf) -> anyhow::Result<()> {
     let parser = Parser::parse(file)?;
-    let mut model = Sc2CsVisitor::visit(parser)?;
+    let mut model = ModelBuilder::visit(parser)?;
     let mut steps = 0;
     assert!(model.cs.possible_transitions().count() > 0);
     while let Some((pg_id, act, loc)) = model

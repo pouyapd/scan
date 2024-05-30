@@ -32,7 +32,7 @@ struct EventBuilder {
 }
 
 #[derive(Debug)]
-pub struct Sc2CsVisitor {
+pub struct ModelBuilder {
     cs: ChannelSystemBuilder,
     // Represent OMG types
     scan_types: HashMap<String, Type>,
@@ -55,7 +55,7 @@ pub struct Sc2CsVisitor {
     parameters: HashMap<(PgId, PgId, usize, String), Channel>,
 }
 
-impl Sc2CsVisitor {
+impl ModelBuilder {
     pub fn visit(parser: Parser) -> anyhow::Result<CsModel> {
         // Add base types
         // FIXME: Is there a better way? Const object?
@@ -65,7 +65,7 @@ impl Sc2CsVisitor {
             (String::from("URI"), Type::Integer),
         ];
 
-        let mut model = Sc2CsVisitor {
+        let mut model = ModelBuilder {
             cs: ChannelSystemBuilder::new(),
             scan_types: HashMap::from_iter(base_types),
             enums: HashMap::new(),

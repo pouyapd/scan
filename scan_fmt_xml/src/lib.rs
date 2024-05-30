@@ -1,7 +1,7 @@
 //! Parser and model builder for SCAN's XML specification format.
 
-mod cs_builder;
+mod builder;
 mod parser;
 
-pub use cs_builder::Sc2CsVisitor;
+pub use builder::ModelBuilder;
 pub use parser::Parser;
