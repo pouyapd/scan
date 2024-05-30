@@ -2,31 +2,30 @@ use clap::{Parser as ClapParser, Subcommand};
 use scan_fmt_xml::{Parser, Sc2CsVisitor};
 use std::{error::Error, path::PathBuf};
 
-/// SCAN (StoChastic ANalyzer)
-/// is a statistical model checker based on channel systems
+/// A statistical model checker for large concurrent systems
 #[derive(ClapParser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Action to perform on model
     #[command(subcommand)]
     command: Commands,
-    /// Select model XML file
+    /// Path of model's main XML file
     model: PathBuf,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Verify model
+    /// Verify model (WIP)
     Verify {
-        /// lists test values
+        /// List test values
         #[arg(short, long)]
         runs: usize,
     },
-    /// Validate model XML file
+    /// Parse and print model XML file
     Parse,
-    /// Parse and validate model XML file
-    Validate,
-    /// Execute model once
+    /// Build and print CS model from XML file
+    Build,
+    /// Execute model once and prints transitions
     Execute,
 }
 
@@ -36,22 +35,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     match &cli.command {
         Commands::Verify { runs: _ } => {
             println!("Verifying model - NOT YET IMPLEMENTED");
-
-            // info!("parsing model");
-            // let model = Parser::parse(cli.model.to_owned())?;
-            // let cs = Sc2CsVisitor::visit(model)?;
-
-            // for run in 0..*runs {
-            //     info!("verify model, run {run}");
-            //     let mut model = model.clone();
-            //     while let Some((pg_id, action, post)) = model.possible_transitions().first() {
-            //         model
-            //             .transition(*pg_id, *action, *post)
-            //             .expect("transition possible");
-            //         println!("{model:#?}");
-            //     }
-            //     info!("model verified");
-            // }
         }
         Commands::Parse => {
             println!("Parsing model");
@@ -59,12 +42,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("{model:#?}");
             println!("Model successfully parsed");
         }
-        Commands::Validate => {
-            println!("Validating model");
+        Commands::Build => {
+            println!("Building model");
             let model = Parser::parse(cli.model.to_owned())?;
             let model = Sc2CsVisitor::visit(model)?;
             println!("{model:#?}");
-            println!("Model successfully validated");
+            println!("Model successfully built");
         }
         Commands::Execute => {
             println!("Executing model");
