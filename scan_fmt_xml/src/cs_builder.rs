@@ -1,3 +1,5 @@
+//! Model builder for SCAN's XML specification format.
+
 use crate::parser::*;
 use anyhow::anyhow;
 use log::{info, trace};
@@ -1084,7 +1086,7 @@ impl Sc2CsVisitor {
                     // Move location of next eventful transitions to a new location.
                     eventful_trans = next_trans_loc;
                 } else {
-                    // // NULL (unnamed) event transition
+                    // NULL (autonomous/eventless) transition
                     // No event needs to happen in order to trigger this transition.
                     guard = cond;
                     // Check this transition after the other eventless transitions.
@@ -1094,6 +1096,7 @@ impl Sc2CsVisitor {
                 }
 
                 // If transition is active, execute the relevant executable content and then the transition to the target.
+                // Could fail if 'cond' expression was not acceptable as guard.
                 let mut exec_trans_loc = self.cs.new_location(pg_id)?;
                 self.cs.add_transition(
                     pg_id,
@@ -1123,16 +1126,20 @@ impl Sc2CsVisitor {
                     .add_transition(pg_id, exec_trans_loc, step, target_loc, None)
                     .expect("has to work");
                 // If the current transition is not active, move on to check the next one.
+                // NOTE: an autonomous transition without cond is always active so there is no point processing further transitions.
+                // This happens in State Charts already, so we model it faithfully without optimizations.
                 let not_guard = guard
                     .map(|guard| CsExpression::Not(Box::new(guard)))
                     .unwrap_or(CsExpression::Boolean(false));
-                self.cs.add_transition(
-                    pg_id,
-                    check_trans_loc,
-                    step,
-                    next_trans_loc,
-                    Some(not_guard),
-                )?;
+                self.cs
+                    .add_transition(
+                        pg_id,
+                        check_trans_loc,
+                        step,
+                        next_trans_loc,
+                        Some(not_guard),
+                    )
+                    .expect("cannot fail because guard was already checked");
             }
 
             // Connect NULL events with named events

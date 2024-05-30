@@ -1,3 +1,5 @@
+//! Parser and model builder for SCAN's XML specification format.
+
 mod cs_builder;
 mod parser;
 

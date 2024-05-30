@@ -1,3 +1,5 @@
+//! Parser for SCAN's XML specification format.
+
 mod bt;
 mod fsm;
 mod omg_types;
