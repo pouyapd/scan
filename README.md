@@ -10,6 +10,12 @@ SCAN is currently under developement at DIBRIS, University of Genoa (UniGe)
 in the context of the [CONVINCE project](https://convince-project.eu/).
 There is no released version yet.
 
+## Documentation
+
+API docs for the library crates are hosted at [](https://convince-project.github.io/scan).
+
+There is currently no user documentation/manual yet.
+
 ## Formalism
 
 SCAN uses Channel Systems (CS) as models,[^1]
