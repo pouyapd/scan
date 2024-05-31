@@ -1,7 +1,7 @@
 //! Implementation of the CS model of computation.
 //!
 //! Channel systems comprises multiple program graphs executing asynchronously
-//! and sending and retreiving messages from channels.
+//! while sending and retreiving messages from channels.
 //!
 //! Analogously to PGs, a CS is defined through a [`ChannelSystemBuilder`],
 //! by adding new PGs and channels.
@@ -282,12 +282,14 @@ impl ChannelSystemBuilder {
             Message::Receive(var) => {
                 if pg_id != var.0 {
                     return Err(CsError::VarNotInPg(*var, pg_id));
+                } else {
+                    self.program_graphs
+                        .get((var.0).0)
+                        .ok_or(CsError::MissingPg(var.0))?
+                        .var_type(var.1)
+                        .map_err(|err| CsError::ProgramGraph(pg_id, err))?
+                        .to_owned()
                 }
-                self.program_graphs
-                    .get((var.0).0)
-                    .ok_or(CsError::MissingPg(var.0))?
-                    .var_type(var.1)
-                    .map_err(|err| CsError::ProgramGraph(pg_id, err))?
             }
             Message::ProbeEmptyQueue => {
                 // There is no type to check so the message is always the right type

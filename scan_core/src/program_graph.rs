@@ -1,10 +1,10 @@
 //! Implementation of the PG model of computation.
 //!
 //! A PG is defined through a [`ProgramGraphBuilder`],
-//! by adding new locations, actions, effects, guards and transitions.
+//! by adding, one at a time, new locations, actions, effects, guards and transitions.
 //! Then, a [`ProgramGraph`] is built from the [`ProgramGraphBuilder`]
 //! and can be executed by performing transitions,
-//! though the definition of the PG itself can no longer be altered.
+//! though the structure of the PG itself can no longer be altered.
 
 // TODO: use fast hasher (?)
 use super::grammar::*;
@@ -12,39 +12,59 @@ use std::{collections::HashMap, rc::Rc};
 use thiserror::Error;
 
 // Use of "Newtype" pattern to define different types of indexes.
+/// An indexing object for locations in a PG.
+/// These cannot be directly created or manipulated,
+/// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Location(usize);
 
 // Use of "Newtype" pattern to define different types of indexes.
+/// An indexing object for actions in a PG.
+/// These cannot be directly created or manipulated,
+/// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Action(usize);
 
 // Use of "Newtype" pattern to define different types of indexes.
+/// An indexing object for typed variables in a PG.
+/// These cannot be directly created or manipulated,
+/// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Var(usize);
 
+/// An expression using [`Var`] as variables.
 pub type PgExpression = Expression<Var>;
 
+/// The error type for operations with [`ProgramGraphBuilder`]s and [`ProgramGraph`]s.
 #[derive(Debug, Clone, Error)]
 pub enum PgError {
+    /// The expression is badly typed.
     #[error("malformed expression {0:?}")]
     BadExpression(PgExpression),
+    /// There is no such action in the PG.
     #[error("action {0:?} does not belong to this program graph")]
     MissingAction(Action),
+    /// There is no such location in the PG.
     #[error("location {0:?} does not belong to this program graph")]
     MissingLocation(Location),
+    /// There is no such variable in the PG.
+    #[error("location {0:?} does not belong to this program graph")]
+    MissingVar(Var),
+    /// The PG does not allow this transition.
+    #[error("There is no such transition")]
+    MissingTransition,
+    /// Types that should be matching are not.
     #[error("type mismatch")]
     TypeMismatch,
-    #[error("location {0:?} does not belong to this program graph")]
-    NonExistingVar(Var),
-    #[error("There is no such transition")]
-    NoTransition,
+    /// Transition's guard is not satisfied.
     #[error("The guard has not been satisfied")]
     UnsatisfiedGuard,
+    /// The tuple has no component for such index.
     #[error("the tuple has no {0} component")]
     MissingComponent(usize),
 }
 
+/// The object used to define and build a PG.
 #[derive(Debug, Clone)]
 pub struct ProgramGraphBuilder {
     // Effects are indexed by actions
@@ -64,6 +84,8 @@ impl Default for ProgramGraphBuilder {
 impl ProgramGraphBuilder {
     const INITIAL_LOCATION: Location = Location(0);
 
+    /// Create a new [`ProgramGraphBuilder`].
+    /// At creation, this will only have the inital location with no variables, no actions and no transitions.
     pub fn new() -> Self {
         let mut pgb = Self {
             effects: Vec::new(),
@@ -77,19 +99,25 @@ impl ProgramGraphBuilder {
         pgb
     }
 
-    pub fn var_type(&self, var: Var) -> Result<Type, PgError> {
-        self.vars
-            .get(var.0)
-            .ok_or(PgError::NonExistingVar(var))
-            .cloned()
+    /// Get the initial location of the PG.
+    /// This is created toghether with the [`ProgramGraphBuilder`] by default.
+    pub fn initial_location(&self) -> Location {
+        Self::INITIAL_LOCATION
     }
 
+    /// Get the type of a variable.
+    pub fn var_type(&self, var: Var) -> Result<&Type, PgError> {
+        self.vars.get(var.0).ok_or(PgError::MissingVar(var))
+    }
+
+    /// Add a new variable of the given type to the PG.
     pub fn new_var(&mut self, var_type: Type) -> Var {
         let idx = self.vars.len();
         self.vars.push(var_type);
         Var(idx)
     }
 
+    /// Add a new action to the PG.
     pub fn new_action(&mut self) -> Action {
         // Actions are indexed progressively
         let idx = self.effects.len();
@@ -97,6 +125,9 @@ impl ProgramGraphBuilder {
         Action(idx)
     }
 
+    /// Add an effect to the given action.
+    /// This requires specifying which variable is assigned the value of which expression whenever the action triggers a transition.
+    /// It can fail, in particular, if the type of the variable and that of the expression do not match.
     pub fn add_effect(
         &mut self,
         action: Action,
@@ -106,7 +137,7 @@ impl ProgramGraphBuilder {
         let var_type = self
             .vars
             .get(var.0)
-            .ok_or_else(|| PgError::NonExistingVar(var.to_owned()))?;
+            .ok_or_else(|| PgError::MissingVar(var.to_owned()))?;
         if *var_type == self.r#type(&effect)? {
             self.effects
                 .get_mut(action.0)
@@ -117,6 +148,7 @@ impl ProgramGraphBuilder {
         }
     }
 
+    /// Add a new location to the PG.
     pub fn new_location(&mut self) -> Location {
         // Locations are indexed progressively
         let idx = self.transitions.len();
@@ -124,6 +156,13 @@ impl ProgramGraphBuilder {
         Location(idx)
     }
 
+    /// Add a transition to the PG.
+    /// This requires specifying:
+    /// - state pre-transition
+    /// - action triggering the transition
+    /// - state post-transition
+    /// - (optional) boolean expression guarding the transition
+    /// This can fail if, in particular, the provided guard is not a boolean expression.
     pub fn add_transition(
         &mut self,
         pre: Location,
@@ -180,7 +219,7 @@ impl ProgramGraphBuilder {
                 .vars
                 .get(var.0)
                 .cloned()
-                .ok_or_else(|| PgError::NonExistingVar(var.to_owned())),
+                .ok_or_else(|| PgError::MissingVar(var.to_owned())),
             PgExpression::And(props) | PgExpression::Or(props) => {
                 if props
                     .iter()
@@ -273,10 +312,6 @@ impl ProgramGraphBuilder {
             transitions: Rc::new(self.transitions),
         }
     }
-
-    pub fn initial_location(&self) -> Location {
-        Self::INITIAL_LOCATION
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -312,7 +347,7 @@ impl ProgramGraph {
     pub fn transition(&mut self, action: Action, post_state: Location) -> Result<(), PgError> {
         let guard = self.transitions[self.current_location.0]
             .get(&(action, post_state))
-            .ok_or(PgError::NoTransition)?;
+            .ok_or(PgError::MissingTransition)?;
         if guard.as_ref().map_or(true, |guard| {
             if let Val::Boolean(pass) = self.eval(guard).expect("guard must evaluate") {
                 pass
@@ -342,7 +377,7 @@ impl ProgramGraph {
             PgExpression::Var(var) => self
                 .vars
                 .get(var.0)
-                .ok_or_else(|| PgError::NonExistingVar(var.to_owned()))
+                .ok_or_else(|| PgError::MissingVar(var.to_owned()))
                 .cloned(),
             PgExpression::Tuple(entries) => entries
                 .iter()
@@ -490,7 +525,7 @@ impl ProgramGraph {
         let var_content = self
             .vars
             .get_mut(var.0)
-            .ok_or_else(|| PgError::NonExistingVar(var.to_owned()))?;
+            .ok_or_else(|| PgError::MissingVar(var.to_owned()))?;
         if var_content.r#type() == val.r#type() {
             let previous_val = var_content.clone();
             *var_content = val;
