@@ -62,7 +62,7 @@ pub enum ParserErrorType {
 
 #[derive(Error, Debug)]
 #[error("parser error at byte `{0}`")]
-pub struct ParserError(pub(crate) usize, #[source] pub(crate) ParserErrorType);
+pub struct ParserError(pub(crate) u64, #[source] pub(crate) ParserErrorType);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ConvinceTag {
