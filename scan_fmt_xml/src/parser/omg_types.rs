@@ -12,26 +12,39 @@ use quick_xml::{
 };
 use std::str;
 
-use crate::parser::vocabulary::{ATTR_ID, TAG_DATA_TYPE_LIST, TAG_ENUMERATION, TAG_LABEL};
-use crate::parser::{ConvinceTag, ParserError, ParserErrorType};
+use crate::parser::{ConvinceTag, ParserError, ATTR_TYPE, TAG_FIELD};
+use crate::parser::{ATTR_ID, TAG_DATA_TYPE_LIST, TAG_ENUMERATION, TAG_LABEL, TAG_STRUCT};
 
 #[derive(Debug, Clone)]
 pub enum OmgType {
     Boolean,
     Int32,
-    Structure(),
+    Uri,
+    Structure(HashMap<String, String>),
     Enumeration(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
 pub struct OmgTypes {
-    pub(crate) types: HashMap<String, OmgType>,
+    pub(crate) types: Vec<(String, OmgType)>,
 }
 
 impl OmgTypes {
+    pub const BASE_TYPES: [(&'static str, OmgType); 4] = [
+        ("boolean", OmgType::Boolean),
+        ("int32", OmgType::Int32),
+        // WARN FIXME TODO: Implement float types.
+        ("float32", OmgType::Int32),
+        ("URI", OmgType::Uri),
+    ];
+
     pub fn new() -> Self {
         Self {
-            types: HashMap::new(),
+            types: Vec::from_iter(
+                Self::BASE_TYPES
+                    .into_iter()
+                    .map(|(id, ty)| (id.to_owned(), ty)),
+            ),
         }
     }
 
@@ -54,10 +67,24 @@ impl OmgTypes {
                                 .last()
                                 .is_some_and(|tag| *tag == ConvinceTag::DataTypeList) =>
                         {
-                            let id = self.parse_id(tag, reader)?;
+                            let id = self
+                                .parse_id(tag)
+                                .map_err(|err| err.context(reader.error_position()))?;
                             self.types
-                                .insert(id.to_owned(), OmgType::Enumeration(Vec::new()));
+                                .push((id.to_owned(), OmgType::Enumeration(Vec::new())));
                             stack.push(ConvinceTag::Enumeration(id));
+                        }
+                        TAG_STRUCT
+                            if stack
+                                .last()
+                                .is_some_and(|tag| *tag == ConvinceTag::DataTypeList) =>
+                        {
+                            let id = self
+                                .parse_id(tag)
+                                .map_err(|err| err.context(reader.error_position()))?;
+                            self.types
+                                .push((id.to_owned(), OmgType::Structure(HashMap::new())));
+                            stack.push(ConvinceTag::Structure(id));
                         }
                         // Unknown tag: skip till maching end tag
                         _ => {
@@ -73,9 +100,8 @@ impl OmgTypes {
                         trace!("'{tag_name}' end tag");
                     } else {
                         error!("unexpected end tag {tag_name}");
-                        return Err(anyhow::Error::new(ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::UnexpectedEndTag(tag_name.to_string()),
+                        return Err(anyhow::Error::new(ParserError::UnexpectedEndTag(
+                            tag_name.to_string(),
                         )));
                     }
                 }
@@ -91,12 +117,34 @@ impl OmgTypes {
                                 .is_some_and(|tag| matches!(*tag, ConvinceTag::Enumeration(_))) =>
                         {
                             if let Some(ConvinceTag::Enumeration(id)) = stack.last() {
-                                let label = self.parse_id(tag, reader)?;
-                                self.types.entry(id.to_owned()).and_modify(|t| {
-                                    if let OmgType::Enumeration(labels) = t {
-                                        labels.push(label);
-                                    }
-                                });
+                                let label = self
+                                    .parse_id(tag)
+                                    .map_err(|err| err.context(reader.error_position()))?;
+                                let (enum_id, omg_type) = self.types.last_mut().unwrap();
+                                assert_eq!(id, enum_id);
+                                if let OmgType::Enumeration(labels) = omg_type {
+                                    labels.push(label.to_owned());
+                                } else {
+                                    panic!("unexpected type");
+                                }
+                            }
+                        }
+                        TAG_FIELD
+                            if stack
+                                .last()
+                                .is_some_and(|tag| matches!(*tag, ConvinceTag::Structure(_))) =>
+                        {
+                            if let Some(ConvinceTag::Structure(id)) = stack.last() {
+                                let (field_id, field_type) = self
+                                    .parse_struct(tag)
+                                    .map_err(|err| err.context(reader.error_position()))?;
+                                let (struct_id, omg_type) = self.types.last_mut().unwrap();
+                                assert_eq!(id, struct_id);
+                                if let OmgType::Structure(fields) = omg_type {
+                                    fields.insert(field_id, field_type);
+                                } else {
+                                    panic!("unexpected type");
+                                }
                             }
                         }
                         // Unknown tag: skip till maching end tag
@@ -116,10 +164,7 @@ impl OmgTypes {
                 Event::Eof => {
                     info!("parsing completed");
                     if !stack.is_empty() {
-                        return Err(anyhow!(ParserError(
-                            reader.buffer_position(),
-                            ParserErrorType::UnclosedTags,
-                        )));
+                        return Err(anyhow!(ParserError::UnclosedTags,));
                     }
                     break;
                 }
@@ -131,11 +176,7 @@ impl OmgTypes {
         Ok(())
     }
 
-    fn parse_id<R: BufRead>(
-        &mut self,
-        tag: events::BytesStart<'_>,
-        reader: &mut Reader<R>,
-    ) -> anyhow::Result<String> {
+    fn parse_id(&mut self, tag: events::BytesStart<'_>) -> anyhow::Result<String> {
         let mut id: Option<String> = None;
         for attr in tag
             .attributes()
@@ -147,16 +188,36 @@ impl OmgTypes {
                 }
                 key => {
                     error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError(
-                        reader.buffer_position(),
-                        ParserErrorType::UnknownKey(key.to_owned()),
-                    )));
+                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned()),));
                 }
             }
         }
-        id.ok_or(anyhow!(ParserError(
-            reader.buffer_position(),
-            ParserErrorType::MissingAttr(ATTR_ID.to_string())
-        )))
+        id.ok_or(anyhow!(ParserError::MissingAttr(ATTR_ID.to_string())))
+    }
+
+    fn parse_struct(&mut self, tag: events::BytesStart<'_>) -> anyhow::Result<(String, String)> {
+        let mut id: Option<String> = None;
+        let mut field_type: Option<String> = None;
+        for attr in tag
+            .attributes()
+            .collect::<Result<Vec<Attribute>, AttrError>>()?
+        {
+            match str::from_utf8(attr.key.as_ref())? {
+                ATTR_ID => {
+                    id = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                ATTR_TYPE => {
+                    field_type = Some(String::from_utf8(attr.value.into_owned())?);
+                }
+                key => {
+                    error!("found unknown attribute {key}");
+                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+                }
+            }
+        }
+        let id = id.ok_or(anyhow!(ParserError::MissingAttr(ATTR_ID.to_string())))?;
+        let field_type =
+            field_type.ok_or(anyhow!(ParserError::MissingAttr(ATTR_TYPE.to_string())))?;
+        Ok((id, field_type))
     }
 }
