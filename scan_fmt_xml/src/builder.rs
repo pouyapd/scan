@@ -1702,7 +1702,14 @@ impl ModelBuilder {
                 }
             }
             boa_ast::Expression::RegExpLiteral(_) => todo!(),
-            boa_ast::Expression::ArrayLiteral(_) => todo!(),
+            boa_ast::Expression::ArrayLiteral(arr) => {
+                todo!()
+                // arr
+                //             .to_pattern(true)
+                //             .ok_or(anyhow!("array syntax error"))?
+                //             .into_iter()
+                //             .map(|element| match element {})
+            }
             boa_ast::Expression::ObjectLiteral(_) => todo!(),
             boa_ast::Expression::Spread(_) => todo!(),
             boa_ast::Expression::Function(_) => todo!(),
@@ -2163,6 +2170,16 @@ impl ModelBuilder {
                 self.build_predicate(&exprs.0)?,
                 self.build_predicate(&exprs.1)?,
             )))),
+            Expression::Append(exprs) => Ok(Expression::Append(Box::new((
+                self.build_predicate(&exprs.0)?,
+                self.build_predicate(&exprs.1)?,
+            )))),
+            Expression::Truncate(expr) => Ok(Expression::Truncate(Box::new(
+                self.build_predicate(expr.as_ref())?,
+            ))),
+            Expression::Len(expr) => Ok(Expression::Len(Box::new(
+                self.build_predicate(expr.as_ref())?,
+            ))),
         }
     }
 
