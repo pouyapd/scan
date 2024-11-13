@@ -67,11 +67,16 @@
 
 mod builder;
 
+// use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 pub use builder::*;
+use hashbrown::{HashMap, HashSet};
+
+use crate::Time;
 
 // TODO: use fast hasher (?)
 use super::grammar::*;
-use std::{collections::HashMap, sync::Arc};
+use core::panic;
+use std::sync::Arc;
 use thiserror::Error;
 
 /// An indexing object for locations in a PG.
@@ -89,7 +94,17 @@ pub struct Location(usize);
 pub struct Action(usize);
 
 /// Epsilon action to enable autonomous transitions.
+/// It cannot have effects.
 const EPSILON: Action = Action(usize::MAX);
+
+/// Wait action to advance time.
+/// Not to be used directly as an action or exposed to the user.
+/// It cannot have effects.
+const WAIT: Action = Action(usize::MAX - 1);
+
+/// Reference clock of Program Graph.
+/// Not to be reset or exposed to the user.
+const TIME: Clock = Clock(0);
 
 /// An indexing object for typed variables in a PG.
 ///
@@ -97,6 +112,11 @@ const EPSILON: Action = Action(usize::MAX);
 /// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Var(usize);
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct Clock(Time);
+
+pub type TimeConstraint = (Clock, Option<Time>, Option<Time>);
 
 /// An expression using PG's [`Var`] as variables.
 pub type PgExpression = Expression<Var>;
@@ -146,7 +166,13 @@ pub enum PgError {
     NotReceive(Action),
     /// The epsilon action has no effects.
     #[error("The epsilon action has no effects")]
-    EpsilonEffects,
+    NoEffects,
+    /// Wait action should not be used directly.
+    #[error("direct use of wait action")]
+    Wait,
+    /// Cannot reset global timer.
+    #[error("cannot reset global timer")]
+    TimeClock,
     /// A type error
     #[error("type error")]
     Type(#[source] TypeError),
@@ -154,15 +180,18 @@ pub enum PgError {
 
 #[derive(Debug)]
 enum FnEffect {
-    // TODO: use SmallVec optimization
-    // NOTE: SmallVec here would not appear in public API
     Effects(Vec<(Var, FnExpression<Var>)>),
     Send(FnExpression<Var>),
     Receive(Var),
 }
 
-// QUESTION: is there a better/more efficient representation?
-type Transitions = HashMap<(Action, Location), Option<FnExpression<Var>>>;
+#[derive(Debug)]
+pub struct ProgramGraphDef {
+    effects: Vec<FnEffect>,
+    guards: HashMap<(Location, Action, Location), FnExpression<Var>>,
+    transitions: HashSet<(Location, Action, Location)>,
+    indexed_transitions: Vec<Vec<(Action, Location)>>,
+}
 
 /// Representation of a PG that can be executed transition-by-transition.
 ///
@@ -178,8 +207,7 @@ type Transitions = HashMap<(Action, Location), Option<FnExpression<Var>>>;
 pub struct ProgramGraph {
     current_location: Location,
     vars: Vec<Val>,
-    effects: Arc<Vec<FnEffect>>,
-    transitions: Arc<Vec<Transitions>>,
+    def: Arc<ProgramGraphDef>,
 }
 
 impl ProgramGraph {
@@ -200,6 +228,7 @@ impl ProgramGraph {
     /// // Execution starts in the initial location
     /// assert_eq!(pg.current_location(), initial_loc);
     /// ```
+    #[inline(always)]
     pub fn current_location(&self) -> Location {
         self.current_location
     }
@@ -210,74 +239,157 @@ impl ProgramGraph {
     /// (the pre-state being necessarily the current state of the machine).
     /// The guard (if any) is guaranteed to be satisfied.
     pub fn possible_transitions(&self) -> impl Iterator<Item = (Action, Location)> + '_ {
-        self.transitions[self.current_location.0]
+        self.def.indexed_transitions[self.current_location.0]
             .iter()
-            .filter_map(|((action, post), guard)| {
-                if let Some(guard) = guard {
-                    if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0].clone())
-                    // .eval(&|var| self.vars.get(var.0).cloned())
-                    // .expect("boolean value")
-                    {
-                        if pass {
-                            Some((*action, *post))
-                        } else {
-                            None
-                        }
-                    } else {
-                        panic!("guard is not a boolean");
-                    }
+            .filter(|(action, post)| {
+                // WAIT should not be called directly!
+                *action != WAIT && self.is_transition_active(*action, *post).unwrap()
+            })
+            .cloned()
+    }
+
+    #[inline(always)]
+    fn satisfies_guard(&self, action: Action, post_state: Location) -> bool {
+        self.def
+            .guards
+            .get(&(self.current_location, action, post_state))
+            .map_or(true, |guard| {
+                if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0].clone()) {
+                    pass
                 } else {
-                    Some((*action, *post))
+                    panic!("guard is not a boolean");
                 }
             })
     }
 
-    fn satisfies_guard(&self, action: Action, post_state: Location) -> Result<(), PgError> {
-        let guard = self.transitions[self.current_location.0]
-            .get(&(action, post_state))
-            .ok_or(PgError::MissingTransition)?;
-        if guard.as_ref().map_or(true, |guard| {
-            if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0].clone())
-            // .eval(&|var| self.vars.get(var.0).cloned())
-            // .expect("boolean value")
-            {
-                pass
+    /// Checks a transition characterized by the argument action and post-state.
+    fn is_transition_active(&self, action: Action, post_state: Location) -> Result<bool, PgError> {
+        if action == WAIT {
+            Err(PgError::Wait)
+        } else if self
+            .def
+            .transitions
+            .contains(&(self.current_location, action, post_state))
+        {
+            if !self.satisfies_guard(action, post_state) {
+                Ok(false)
+            } else if let Some(guard) = self.def.guards.get(&(post_state, WAIT, post_state)) {
+                let mut vars = self.vars.clone();
+                if action != EPSILON {
+                    if let FnEffect::Effects(ref effects) = self.def.effects[action.0] {
+                        for (var, effect) in effects {
+                            vars[var.0] = effect.eval(&|var| vars[var.0].clone());
+                        }
+                    }
+                }
+                if let Val::Boolean(pass) = guard.eval(&move |var| vars[var.0].clone()) {
+                    Ok(pass)
+                } else {
+                    panic!("guard is not a boolean");
+                }
             } else {
-                panic!("guard is not a boolean");
+                Ok(true)
             }
-        }) {
-            Ok(())
         } else {
-            Err(PgError::UnsatisfiedGuard)
+            Err(PgError::MissingTransition)
         }
     }
 
     /// Executes a transition characterized by the argument action and post-state.
     ///
-    /// Fails if the requested transition is not admissible.
+    /// Fails if the requested transition is not admissible,
+    /// or if the post-location time invariants are violated.
     pub fn transition(&mut self, action: Action, post_state: Location) -> Result<(), PgError> {
-        self.satisfies_guard(action, post_state)?;
-        if action != EPSILON {
-            if let FnEffect::Effects(effects) = &self.effects[action.0] {
-                for (var, effect) in effects {
-                    self.vars[var.0] = effect.eval(&|var| self.vars[var.0].clone());
-                    // .eval(&|var| self.vars.get(var.0).cloned())
-                    // .expect("evaluate effect");
+        if action == WAIT {
+            Err(PgError::Wait)
+        } else if self
+            .def
+            .transitions
+            .contains(&(self.current_location, action, post_state))
+        {
+            if !self.satisfies_guard(action, post_state) {
+                return Err(PgError::UnsatisfiedGuard);
+            } else if let Some(guard) = self.def.guards.get(&(post_state, WAIT, post_state)) {
+                let mut backup = Vec::with_capacity(self.vars.len());
+                if action != EPSILON {
+                    if let FnEffect::Effects(ref effects) = self.def.effects[action.0] {
+                        backup = self.vars.clone();
+                        for (var, effect) in effects {
+                            self.vars[var.0] = effect.eval(&|var| self.vars[var.0].clone());
+                        }
+                    } else {
+                        return Err(PgError::Communication(action));
+                    }
                 }
-            } else {
-                return Err(PgError::Communication(action));
+                // Self::satisfies_guard should only be called after setting the post-location!
+                if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0].clone()) {
+                    if !pass {
+                        if action != EPSILON {
+                            self.vars = backup;
+                        }
+                        return Err(PgError::UnsatisfiedGuard);
+                    }
+                } else {
+                    panic!("guard is not a boolean");
+                }
+            } else if action != EPSILON {
+                if let FnEffect::Effects(ref effects) = self.def.effects[action.0] {
+                    for (var, effect) in effects {
+                        self.vars[var.0] = effect.eval(&|var| self.vars[var.0].clone());
+                    }
+                } else {
+                    return Err(PgError::Communication(action));
+                }
             }
+            self.current_location = post_state;
+            Ok(())
+        } else {
+            Err(PgError::MissingTransition)
         }
-        self.current_location = post_state;
-        Ok(())
+    }
+
+    /// Returns the current time of the Program Graph.
+    pub fn time(&self) -> Time {
+        if let Val::Integer(time) = self.vars[TIME.0] {
+            time as Time
+        } else {
+            panic!("Time must be an Integer variable");
+        }
+    }
+
+    /// Sets the time of the Program Graph.
+    /// Only to be used by [`channel_system::ChannelSystem`] to recover from a failed wait
+    /// (which can happen by violating some time invariant).
+    #[inline(always)]
+    pub(crate) fn set_time(&mut self, time: Time) {
+        self.vars[TIME.0] = Val::Integer(time as Integer);
+    }
+
+    pub fn wait(&mut self, delta: Time) -> Result<(), PgError> {
+        if let Val::Integer(ref mut time) = self.vars[TIME.0] {
+            *time += delta as Integer;
+        } else {
+            panic!("Time must be an Integer variable");
+        }
+        if self.satisfies_guard(WAIT, self.current_location) {
+            Ok(())
+        } else {
+            // If the location's invariant is not satisfied,
+            // reset time to original value.
+            if let Val::Integer(ref mut time) = self.vars[TIME.0] {
+                *time -= delta as Integer;
+            } else {
+                panic!("Time must be an Integer variable");
+            }
+            Err(PgError::UnsatisfiedGuard)
+        }
     }
 
     pub(crate) fn send(&mut self, action: Action, post_state: Location) -> Result<Val, PgError> {
-        self.satisfies_guard(action, post_state)?;
-        if let FnEffect::Send(effect) = &self.effects[action.0] {
+        if !self.satisfies_guard(action, post_state) {
+            Err(PgError::UnsatisfiedGuard)
+        } else if let FnEffect::Send(effect) = &self.def.effects[action.0] {
             let val = effect.eval(&|var| self.vars[var.0].clone());
-            // .eval(&|var| self.vars.get(var.0).cloned())
-            // .expect("evaluate effect");
             self.current_location = post_state;
             Ok(val)
         } else {
@@ -291,8 +403,9 @@ impl ProgramGraph {
         post_state: Location,
         val: Val,
     ) -> Result<Val, PgError> {
-        self.satisfies_guard(action, post_state)?;
-        if let FnEffect::Receive(var) = &self.effects[action.0] {
+        if !self.satisfies_guard(action, post_state) {
+            Err(PgError::UnsatisfiedGuard)
+        } else if let FnEffect::Receive(var) = &self.def.effects[action.0] {
             let var_content = self.vars.get_mut(var.0).expect("variable exists");
             if var_content.r#type() == val.r#type() {
                 let previous_val = var_content.clone();
@@ -313,20 +426,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transitions() -> Result<(), PgError> {
+    fn wait() {
+        let builder = ProgramGraphBuilder::new();
+        let initial = builder.initial_location();
+        let mut pg = builder.build();
+        assert_eq!(pg.possible_transitions().count(), 0);
+        pg.transition(WAIT, initial).expect_err("forbidden");
+        pg.wait(1).expect("wait 1 time unit");
+    }
+
+    #[test]
+    fn transitions() {
         let mut builder = ProgramGraphBuilder::new();
         let initial = builder.initial_location();
         let r#final = builder.new_location();
         let action = builder.new_action();
-        builder.add_transition(initial, action, r#final, None)?;
+        builder
+            .add_transition(initial, action, r#final, None)
+            .expect("add transition");
         let mut pg = builder.build();
         assert_eq!(
             pg.possible_transitions().collect::<Vec<_>>(),
             vec![(action, r#final)]
         );
-        pg.transition(action, r#final)?;
+        pg.transition(action, r#final).expect("transition to final");
         assert_eq!(pg.possible_transitions().count(), 0);
-        Ok(())
     }
 
     #[test]
@@ -349,7 +473,6 @@ mod tests {
             battery,
             PgExpression::Sum(vec![
                 PgExpression::Var(battery, Type::Integer),
-                // PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
                 PgExpression::Const(Val::Integer(-1)),
             ]),
         )?;
@@ -359,7 +482,6 @@ mod tests {
             battery,
             PgExpression::Sum(vec![
                 PgExpression::Var(battery, Type::Integer),
-                // PgExpression::Opposite(Box::new(PgExpression::Const(Val::Integer(1)))),
                 PgExpression::Const(Val::Integer(-1)),
             ]),
         )?;
@@ -377,15 +499,15 @@ mod tests {
         // Execution
         let mut pg = builder.build();
         assert_eq!(pg.possible_transitions().count(), 1);
-        pg.transition(initialize, center)?;
+        pg.transition(initialize, center).expect("initialize");
         assert_eq!(pg.possible_transitions().count(), 2);
-        pg.transition(move_right, right)?;
+        pg.transition(move_right, right).expect("move right");
         assert_eq!(pg.possible_transitions().count(), 1);
         pg.transition(move_right, right).expect_err("already right");
         assert_eq!(pg.possible_transitions().count(), 1);
-        pg.transition(move_left, center)?;
+        pg.transition(move_left, center).expect("move left");
         assert_eq!(pg.possible_transitions().count(), 2);
-        pg.transition(move_left, left)?;
+        pg.transition(move_left, left).expect("move left");
         assert_eq!(pg.possible_transitions().count(), 0);
         pg.transition(move_left, left).expect_err("battery = 0");
         Ok(())

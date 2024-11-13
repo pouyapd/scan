@@ -1,10 +1,6 @@
 //! Model builder for SCAN's XML specification format.
 
-use crate::parser::{
-    Bt, BtNode, Executable, Fsm, If, MoC, OmgType, OmgTypes, Param, Parser, Scxml, Send, Target,
-    ACTION_RESPONSE, CONDITION_RESPONSE, FAILURE, HALT_CALL, HALT_RETURN, RESULT, RUNNING, SUCCESS,
-    TICK_CALL, TICK_RETURN,
-};
+use crate::parser::{Executable, Fsm, If, OmgType, OmgTypes, Param, Parser, Scxml, Send, Target};
 use anyhow::anyhow;
 use boa_interner::ToInternedString;
 use log::{info, trace};
@@ -19,8 +15,8 @@ use std::collections::{HashMap, HashSet};
 pub struct ScxmlModel {
     pub model: CsModel,
     pub predicates: Vec<String>,
-    pub guarantees: Vec<Mtl<Atom<Event>>>,
-    pub assumes: Vec<Mtl<Atom<Event>>>,
+    pub guarantees: Vec<Pmtl<Atom<Event>>>,
+    pub assumes: Vec<Pmtl<Atom<Event>>>,
     pub fsm_names: HashMap<PgId, String>,
     pub fsm_indexes: HashMap<usize, String>,
     pub parameters: HashMap<Channel, (PgId, PgId, usize, String)>,
@@ -86,8 +82,8 @@ pub struct ModelBuilder {
     // that is needed
     parameters: HashMap<(PgId, PgId, usize, String), Channel>,
     // Properties
-    guarantees: HashMap<String, Mtl<String>>,
-    assumes: HashMap<String, Mtl<String>>,
+    guarantees: HashMap<String, Pmtl<String>>,
+    assumes: HashMap<String, Pmtl<String>>,
     predicates: HashMap<String, Expression<Channel>>,
     atoms: HashMap<String, Atom<Event>>,
     ports: HashMap<String, (Channel, Val)>,
@@ -126,11 +122,8 @@ impl ModelBuilder {
         model_builder.prebuild_processes(&mut parser)?;
 
         info!("Visit process list");
-        for (_id, declaration) in parser.process_list.iter() {
-            match &declaration.moc {
-                MoC::Fsm(fsm) => model_builder.build_fsm(fsm)?,
-                MoC::Bt(bt) => model_builder.build_bt(bt)?,
-            }
+        for (_id, fsm) in parser.process_list.iter() {
+            model_builder.build_fsm(fsm)?;
         }
 
         model_builder.build_predicates(&parser)?;
@@ -211,12 +204,9 @@ impl ModelBuilder {
     }
 
     fn prebuild_processes(&mut self, parser: &mut Parser) -> anyhow::Result<()> {
-        for (id, declaration) in parser.process_list.iter_mut() {
+        for (id, fsm) in parser.process_list.iter_mut() {
             let pg_id = self.fsm_builder(id).pg_id;
-            match &mut declaration.moc {
-                MoC::Fsm(fsm) => self.prebuild_fsms(pg_id, &mut fsm.scxml, &fsm.interner)?,
-                MoC::Bt(bt) => self.prebuild_bt(pg_id, bt)?,
-            }
+            self.prebuild_fsms(pg_id, &mut fsm.scxml, &fsm.interner)?;
         }
         Ok(())
     }
@@ -269,6 +259,7 @@ impl ModelBuilder {
             Executable::Send(Send {
                 event,
                 target: _,
+                delay: _,
                 params,
             }) => {
                 let event_index = self.event_index(event);
@@ -369,9 +360,48 @@ impl ModelBuilder {
             boa_ast::Expression::NewTarget => todo!(),
             boa_ast::Expression::ImportMeta => todo!(),
             boa_ast::Expression::Assign(_) => todo!(),
-            boa_ast::Expression::Unary(_) => todo!(),
+            boa_ast::Expression::Unary(unary) => {
+                let type_name = self.infer_type(unary.target(), types, interner)?;
+                match unary.op() {
+                    boa_ast::expression::operator::unary::UnaryOp::Minus
+                    | boa_ast::expression::operator::unary::UnaryOp::Plus => Ok(type_name),
+                    boa_ast::expression::operator::unary::UnaryOp::Not => Ok(String::from("bool")),
+                    boa_ast::expression::operator::unary::UnaryOp::Tilde => todo!(),
+                    boa_ast::expression::operator::unary::UnaryOp::TypeOf => todo!(),
+                    boa_ast::expression::operator::unary::UnaryOp::Delete => todo!(),
+                    boa_ast::expression::operator::unary::UnaryOp::Void => todo!(),
+                }
+            }
             boa_ast::Expression::Update(_) => todo!(),
-            boa_ast::Expression::Binary(_) => todo!(),
+            boa_ast::Expression::Binary(bin) => {
+                let type_name = self.infer_type(bin.lhs(), types, interner)?;
+                let lhs = self
+                    .types
+                    .get(&type_name)
+                    .ok_or(anyhow!("unknown type {type_name}"))?
+                    .1
+                    .clone();
+                let rhs = self
+                    .infer_type(bin.lhs(), types, interner)
+                    .and_then(|t| self.types.get(&t).ok_or(anyhow!("unknown type {t}")))?
+                    .1
+                    .clone();
+                match bin.op() {
+                    boa_ast::expression::operator::binary::BinaryOp::Arithmetic(_) => {
+                        if lhs == rhs {
+                            Ok(type_name)
+                        } else {
+                            todo!()
+                        }
+                    }
+                    boa_ast::expression::operator::binary::BinaryOp::Bitwise(_) => todo!(),
+                    boa_ast::expression::operator::binary::BinaryOp::Relational(_)
+                    | boa_ast::expression::operator::binary::BinaryOp::Logical(_) => {
+                        Ok(String::from("bool"))
+                    }
+                    boa_ast::expression::operator::binary::BinaryOp::Comma => todo!(),
+                }
+            }
             boa_ast::Expression::BinaryInPrivate(_) => todo!(),
             boa_ast::Expression::Conditional(_) => todo!(),
             boa_ast::Expression::Await(_) => todo!(),
@@ -379,744 +409,6 @@ impl ModelBuilder {
             boa_ast::Expression::Parenthesized(_) => todo!(),
             _ => todo!(),
         }
-    }
-
-    fn prebuild_bt(&mut self, pg_id: PgId, bt: &Bt) -> anyhow::Result<()> {
-        let event_index = self.event_index(TICK_CALL);
-        let builder = self.events.get_mut(event_index).expect("index must exist");
-        builder.receivers.insert(pg_id);
-        let event_index = self.event_index(TICK_RETURN);
-        let builder = self.events.get_mut(event_index).expect("index must exist");
-        builder.senders.insert(pg_id);
-        // WARN: This (and similar event/parameter names) depends on an arbitrary format convention,
-        // could break if format changes!
-        builder
-            .params
-            .insert(RESULT.to_owned(), ACTION_RESPONSE.to_owned());
-        let event_index = self.event_index(HALT_CALL);
-        let builder = self.events.get_mut(event_index).expect("index must exist");
-        builder.receivers.insert(pg_id);
-        let event_index = self.event_index(HALT_RETURN);
-        let builder = self.events.get_mut(event_index).expect("index must exist");
-        builder.senders.insert(pg_id);
-
-        self.prebuild_node(pg_id, &bt.root)
-    }
-
-    fn prebuild_node(&mut self, pg_id: PgId, node: &BtNode) -> anyhow::Result<()> {
-        match node {
-            // | BtNode::MSeq(children)
-            // | BtNode::MFbk(children) => {
-            BtNode::RSeq(children) | BtNode::RFbk(children) => {
-                for child in children {
-                    self.prebuild_node(pg_id, child)?;
-                }
-                Ok(())
-            }
-            // BtNode::Invr(child) => self.prebuild_node(pg_id, child),
-            BtNode::LAct(action) => {
-                let event_index = self.event_index(&(action.to_owned() + "_" + TICK_CALL));
-                let builder = self.events.get_mut(event_index).expect("index must exist");
-                builder.senders.insert(pg_id);
-                let event_index = self.event_index(&(action.to_owned() + "_" + TICK_RETURN));
-                let builder = self.events.get_mut(event_index).expect("index must exist");
-                builder.receivers.insert(pg_id);
-                builder
-                    .params
-                    .insert(RESULT.to_owned(), ACTION_RESPONSE.to_owned());
-                let event_index = self.event_index(&(action.to_owned() + "_" + HALT_CALL));
-                let builder = self.events.get_mut(event_index).expect("index must exist");
-                builder.senders.insert(pg_id);
-                let event_index = self.event_index(&(action.to_owned() + "_" + HALT_RETURN));
-                let builder = self.events.get_mut(event_index).expect("index must exist");
-                builder.receivers.insert(pg_id);
-                Ok(())
-            }
-            BtNode::LCnd(condition) => {
-                let event_index = self.event_index(&(condition.to_owned() + "_" + TICK_CALL));
-                let builder = self.events.get_mut(event_index).expect("index must exist");
-                builder.senders.insert(pg_id);
-                let event_index = self.event_index(&(condition.to_owned() + "_" + TICK_RETURN));
-                let builder = self.events.get_mut(event_index).expect("index must exist");
-                builder.receivers.insert(pg_id);
-                builder
-                    .params
-                    .insert(RESULT.to_owned(), CONDITION_RESPONSE.to_owned());
-                Ok(())
-            }
-        }
-    }
-
-    fn build_bt(&mut self, bt: &Bt) -> anyhow::Result<()> {
-        trace!("build bt {}", bt.id);
-        // Initialize bt.
-        let pg_builder = self.fsm_builder(&bt.id);
-        let pg_id = pg_builder.pg_id;
-        let ext_queue = pg_builder.ext_queue;
-        // Locations are relative to what the node receives
-        let loc_idle = self.cs.initial_location(pg_id).unwrap();
-        let loc_tick = self.cs.new_location(pg_id).unwrap();
-        let loc_success = self.cs.new_location(pg_id).unwrap();
-        let loc_running = self.cs.new_location(pg_id).unwrap();
-        let loc_failure = self.cs.new_location(pg_id).unwrap();
-        let loc_halt = self.cs.new_location(pg_id).unwrap();
-        let loc_ack = self.cs.new_location(pg_id).unwrap();
-        self.build_bt_node(
-            pg_id,
-            loc_tick,
-            loc_success,
-            loc_running,
-            loc_failure,
-            loc_halt,
-            loc_ack,
-            &bt.root,
-        )?;
-
-        let ext_event_var = self
-            .cs
-            .new_var(
-                pg_id,
-                CsExpression::Tuple(vec![CsExpression::from(0), CsExpression::from(0)]),
-            )
-            .expect("{pg_id:?} exists");
-        let receive_event = self
-            .cs
-            .new_receive(pg_id, ext_queue, ext_event_var)
-            .unwrap();
-        let process_event = self.cs.new_action(pg_id).unwrap();
-        let ext_event_index = self.cs.new_var(pg_id, CsExpression::from(0)).unwrap();
-        let ext_origin_var = self.cs.new_var(pg_id, CsExpression::from(0)).unwrap();
-        self.cs
-            .add_effect(
-                pg_id,
-                process_event,
-                ext_event_index,
-                CsExpression::Component(
-                    0,
-                    Box::new(CsExpression::Var(
-                        ext_event_var,
-                        Type::Product(vec![Type::Integer, Type::Integer]),
-                    )),
-                ),
-            )
-            .unwrap();
-        self.cs
-            .add_effect(
-                pg_id,
-                process_event,
-                ext_origin_var,
-                CsExpression::Component(
-                    1,
-                    Box::new(CsExpression::Var(
-                        ext_event_var,
-                        Type::Product(vec![Type::Integer, Type::Integer]),
-                    )),
-                ),
-            )
-            .unwrap();
-        let event_received = self.cs.new_location(pg_id).unwrap();
-        self.cs
-            .add_transition(pg_id, loc_idle, receive_event, event_received, None)
-            .unwrap();
-        let event_processed = self.cs.new_location(pg_id).unwrap();
-        self.cs
-            .add_transition(pg_id, event_received, process_event, event_processed, None)
-            .unwrap();
-
-        // TICK
-        // Create event.
-        let tick_idx = *self.event_indexes.get(TICK_CALL).unwrap() as Integer;
-        let tick_return_idx = *self.event_indexes.get(TICK_RETURN).unwrap() as Integer;
-        let halt_idx = *self.event_indexes.get(HALT_CALL).unwrap() as Integer;
-        let halt_return_idx = *self.event_indexes.get(HALT_RETURN).unwrap() as Integer;
-        self.cs
-            .add_autonomous_transition(
-                pg_id,
-                event_processed,
-                loc_tick,
-                Some(CsExpression::Equal(Box::new((
-                    CsExpression::Var(ext_event_index, Type::Integer),
-                    CsExpression::from(tick_idx),
-                )))),
-            )
-            .expect("hope this works");
-        // HALT
-        self.cs
-            .add_autonomous_transition(
-                pg_id,
-                event_processed,
-                loc_halt,
-                Some(CsExpression::Equal(Box::new((
-                    CsExpression::Var(ext_event_index, Type::Integer),
-                    CsExpression::from(halt_idx),
-                )))),
-            )
-            .expect("hope this works");
-
-        // Send tick return value
-        let result = self
-            .cs
-            .new_var(pg_id, CsExpression::from(0))
-            .expect("must work");
-        let send_result_loc = self.cs.new_location(pg_id).unwrap();
-        let success = self.cs.new_action(pg_id).unwrap();
-        let success_val = *self.enums.get(&(String::from("SUCCESS"))).unwrap();
-        self.cs
-            .add_effect(pg_id, success, result, Expression::from(success_val))
-            .unwrap();
-        self.cs
-            .add_transition(pg_id, loc_success, success, send_result_loc, None)
-            .unwrap();
-        let running = self.cs.new_action(pg_id).unwrap();
-        let running_val = *self.enums.get(&(String::from("RUNNING"))).unwrap();
-        self.cs
-            .add_effect(pg_id, running, result, Expression::from(running_val))
-            .unwrap();
-        self.cs
-            .add_transition(pg_id, loc_running, running, send_result_loc, None)
-            .unwrap();
-        let failure = self.cs.new_action(pg_id).unwrap();
-        let failure_val = *self.enums.get(&(String::from("FAILURE"))).unwrap();
-        self.cs
-            .add_effect(pg_id, failure, result, Expression::from(failure_val))
-            .unwrap();
-        self.cs
-            .add_transition(pg_id, loc_failure, failure, send_result_loc, None)
-            .unwrap();
-
-        // Send tickReturn event with result param
-        let callers = &self.events.get(tick_idx as usize).unwrap().senders;
-        for &caller in callers.iter() {
-            let caller_name = self.fsm_names.get(&caller).unwrap();
-            let caller_builder = self.fsm_builders.get(caller_name).expect("it must exist");
-            let caller_ext_queue = caller_builder.ext_queue;
-            let send_event_loc = self.cs.new_location(pg_id).unwrap();
-            let param_channel = self
-                .parameters
-                .entry((pg_id, caller, tick_return_idx as usize, RESULT.to_owned()))
-                .or_insert_with(|| self.cs.new_channel(Type::Integer, None));
-            let send_result = self
-                .cs
-                .new_send(
-                    pg_id,
-                    *param_channel,
-                    Expression::Var(result, Type::Integer),
-                )
-                .unwrap();
-            self.cs
-                .add_transition(
-                    pg_id,
-                    send_result_loc,
-                    send_result,
-                    send_event_loc,
-                    Some(Expression::Equal(Box::new((
-                        Expression::Var(ext_origin_var, Type::Integer),
-                        Expression::from(usize::from(caller) as Integer),
-                    )))),
-                )
-                .unwrap();
-            let send_event = self
-                .cs
-                .new_send(
-                    pg_id,
-                    caller_ext_queue,
-                    Expression::Tuple(vec![
-                        Expression::from(tick_return_idx),
-                        Expression::from(usize::from(pg_id) as Integer),
-                    ]),
-                )
-                .unwrap();
-            self.cs
-                .add_transition(pg_id, send_event_loc, send_event, loc_idle, None)
-                .unwrap();
-        }
-
-        // Send halt acknowledgement
-        let callers = &self.events.get(halt_idx as usize).unwrap().senders;
-        for &caller in callers.iter() {
-            let caller_name = self.fsm_names.get(&caller).unwrap();
-            let caller_builder = self.fsm_builders.get(caller_name).expect("it must exist");
-            let caller_ext_queue = caller_builder.ext_queue;
-            let send_event = self
-                .cs
-                .new_send(
-                    pg_id,
-                    caller_ext_queue,
-                    Expression::Tuple(vec![
-                        Expression::from(halt_return_idx),
-                        Expression::from(usize::from(pg_id) as Integer),
-                    ]),
-                )
-                .unwrap();
-            self.cs
-                .add_transition(
-                    pg_id,
-                    loc_ack,
-                    send_event,
-                    loc_idle,
-                    Some(Expression::Equal(Box::new((
-                        Expression::Var(ext_origin_var, Type::Integer),
-                        Expression::from(usize::from(caller) as Integer),
-                    )))),
-                )
-                .unwrap();
-        }
-
-        Ok(())
-    }
-
-    /// Recursively build a BT node by associating each possible state of the node to a location:
-    /// - pt_tick: the parent node has sent a tick
-    /// - pt_success: the parent node receives a tick return with state success
-    /// - pt_running: the parent node receives a tick return with state running
-    /// - pt_failure: the parent node receives a tick return with state failure
-    /// - pt_halt: the parent node sends an halt signal
-    /// - pt_ack: the parent node receives an ack signal
-    ///
-    /// Moreover, we consider the following nodes:
-    /// - pt_*: parent node
-    /// - loc_*: current node (loc=location)
-    /// - branch_*: branch/child node
-    fn build_bt_node(
-        &mut self,
-        pg_id: PgId,
-        pt_tick: Location,
-        pt_success: Location,
-        pt_running: Location,
-        pt_failure: Location,
-        pt_halt: Location,
-        pt_ack: Location,
-        node: &BtNode,
-    ) -> anyhow::Result<()> {
-        match node {
-            BtNode::RSeq(branches) => {
-                let halt_after_failure = self.cs.new_action(pg_id).expect("{pg_id:?} exists");
-                let halting_after_failure = self
-                    .cs
-                    .new_var(pg_id, CsExpression::from(false))
-                    .expect("{pg_id:?} exists");
-                self.cs
-                    .add_effect(
-                        pg_id,
-                        halt_after_failure,
-                        halting_after_failure,
-                        CsExpression::from(true),
-                    )
-                    .expect("hand-picked arguments");
-                let failure_after_halting = self.cs.new_action(pg_id).expect("{pg_id:?} exists");
-                self.cs
-                    .add_effect(
-                        pg_id,
-                        failure_after_halting,
-                        halting_after_failure,
-                        CsExpression::from(false),
-                    )
-                    .expect("hand-picked arguments");
-
-                let mut prev_ack = pt_halt;
-                let mut prev_success = pt_tick;
-                // this value is irrelevant
-                let mut prev_failure = self.cs.new_location(pg_id).unwrap();
-
-                for branch in branches.iter() {
-                    let loc_tick = prev_success;
-                    let loc_success = self.cs.new_location(pg_id).unwrap();
-                    let loc_running = pt_running;
-                    let loc_failure = self.cs.new_location(pg_id).unwrap();
-                    let loc_halt = prev_ack;
-                    let loc_ack = self.cs.new_location(pg_id).unwrap();
-                    self.cs
-                        .add_transition(pg_id, prev_failure, halt_after_failure, loc_halt, None)
-                        .unwrap();
-                    self.build_bt_node(
-                        pg_id,
-                        loc_tick,
-                        loc_success,
-                        loc_running,
-                        loc_failure,
-                        loc_halt,
-                        loc_ack,
-                        branch,
-                    )?;
-                    prev_success = loc_success;
-                    prev_failure = loc_failure;
-                    prev_ack = loc_ack;
-                }
-                // If all children are successful, return success to father node.
-                self.cs
-                    .add_autonomous_transition(pg_id, prev_success, pt_success, None)
-                    .unwrap();
-                // If last child fails, return failure to father node.
-                self.cs
-                    .add_autonomous_transition(pg_id, prev_failure, pt_failure, None)
-                    .unwrap();
-                // If all children acknowledge halting, return ack to father node.
-                self.cs
-                    .add_autonomous_transition(
-                        pg_id,
-                        prev_ack,
-                        pt_ack,
-                        Some(CsExpression::Not(Box::new(CsExpression::Var(
-                            halting_after_failure,
-                            Type::Boolean,
-                        )))),
-                    )
-                    .expect("hand-made args");
-                // If all children acknowledge halting after a failure, return failure to father node.
-                self.cs
-                    .add_transition(
-                        pg_id,
-                        prev_ack,
-                        failure_after_halting,
-                        pt_failure,
-                        Some(CsExpression::Var(halting_after_failure, Type::Boolean)),
-                    )
-                    .expect("hand-made args");
-            }
-            BtNode::RFbk(branches) => {
-                let halt_after_success = self.cs.new_action(pg_id).expect("{pg_id:?} exists");
-                let halting_after_success = self
-                    .cs
-                    .new_var(pg_id, CsExpression::from(false))
-                    .expect("{pg_id:?} exists");
-                self.cs
-                    .add_effect(
-                        pg_id,
-                        halt_after_success,
-                        halting_after_success,
-                        CsExpression::from(true),
-                    )
-                    .expect("hand-picked arguments");
-                let success_after_halting = self.cs.new_action(pg_id).expect("{pg_id:?} exists");
-                self.cs
-                    .add_effect(
-                        pg_id,
-                        success_after_halting,
-                        halting_after_success,
-                        CsExpression::from(false),
-                    )
-                    .expect("hand-picked arguments");
-
-                let mut prev_ack = pt_halt;
-                let mut prev_failure = pt_tick;
-                // this value is irrelevant
-                let mut prev_success = self.cs.new_location(pg_id).unwrap();
-
-                for branch in branches.iter() {
-                    let loc_tick = prev_failure;
-                    let loc_failure = self.cs.new_location(pg_id).unwrap();
-                    let loc_running = pt_running;
-                    let loc_success = self.cs.new_location(pg_id).unwrap();
-                    let loc_halt = prev_ack;
-                    let loc_ack = self.cs.new_location(pg_id).unwrap();
-                    self.cs
-                        .add_transition(pg_id, prev_success, halt_after_success, loc_halt, None)
-                        .unwrap();
-                    self.build_bt_node(
-                        pg_id,
-                        loc_tick,
-                        loc_success,
-                        loc_running,
-                        loc_failure,
-                        loc_halt,
-                        loc_ack,
-                        branch,
-                    )?;
-                    prev_success = loc_success;
-                    prev_failure = loc_failure;
-                    prev_ack = loc_ack;
-                }
-                self.cs
-                    .add_autonomous_transition(pg_id, prev_success, pt_success, None)
-                    .unwrap();
-                self.cs
-                    .add_autonomous_transition(pg_id, prev_failure, pt_failure, None)
-                    .unwrap();
-                // If all children acknowledge halting, return ack to father node.
-                self.cs
-                    .add_autonomous_transition(
-                        pg_id,
-                        prev_ack,
-                        pt_ack,
-                        Some(CsExpression::Not(Box::new(CsExpression::Var(
-                            halting_after_success,
-                            Type::Boolean,
-                        )))),
-                    )
-                    .expect("hand-made args");
-                // If all children acknowledge halting after a failure, return failure to father node.
-                self.cs
-                    .add_transition(
-                        pg_id,
-                        prev_ack,
-                        success_after_halting,
-                        pt_success,
-                        Some(CsExpression::Var(halting_after_success, Type::Boolean)),
-                    )
-                    .expect("hand-made args");
-            }
-            // BtNode::MSeq(_branches) => todo!(),
-            // BtNode::MFbk(_branches) => todo!(),
-            // BtNode::Invr(branch) => {
-            //     // Swap success and failure.
-            //     self.build_bt_node(
-            //         pg_id, pt_tick, pt_failure, pt_running, pt_success, pt_halt, pt_ack, step,
-            //         branch,
-            //     )?;
-            // }
-            BtNode::LAct(action) => {
-                trace!("building bt leaf {action}");
-                let caller_name = self.fsm_names.get(&pg_id).unwrap();
-                let caller_builder = self.fsm_builders.get(caller_name).expect("it must exist");
-                let ext_queue = caller_builder.ext_queue;
-                let target = action;
-                let target_builder = self
-                    .fsm_builders
-                    .get(target)
-                    .ok_or(anyhow!("Action/condition {action} not found"))?;
-                let target_ext_queue = target_builder.ext_queue;
-
-                // TICK
-                let tick_call_idx = *self
-                    .event_indexes
-                    .get(&(action.to_owned() + "_" + TICK_CALL))
-                    .unwrap();
-                let send_event = self
-                    .cs
-                    .new_send(
-                        pg_id,
-                        target_ext_queue,
-                        CsExpression::Tuple(vec![
-                            CsExpression::from(tick_call_idx as Integer),
-                            CsExpression::from(usize::from(pg_id) as Integer),
-                        ]),
-                    )
-                    .unwrap();
-                let tick_sent = self.cs.new_location(pg_id).unwrap();
-                self.cs
-                    .add_transition(pg_id, pt_tick, send_event, tick_sent, None)
-                    .unwrap();
-                let tick_response = self
-                    .cs
-                    .new_var(
-                        pg_id,
-                        CsExpression::Tuple(vec![CsExpression::from(0), CsExpression::from(0)]),
-                    )
-                    .expect("{pg_id:?} exists");
-                let get_tick_response = self
-                    .cs
-                    .new_receive(pg_id, ext_queue, tick_response)
-                    .expect("hand-made args");
-                let got_tick_response = self.cs.new_location(pg_id).expect("{pg_id:?} exists");
-                self.cs
-                    .add_transition(pg_id, tick_sent, get_tick_response, got_tick_response, None)
-                    .expect("hand-made args");
-                let tick_response_param_chn = *self
-                    .parameters
-                    .entry((
-                        target_builder.pg_id,
-                        pg_id,
-                        *self
-                            .event_indexes
-                            .get(&(action.to_owned() + "_" + TICK_RETURN))
-                            .unwrap(),
-                        RESULT.to_owned(),
-                    ))
-                    .or_insert(self.cs.new_channel(Type::Integer, None));
-                let tick_response_param = self
-                    .cs
-                    .new_var(pg_id, CsExpression::from(0))
-                    .expect("{pg_id:?} exists");
-                let get_tick_response_param = self
-                    .cs
-                    .new_receive(pg_id, tick_response_param_chn, tick_response_param)
-                    .expect("hand-made args");
-                let got_tick_response_param =
-                    self.cs.new_location(pg_id).expect("{pg_id:?} exists");
-                self.cs
-                    .add_transition(
-                        pg_id,
-                        got_tick_response,
-                        get_tick_response_param,
-                        got_tick_response_param,
-                        None,
-                    )
-                    .expect("hand-made args");
-                self.cs
-                    .add_autonomous_transition(
-                        pg_id,
-                        got_tick_response_param,
-                        pt_success,
-                        Some(CsExpression::Equal(Box::new((
-                            CsExpression::Var(tick_response_param, Type::Integer),
-                            CsExpression::from(*self.enums.get(SUCCESS).unwrap()),
-                        )))),
-                    )
-                    .expect("hope this works");
-                self.cs
-                    .add_autonomous_transition(
-                        pg_id,
-                        got_tick_response_param,
-                        pt_failure,
-                        Some(CsExpression::Equal(Box::new((
-                            CsExpression::Var(tick_response_param, Type::Integer),
-                            CsExpression::from(*self.enums.get(FAILURE).unwrap()),
-                        )))),
-                    )
-                    .expect("hope this works");
-                self.cs
-                    .add_autonomous_transition(
-                        pg_id,
-                        got_tick_response_param,
-                        pt_running,
-                        Some(CsExpression::Equal(Box::new((
-                            CsExpression::Var(tick_response_param, Type::Integer),
-                            CsExpression::from(*self.enums.get(RUNNING).unwrap()),
-                        )))),
-                    )
-                    .expect("hope this works");
-
-                // HALT
-                let event = action.to_owned() + "_" + HALT_CALL;
-                // Create event, if it does not exist already.
-                let event_idx = self.event_index(&event);
-                let send_event = self.cs.new_send(
-                    pg_id,
-                    target_ext_queue,
-                    CsExpression::Tuple(vec![
-                        CsExpression::from(event_idx as Integer),
-                        CsExpression::from(usize::from(pg_id) as Integer),
-                    ]),
-                )?;
-                let halt_sent = self.cs.new_location(pg_id)?;
-                self.cs
-                    .add_transition(pg_id, pt_halt, send_event, halt_sent, None)?;
-                let halt_response = self
-                    .cs
-                    .new_var(
-                        pg_id,
-                        CsExpression::Tuple(vec![CsExpression::from(0), CsExpression::from(0)]),
-                    )
-                    .expect("{pg_id:?} exists");
-                let get_halt_response = self
-                    .cs
-                    .new_receive(pg_id, ext_queue, halt_response)
-                    .expect("hand-made args");
-                let got_halt_response = pt_ack;
-                self.cs
-                    .add_transition(pg_id, halt_sent, get_halt_response, got_halt_response, None)
-                    .expect("hand-made args");
-            }
-            BtNode::LCnd(condition) => {
-                trace!("building bt leaf {condition}");
-                let caller_name = self.fsm_names.get(&pg_id).unwrap();
-                let caller_builder = self.fsm_builders.get(caller_name).expect("it must exist");
-                let caller_ext_queue = caller_builder.ext_queue;
-                let target_builder = self
-                    .fsm_builders
-                    .get(condition)
-                    .ok_or_else(|| anyhow!("Condition {condition} not found"))?;
-                let target_ext_queue = target_builder.ext_queue;
-
-                // TICK
-                let tick_call_idx = *self
-                    .event_indexes
-                    .get(&(condition.to_owned() + "_" + TICK_CALL))
-                    .unwrap();
-                let send_event = self
-                    .cs
-                    .new_send(
-                        pg_id,
-                        target_ext_queue,
-                        CsExpression::Tuple(vec![
-                            CsExpression::from(tick_call_idx as Integer),
-                            CsExpression::from(usize::from(pg_id) as Integer),
-                        ]),
-                    )
-                    .unwrap();
-                let tick_sent = self.cs.new_location(pg_id).unwrap();
-                self.cs
-                    .add_transition(pg_id, pt_tick, send_event, tick_sent, None)
-                    .unwrap();
-                let tick_response = self
-                    .cs
-                    .new_var(
-                        pg_id,
-                        CsExpression::Tuple(vec![CsExpression::from(0), CsExpression::from(0)]),
-                    )
-                    .expect("{pg_id:?} exists");
-                let get_tick_response = self
-                    .cs
-                    .new_receive(pg_id, caller_ext_queue, tick_response)
-                    .expect("hand-made args");
-                let got_tick_response = self.cs.new_location(pg_id).expect("{pg_id:?} exists");
-                self.cs
-                    .add_transition(pg_id, tick_sent, get_tick_response, got_tick_response, None)
-                    .expect("hand-made args");
-                let tick_response_param_chn = *self
-                    .parameters
-                    .entry((
-                        target_builder.pg_id,
-                        pg_id,
-                        *self
-                            .event_indexes
-                            .get(&(condition.to_owned() + "_" + TICK_RETURN))
-                            .unwrap(),
-                        RESULT.to_owned(),
-                    ))
-                    .or_insert(self.cs.new_channel(Type::Integer, None));
-                let tick_response_param = self
-                    .cs
-                    .new_var(pg_id, CsExpression::from(0))
-                    .expect("{pg_id:?} exists");
-                let get_tick_response_param = self
-                    .cs
-                    .new_receive(pg_id, tick_response_param_chn, tick_response_param)
-                    .expect("hand-made args");
-                let got_tick_response_param =
-                    self.cs.new_location(pg_id).expect("{pg_id:?} exists");
-                self.cs
-                    .add_transition(
-                        pg_id,
-                        got_tick_response,
-                        get_tick_response_param,
-                        got_tick_response_param,
-                        None,
-                    )
-                    .expect("hand-made args");
-                self.cs
-                    .add_autonomous_transition(
-                        pg_id,
-                        got_tick_response_param,
-                        pt_success,
-                        Some(CsExpression::Equal(Box::new((
-                            CsExpression::Var(tick_response_param, Type::Integer),
-                            CsExpression::from(*self.enums.get(SUCCESS).unwrap()),
-                        )))),
-                    )
-                    .expect("hope this works");
-                self.cs
-                    .add_autonomous_transition(
-                        pg_id,
-                        got_tick_response_param,
-                        pt_failure,
-                        Some(CsExpression::Equal(Box::new((
-                            CsExpression::Var(tick_response_param, Type::Integer),
-                            CsExpression::from(*self.enums.get(FAILURE).unwrap()),
-                        )))),
-                    )
-                    .expect("hope this works");
-
-                // HALT
-                let halt_sent = pt_halt;
-                let got_halt_response = pt_ack;
-                self.cs
-                    .add_autonomous_transition(pg_id, halt_sent, got_halt_response, None)
-                    .expect("hand-made args");
-            }
-        }
-
-        Ok(())
     }
 
     fn build_fsm(&mut self, fsm: &Fsm) -> anyhow::Result<()> {
@@ -1627,12 +919,41 @@ impl ModelBuilder {
             Executable::Send(Send {
                 event,
                 target,
+                delay,
                 params: send_params,
             }) => {
                 let event_idx = *self
                     .event_indexes
                     .get(event)
                     .ok_or(anyhow!("event not found"))?;
+                let mut loc = loc;
+                if let Some(delay) = delay {
+                    // WARN NOTE FIXME: here we could reuse some other clock instead of creating a new one every time.
+                    let reset = self.cs.new_action(pg_id).expect("action");
+                    let clock = self.cs.new_clock(pg_id).expect("new clock");
+                    self.cs
+                        .reset_clock(pg_id, reset, clock)
+                        .expect("reset clock");
+                    let next_loc = self
+                        .cs
+                        .new_timed_location(pg_id, &[(clock, None, Some(*delay))])
+                        .expect("PG exists");
+                    self.cs
+                        .add_transition(pg_id, loc, reset, next_loc, None)
+                        .expect("params are right");
+                    loc = next_loc;
+                    let next_loc = self.cs.new_location(pg_id).expect("PG exists");
+                    self.cs
+                        .add_autonomous_timed_transition(
+                            pg_id,
+                            loc,
+                            next_loc,
+                            None,
+                            &[(clock, Some(*delay), None)],
+                        )
+                        .expect("autonomous timed transition");
+                    loc = next_loc;
+                }
                 if let Some(target) = target {
                     let done_loc = self.cs.new_location(pg_id)?;
                     let targets;
@@ -1718,6 +1039,7 @@ impl ModelBuilder {
                             &Executable::Send(Send {
                                 event: event.to_owned(),
                                 target: target_name.map(Target::Id),
+                                delay: *delay,
                                 params: send_params.to_owned(),
                             }),
                             pg_id,
@@ -2330,7 +1652,7 @@ impl ModelBuilder {
                 .guarantees
                 .values()
                 .map(|prop| {
-                    Self::build_property(&self.atoms, prop, &pred_names)
+                    Self::build_pmtl_property(&self.atoms, prop, &pred_names)
                         .expect("hopefully a property")
                 })
                 .collect(),
@@ -2338,7 +1660,7 @@ impl ModelBuilder {
                 .assumes
                 .values()
                 .map(|prop| {
-                    Self::build_property(&self.atoms, prop, &pred_names)
+                    Self::build_pmtl_property(&self.atoms, prop, &pred_names)
                         .expect("hopefully a property")
                 })
                 .collect(),
@@ -2368,66 +1690,73 @@ impl ModelBuilder {
         }
     }
 
-    fn build_property(
+    fn build_pmtl_property(
         atoms: &HashMap<String, Atom<Event>>,
-        property: &Mtl<String>,
+        property: &Pmtl<String>,
         predicates: &HashMap<String, usize>,
-    ) -> anyhow::Result<Mtl<Atom<Event>>> {
+    ) -> anyhow::Result<Pmtl<Atom<Event>>> {
         match property {
-            Mtl::True => Ok(Mtl::True),
+            Pmtl::True => Ok(Pmtl::True),
+            Pmtl::False => Ok(Pmtl::False),
             // FIXME TODO handle error
-            Mtl::Atom(pred) => {
+            Pmtl::Atom(pred) => {
                 if let Some(atom) = atoms.get(pred.as_str()) {
-                    Ok(Mtl::Atom(atom.to_owned()))
+                    Ok(Pmtl::Atom(atom.to_owned()))
                 } else {
-                    Ok(Mtl::Atom(Atom::Predicate(
+                    Ok(Pmtl::Atom(Atom::Predicate(
                         *predicates.get(pred.as_str()).unwrap(),
                     )))
                 }
             }
-            Mtl::And(formulae) => Ok(Mtl::And(
+            Pmtl::And(formulae) => Ok(Pmtl::And(
                 formulae
                     .iter()
-                    .map(|f| Self::build_property(atoms, f, predicates))
+                    .map(|f| Self::build_pmtl_property(atoms, f, predicates))
                     .collect::<Result<_, _>>()?,
             )),
-            Mtl::Or(formulae) => Ok(Mtl::Or(
+            Pmtl::Or(formulae) => Ok(Pmtl::Or(
                 formulae
                     .iter()
-                    .map(|f| Self::build_property(atoms, f, predicates))
+                    .map(|f| Self::build_pmtl_property(atoms, f, predicates))
                     .collect::<Result<_, _>>()?,
             )),
-            Mtl::Not(formula) => Ok(Mtl::Not(Box::new(Self::build_property(
+            Pmtl::Not(formula) => Ok(Pmtl::Not(Box::new(Self::build_pmtl_property(
                 atoms, formula, predicates,
             )?))),
-            Mtl::Implies(formulae) => {
+            Pmtl::Implies(formulae) => {
                 let (ref lhs, ref rhs) = **formulae;
-                Ok(Mtl::Implies(Box::new((
-                    Self::build_property(atoms, lhs, predicates)?,
-                    Self::build_property(atoms, rhs, predicates)?,
+                Ok(Pmtl::Implies(Box::new((
+                    Self::build_pmtl_property(atoms, lhs, predicates)?,
+                    Self::build_pmtl_property(atoms, rhs, predicates)?,
                 ))))
             }
-            Mtl::Next(formula) => Self::build_property(atoms, formula, predicates)
-                .map(Box::new)
-                .map(Mtl::Next),
-            Mtl::Until(formulae, range) => {
+            Pmtl::Since(formulae, lower_bound, upper_bound) => {
                 let (ref lhs, ref rhs) = **formulae;
-                Ok(Mtl::Until(
+                Ok(Pmtl::Since(
                     Box::new((
-                        Self::build_property(atoms, lhs, predicates)?,
-                        Self::build_property(atoms, rhs, predicates)?,
+                        Self::build_pmtl_property(atoms, lhs, predicates)?,
+                        Self::build_pmtl_property(atoms, rhs, predicates)?,
                     )),
-                    range.to_owned(),
+                    *lower_bound,
+                    *upper_bound,
                 ))
             }
-            Mtl::Always(formula, range) => Ok(Mtl::Always(
-                Box::new(Self::build_property(atoms, formula, predicates)?),
-                range.to_owned(),
-            )),
-            Mtl::Eventually(formula, range) => Ok(Mtl::Eventually(
-                Box::new(Self::build_property(atoms, formula, predicates)?),
-                range.to_owned(),
-            )),
+            Pmtl::Historically(formula, lower_bound, upper_bound) => {
+                let formula = formula.as_ref();
+                Ok(Pmtl::Historically(
+                    Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
+                    *lower_bound,
+                    *upper_bound,
+                ))
+            }
+            Pmtl::Previously(formula, lower_bound, upper_bound) => {
+                let formula = formula.as_ref();
+                Ok(Pmtl::Previously(
+                    Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
+                    *lower_bound,
+                    *upper_bound,
+                ))
+            }
         }
     }
 }
