@@ -5,7 +5,10 @@ use anyhow::anyhow;
 use boa_interner::ToInternedString;
 use log::{info, trace};
 use scan_core::{channel_system::*, *};
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 // TODO:
 //
@@ -1637,11 +1640,11 @@ impl ModelBuilder {
         let mut predicates = Vec::new();
         for (_port_name, (channel, init)) in self.ports {
             // TODO FIXME handle error.
-            model.add_port(channel, init).unwrap();
+            model.add_port(channel, init);
         }
         for (pred_name, pred_expr) in self.predicates {
             // TODO FIXME handle error.
-            let id = model.add_predicate(pred_expr).unwrap();
+            let id = model.add_predicate(pred_expr);
             pred_names.insert(pred_name.to_owned(), id);
             assert_eq!(id, predicates.len());
             predicates.push(pred_name);
@@ -1720,12 +1723,12 @@ impl ModelBuilder {
                     .map(|f| Self::build_pmtl_property(atoms, f, predicates))
                     .collect::<Result<_, _>>()?,
             )),
-            Pmtl::Not(formula) => Ok(Pmtl::Not(Box::new(Self::build_pmtl_property(
+            Pmtl::Not(formula) => Ok(Pmtl::Not(Arc::new(Self::build_pmtl_property(
                 atoms, formula, predicates,
             )?))),
             Pmtl::Implies(formulae) => {
                 let (ref lhs, ref rhs) = **formulae;
-                Ok(Pmtl::Implies(Box::new((
+                Ok(Pmtl::Implies(Arc::new((
                     Self::build_pmtl_property(atoms, lhs, predicates)?,
                     Self::build_pmtl_property(atoms, rhs, predicates)?,
                 ))))
@@ -1733,7 +1736,7 @@ impl ModelBuilder {
             Pmtl::Since(formulae, lower_bound, upper_bound) => {
                 let (ref lhs, ref rhs) = **formulae;
                 Ok(Pmtl::Since(
-                    Box::new((
+                    Arc::new((
                         Self::build_pmtl_property(atoms, lhs, predicates)?,
                         Self::build_pmtl_property(atoms, rhs, predicates)?,
                     )),
@@ -1744,7 +1747,7 @@ impl ModelBuilder {
             Pmtl::Historically(formula, lower_bound, upper_bound) => {
                 let formula = formula.as_ref();
                 Ok(Pmtl::Historically(
-                    Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
+                    Arc::new(Self::build_pmtl_property(atoms, formula, predicates)?),
                     *lower_bound,
                     *upper_bound,
                 ))
@@ -1752,7 +1755,7 @@ impl ModelBuilder {
             Pmtl::Previously(formula, lower_bound, upper_bound) => {
                 let formula = formula.as_ref();
                 Ok(Pmtl::Previously(
-                    Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
+                    Arc::new(Self::build_pmtl_property(atoms, formula, predicates)?),
                     *lower_bound,
                     *upper_bound,
                 ))
