@@ -1,14 +1,7 @@
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use scan::*;
-use scan_fmt_xml::scan_core::*;
-use std::{
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
-};
+use crate::PrintTrace;
 
 /// A statistical model checker for large concurrent systems
 #[derive(Parser)]
@@ -23,15 +16,15 @@ pub struct Cli {
     /// Precision or half-width parameter
     #[arg(short, long, default_value = "0.01")]
     precision: f64,
-    /// Print execution traces
-    #[arg(long = "print-traces", default_value = "false")]
-    trace: bool,
-    /// Max length of execution trace before it is stopped
+    /// Max length of execution trace
     #[arg(short, long, default_value = "1000000")]
     length: usize,
-    /// Max duration of execution before it is stopped (in model-time)
+    /// Max duration of execution (in model-time)
     #[arg(short, long, default_value = "10000")]
     duration: usize,
+    /// Saves execution traces in gz-compressed csv format
+    #[arg(long = "save-traces", default_value = "false")]
+    trace: bool,
 }
 
 impl Cli {
