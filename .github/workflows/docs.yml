@@ -26,17 +26,17 @@ jobs:
     steps:
       - name: Checkout 🛎️
         uses: actions/checkout@v4
-      - name: Install and Build 🔧 
-        run: |
-          cargo doc --no-deps --workspace
-          mkdir -p scan_book/book/crates
-          mv target/doc/* scan_book/book/crates
       - name: install-mdbook
         run: |
           cargo install mdbook --no-default-features --features search --vers "^0.4" --locked
       - name: build-manual
         run: |
           mdbook build scan_book
+      - name: Install and Build 🔧 
+        run: |
+          cargo doc --no-deps --workspace
+          mkdir -p scan_book/book/crates
+          mv target/doc/* scan_book/book/crates
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
