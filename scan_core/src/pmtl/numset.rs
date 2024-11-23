@@ -7,29 +7,25 @@ pub(super) struct NumSet(SmallVec<[(DenseTime, bool); 16]>);
 
 impl NumSet {
     #[inline(always)]
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(SmallVec::new())
     }
 
     #[inline(always)]
-    pub fn full() -> Self {
+    pub(super) fn full() -> Self {
         Self(smallvec![((Time::MAX, Time::MAX), true)])
     }
 
-    // pub fn is_empty(&self) -> bool {
-    //     self.0.is_empty()
-    // }
-
-    pub fn cut(&mut self, lower_bound: DenseTime, upper_bound: DenseTime) {
+    pub(super) fn cut(&mut self, lower_bound: DenseTime, upper_bound: DenseTime) {
         if lower_bound != (0, 0) {
             match self.0.binary_search_by_key(&lower_bound, |(t, _)| *t) {
                 Ok(idx) => {
                     self.0[idx].1 = false;
-                    self.0 = SmallVec::from_slice(self.0.split_at(idx).1);
+                    let _ = self.0.drain(..idx);
                 }
                 Err(idx) => {
                     self.0.insert(idx, (lower_bound, false));
-                    self.0 = SmallVec::from_slice(self.0.split_at(idx).1);
+                    let _ = self.0.drain(..idx);
                 }
             }
         }
@@ -47,7 +43,7 @@ impl NumSet {
         }
     }
 
-    pub fn from_range(lower_bound: DenseTime, upper_bound: DenseTime) -> Self {
+    pub(super) fn from_range(lower_bound: DenseTime, upper_bound: DenseTime) -> Self {
         if lower_bound < upper_bound {
             if lower_bound == (0, 0) {
                 Self(smallvec![(upper_bound, true)])
@@ -60,21 +56,19 @@ impl NumSet {
     }
 
     #[inline(always)]
-    pub fn bounds(&self) -> &[(DenseTime, bool)] {
+    pub(super) fn bounds(&self) -> &[(DenseTime, bool)] {
         &self.0
     }
 
-    pub fn contains(&self, val: DenseTime) -> bool {
+    pub(super) fn contains(&self, val: DenseTime) -> bool {
         // special case: (0, 0) cannot belong to any (left-open) interval
         val != (0, 0)
             && match self.0.binary_search_by_key(&val, |(bound, _)| *bound) {
-                // val is greater than any upper bound
-                Err(idx) if idx == self.0.len() => false,
-                // val is inside interval idx
-                Ok(idx) | Err(idx) => self.0[idx].1,
+                Ok(idx) | Err(idx) => self.0.get(idx).map(|(_, b)| *b).unwrap_or(false),
             }
     }
 
+    #[inline(always)]
     fn hinted_insert_bound(&mut self, bound: DenseTime, hint: usize) -> usize {
         match self.0[hint..].binary_search_by_key(&bound, |(bound, _)| *bound) {
             Ok(idx) => idx + hint,
@@ -87,11 +81,18 @@ impl NumSet {
     }
 
     #[inline(always)]
-    pub fn insert_bound(&mut self, bound: DenseTime) -> usize {
-        self.hinted_insert_bound(bound, 0)
+    pub(super) fn insert_bound(&mut self, bound: DenseTime) -> usize {
+        match self.0.binary_search_by_key(&bound, |(bound, _)| *bound) {
+            Ok(idx) => idx,
+            Err(idx) => {
+                let b = self.0.get(idx).map(|(_, b)| *b).unwrap_or(false);
+                self.0.insert(idx, (bound, b));
+                idx
+            }
+        }
     }
 
-    pub fn add_interval(&mut self, lower_bound: DenseTime, upper_bound: DenseTime) {
+    pub(super) fn add_interval(&mut self, lower_bound: DenseTime, upper_bound: DenseTime) {
         if lower_bound >= upper_bound {
             // Nothing to do
         } else if self.0.is_empty() {
@@ -109,7 +110,7 @@ impl NumSet {
         }
     }
 
-    pub fn complement(&mut self) {
+    pub(super) fn complement(&mut self) {
         if self
             .0
             .last()
@@ -123,7 +124,7 @@ impl NumSet {
         }
     }
 
-    pub fn union(&mut self, other: &Self) {
+    pub(super) fn union(&mut self, other: &Self) {
         let mut lower_bound = (0, 0);
         other.0.iter().for_each(|(upper_bound, b)| {
             if *b {
@@ -133,7 +134,7 @@ impl NumSet {
         });
     }
 
-    pub fn intersection<I: IntoIterator<Item = Self>>(sets: I) -> Self {
+    pub(super) fn intersection<I: IntoIterator<Item = Self>>(sets: I) -> Self {
         let mut intersection = Self::new();
         for mut set in sets {
             set.complement();
@@ -143,14 +144,14 @@ impl NumSet {
         intersection
     }
 
-    pub fn sync(&mut self, other: &Self) {
+    pub(super) fn sync(&mut self, other: &Self) {
         let mut hint = 0;
         other.0.iter().for_each(|(bound, _)| {
             hint = self.hinted_insert_bound(*bound, hint) + 1;
         });
     }
 
-    pub fn simplify(&self) -> Self {
+    pub(super) fn simplify(&self) -> Self {
         let mut prev_b = false;
         let mut prev_t = (0, 0);
         let mut vec = SmallVec::from_iter(
