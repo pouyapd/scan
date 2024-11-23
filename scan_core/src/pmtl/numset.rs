@@ -1,19 +1,19 @@
-use crate::Time;
-
 use super::DenseTime;
+use crate::Time;
+use smallvec::{smallvec, SmallVec};
 
 #[derive(Debug, Clone)]
-pub(super) struct NumSet(Vec<(DenseTime, bool)>);
+pub(super) struct NumSet(SmallVec<[(DenseTime, bool); 16]>);
 
 impl NumSet {
     #[inline(always)]
     pub fn new() -> Self {
-        Self(Vec::new())
+        Self(SmallVec::new())
     }
 
     #[inline(always)]
     pub fn full() -> Self {
-        Self(vec![((Time::MAX, Time::MAX), true)])
+        Self(smallvec![((Time::MAX, Time::MAX), true)])
     }
 
     // pub fn is_empty(&self) -> bool {
@@ -25,23 +25,23 @@ impl NumSet {
             match self.0.binary_search_by_key(&lower_bound, |(t, _)| *t) {
                 Ok(idx) => {
                     self.0[idx].1 = false;
-                    self.0 = self.0.split_off(idx);
+                    self.0 = SmallVec::from_slice(self.0.split_at(idx).1);
                 }
                 Err(idx) => {
                     self.0.insert(idx, (lower_bound, false));
-                    self.0 = self.0.split_off(idx);
+                    self.0 = SmallVec::from_slice(self.0.split_at(idx).1);
                 }
             }
         }
         if upper_bound != (Time::MAX, Time::MAX) {
             match self.0.binary_search_by_key(&upper_bound, |(t, _)| *t) {
                 Ok(idx) => {
-                    let _ = self.0.split_off(idx + 1);
+                    self.0.truncate(idx + 1);
                 }
                 Err(idx) => {
                     let b = self.0.get(idx).map(|(_, b)| *b).unwrap_or(false);
                     self.0.insert(idx, (upper_bound, b));
-                    let _ = self.0.split_off(idx + 1);
+                    self.0.truncate(idx + 1);
                 }
             }
         }
@@ -50,9 +50,9 @@ impl NumSet {
     pub fn from_range(lower_bound: DenseTime, upper_bound: DenseTime) -> Self {
         if lower_bound < upper_bound {
             if lower_bound == (0, 0) {
-                Self(vec![(upper_bound, true)])
+                Self(smallvec![(upper_bound, true)])
             } else {
-                Self(vec![(lower_bound, false), (upper_bound, true)])
+                Self(smallvec![(lower_bound, false), (upper_bound, true)])
             }
         } else {
             Self::new()
@@ -153,7 +153,7 @@ impl NumSet {
     pub fn simplify(&self) -> Self {
         let mut prev_b = false;
         let mut prev_t = (0, 0);
-        let mut vec = Vec::from_iter(
+        let mut vec = SmallVec::from_iter(
             self.0
                 .iter()
                 .filter(|(t, _)| {
