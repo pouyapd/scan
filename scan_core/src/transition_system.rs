@@ -1,7 +1,9 @@
-use crate::Time;
+use crate::{Pmtl, PmtlOracle, Time};
 use log::info;
 use rand::prelude::*;
 use rayon::prelude::*;
+use std::fmt::Debug;
+use std::hash::Hash;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -13,10 +15,6 @@ pub enum Atom<A: Clone + PartialEq + Eq> {
 
 // WARN: Representing a trace as a Vec of Vecs may be expensive.
 pub type Trace<A> = Vec<(Time, A, Vec<bool>)>;
-
-pub trait Oracle<A> {
-    fn update(&mut self, action: &A, state: &[bool], time: Time) -> bool;
-}
 
 pub trait Publisher<A> {
     fn init(&mut self);
@@ -32,7 +30,7 @@ pub trait Publisher<A> {
 /// [^1]: Baier, C., & Katoen, J. (2008). *Principles of model checking*. MIT Press.
 pub trait TransitionSystem: Clone + Send + Sync {
     /// The type of the actions that trigger transitions between states in the TS.
-    type Action: Clone + Eq + Send + Sync;
+    type Action: Debug + Clone + Eq + Send + Sync + Hash;
 
     /// The label function of the TS valuates the propositions of its set of propositions for the current state.
     // TODO FIXME: bitset instead of Vec<bool>?
@@ -47,17 +45,15 @@ pub trait TransitionSystem: Clone + Send + Sync {
         0
     }
 
-    fn experiment<O, P, R: Rng>(
+    fn experiment<P, R: Rng>(
         mut self,
-        mut guarantees: Vec<O>,
-        mut assumes: Vec<O>,
+        mut oracle: PmtlOracle<Self::Action>,
         mut publisher: Option<P>,
         length: usize,
         duration: Time,
         rng: &mut R,
     ) -> Option<bool>
     where
-        O: Oracle<Self::Action> + Clone,
         P: Publisher<Self::Action>,
     {
         let mut current_len = 0;
@@ -71,33 +67,28 @@ pub trait TransitionSystem: Clone + Send + Sync {
             if let Some(publisher) = publisher.as_mut() {
                 publisher.publish(&action, time, &state);
             }
-            if assumes
-                .iter_mut()
-                .map(|o| o.update(&action, &state, time))
-                .all(|b| b)
-            {
-                if guarantees
-                    .iter_mut()
-                    .map(|o| o.update(&action, &state, time))
-                    .all(|b| b)
-                {
+            oracle = oracle.update(&action, &state, time);
+            match oracle.output() {
+                Some(true) => {
                     if current_len >= length {
                         if let Some(publisher) = publisher {
                             publisher.finalize(None);
                         }
                         return None;
                     }
-                } else {
+                }
+                Some(false) => {
                     if let Some(publisher) = publisher {
                         publisher.finalize(Some(false));
                     }
                     return Some(false);
                 }
-            } else {
-                if let Some(publisher) = publisher {
-                    publisher.finalize(None);
+                None => {
+                    if let Some(publisher) = publisher {
+                        publisher.finalize(None);
+                    }
+                    return None;
                 }
-                return None;
             }
         }
         if let Some(publisher) = publisher {
@@ -106,10 +97,10 @@ pub trait TransitionSystem: Clone + Send + Sync {
         Some(true)
     }
 
-    fn par_adaptive<O, P>(
+    fn par_adaptive<P>(
         &self,
-        guarantees: &[O],
-        assumes: &[O],
+        guarantees: &[Pmtl<Atom<Self::Action>>],
+        assumes: &[Pmtl<Atom<Self::Action>>],
         confidence: f64,
         precision: f64,
         length: usize,
@@ -118,9 +109,9 @@ pub trait TransitionSystem: Clone + Send + Sync {
         f: Arc<AtomicU32>,
         publisher: Option<P>,
     ) where
-        O: Oracle<Self::Action> + Clone + Send + Sync,
         P: Publisher<Self::Action> + Clone + Send + Sync,
     {
+        let oracle = PmtlOracle::new(assumes, guarantees);
         // WARN FIXME TODO: Implement algorithm for 2.4 Distributed sample generation in Budde et al.
         (0..usize::MAX)
             .into_par_iter()
@@ -129,8 +120,7 @@ pub trait TransitionSystem: Clone + Send + Sync {
                 let local_s;
                 let local_f;
                 if let Some(result) = self.clone().experiment(
-                    Vec::from(guarantees),
-                    Vec::from(assumes),
+                    oracle.clone(),
                     publisher.clone(),
                     length,
                     max_time,

@@ -60,20 +60,8 @@ impl Cli {
             std::fs::create_dir("./traces/undetermined").expect("create undetermined dir");
         }
         scxml_model.model.par_adaptive(
-            &Vec::from_iter(
-                scxml_model
-                    .guarantees
-                    .iter()
-                    .cloned()
-                    .map(StateValuationVector::new),
-            ),
-            &Vec::from_iter(
-                scxml_model
-                    .assumes
-                    .iter()
-                    .cloned()
-                    .map(StateValuationVector::new),
-            ),
+            &scxml_model.guarantees,
+            &scxml_model.assumes,
             confidence,
             precision,
             self.length,
