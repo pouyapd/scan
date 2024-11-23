@@ -535,162 +535,199 @@ impl<V: std::fmt::Debug + Clone + Eq + Hash> PmtlOracle<V> {
 mod tests {
     use super::*;
 
-    // #[test]
-    // fn subformulae_1() {
-    //     let subformulae: Vec<IdxPmtl<usize>> =
-    //         Pmtl::Since(Box::new((Pmtl::True, Pmtl::True)), 0, Time::MAX).subformulae();
-    //     assert_eq!(
-    //         subformulae,
-    //         vec![
-    //             (Arc::new(ArcPmtl::True), 0),
-    //             (
-    //                 Arc::new(ArcPmtl::Since(
-    //                     (Arc::new(ArcPmtl::True), 0),
-    //                     (Arc::new(ArcPmtl::True), 0),
-    //                     0,
-    //                     Time::MAX
-    //                 )),
-    //                 1
-    //             ),
-    //         ]
-    //     );
-    // }
+    #[test]
+    fn subformulae_1() {
+        let subformulae: Vec<ArcPmtl<usize>> = subformulae(
+            Pmtl::Since(Box::new((Pmtl::True, Pmtl::True)), 0, Time::MAX).set_subformulae(),
+        );
+        assert_eq!(
+            subformulae,
+            vec![
+                ArcPmtl::True,
+                ArcPmtl::Since(
+                    (Arc::new(ArcPmtl::True), 0),
+                    (Arc::new(ArcPmtl::True), 0),
+                    0,
+                    Time::MAX
+                ),
+            ]
+        );
+    }
 
-    // #[test]
-    // fn subformulae_2() {
-    //     let subformulae: Vec<IdxPmtl<usize>> =
-    //         Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(0))), 0, Time::MAX).subformulae();
-    //     assert_eq!(
-    //         subformulae,
-    //         vec![
-    //             (Arc::new(ArcPmtl::Atom(0)), 0),
-    //             (
-    //                 Arc::new(ArcPmtl::Since(
-    //                     (Arc::new(ArcPmtl::Atom(0)), 0),
-    //                     (Arc::new(ArcPmtl::Atom(0)), 0),
-    //                     0,
-    //                     Time::MAX
-    //                 )),
-    //                 1
-    //             ),
-    //         ]
-    //     );
-    // }
+    #[test]
+    fn subformulae_2() {
+        let subformulae: Vec<ArcPmtl<usize>> = subformulae(
+            Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(0))), 0, Time::MAX).set_subformulae(),
+        );
+        assert_eq!(
+            subformulae,
+            vec![
+                ArcPmtl::Atom(0),
+                ArcPmtl::Since(
+                    (Arc::new(ArcPmtl::Atom(0)), 0),
+                    (Arc::new(ArcPmtl::Atom(0)), 0),
+                    0,
+                    Time::MAX
+                ),
+            ]
+        );
+    }
 
-    // #[test]
-    // fn subformulae_3() {
-    //     let subformulae: Vec<IdxPmtl<usize>> = Pmtl::And(vec![
-    //         Pmtl::Atom(0),
-    //         Pmtl::Not(Arc::new(Pmtl::Atom(0))),
-    //         Pmtl::True,
-    //     ])
-    //     .subformulae();
-    //     assert_eq!(subformulae.len(), 4);
-    //     assert!(matches!(subformulae[0], IdxPmtl::Atom(0) | IdxPmtl::True));
-    //     assert!(matches!(subformulae[1], IdxPmtl::Atom(0) | IdxPmtl::True));
-    //     assert_eq!(subformulae[2], Pmtl::Not(Arc::new(Pmtl::Atom(0))));
-    // }
+    #[test]
+    fn subformulae_3() {
+        let subformulae: Vec<ArcPmtl<usize>> = subformulae(
+            Pmtl::And(vec![
+                Pmtl::Atom(0),
+                Pmtl::Not(Box::new(Pmtl::Atom(0))),
+                Pmtl::True,
+            ])
+            .set_subformulae(),
+        );
+        assert_eq!(subformulae.len(), 4);
+        assert!(matches!(subformulae[0], ArcPmtl::Atom(0) | ArcPmtl::True));
+        assert!(matches!(subformulae[1], ArcPmtl::Atom(0) | ArcPmtl::True));
+        assert!(matches!(subformulae[2], ArcPmtl::Not((_, 0 | 1))));
+    }
 
-    // #[test]
-    // fn since_1() {
-    //     let formula = Pmtl::Since(
-    //         Box::new((
-    //             Pmtl::Atom(Atom::Predicate(0)),
-    //             Pmtl::Atom(Atom::Predicate(1)),
-    //         )),
-    //         0,
-    //         Time::MAX,
-    //     );
-    //     let mut state = StateValuationVector::new(formula);
-    //     assert!(!state.update(&0, &[false, true], 0));
-    //     assert!(!state.update(&0, &[false, true], 1));
-    //     assert!(state.update(&0, &[true, true], 2));
-    //     assert!(state.update(&0, &[true, true], 3));
-    //     assert!(state.update(&0, &[true, false], 4));
-    //     assert!(!state.update(&0, &[false, false], 5));
-    // }
+    #[test]
+    fn since_1() {
+        let formula = Pmtl::Since(
+            Box::new((
+                Pmtl::Atom(Atom::Predicate(0)),
+                Pmtl::Atom(Atom::Predicate(1)),
+            )),
+            0,
+            Time::MAX,
+        );
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false, true], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, true], 2);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, true], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 4);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false, false], 5);
+        assert!(!state.output().unwrap());
+    }
 
-    // #[test]
-    // fn since_2() {
-    //     let formula = Pmtl::Since(
-    //         Box::new((
-    //             Pmtl::Atom(Atom::Predicate(0)),
-    //             Pmtl::Atom(Atom::Predicate(1)),
-    //         )),
-    //         0,
-    //         2,
-    //     );
-    //     let mut state = StateValuationVector::new(formula);
-    //     assert!(!state.update(&0, &[false, true], 0));
-    //     assert!(!state.update(&0, &[false, true], 1));
-    //     assert!(state.update(&0, &[true, true], 2));
-    //     assert!(state.update(&0, &[true, false], 3));
-    //     assert!(state.update(&0, &[true, false], 4));
-    //     assert!(!state.update(&0, &[true, false], 5));
-    // }
+    #[test]
+    fn since_2() {
+        let formula = Pmtl::Since(
+            Box::new((
+                Pmtl::Atom(Atom::Predicate(0)),
+                Pmtl::Atom(Atom::Predicate(1)),
+            )),
+            0,
+            2,
+        );
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false, true], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, true], 2);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 4);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 5);
+        assert!(!state.output().unwrap());
+    }
 
-    // #[test]
-    // fn since_3() {
-    //     let formula = Pmtl::Since(
-    //         Box::new((
-    //             Pmtl::Atom(Atom::Predicate(0)),
-    //             Pmtl::Atom(Atom::Predicate(1)),
-    //         )),
-    //         1,
-    //         2,
-    //     );
-    //     let mut state = StateValuationVector::new(formula);
-    //     assert!(!state.update(&0, &[false, true], 0));
-    //     assert!(!state.update(&0, &[false, true], 1));
-    //     assert!(state.update(&0, &[true, true], 2));
-    //     assert!(state.update(&0, &[true, false], 3));
-    //     assert!(state.update(&0, &[true, false], 4));
-    //     assert!(!state.update(&0, &[true, false], 5));
-    // }
+    #[test]
+    fn since_3() {
+        let formula = Pmtl::Since(
+            Box::new((
+                Pmtl::Atom(Atom::Predicate(0)),
+                Pmtl::Atom(Atom::Predicate(1)),
+            )),
+            1,
+            2,
+        );
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false, true], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, true], 2);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 4);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 5);
+        assert!(!state.output().unwrap());
+    }
 
-    // #[test]
-    // fn since_4() {
-    //     let formula = Pmtl::Since(
-    //         Box::new((
-    //             Pmtl::Atom(Atom::Predicate(0)),
-    //             Pmtl::Atom(Atom::Predicate(1)),
-    //         )),
-    //         1,
-    //         2,
-    //     );
-    //     let mut state = StateValuationVector::new(formula);
-    //     assert!(!state.update(&0, &[false, true], 0));
-    //     assert!(!state.update(&0, &[false, true], 1));
-    //     assert!(!state.update(&0, &[false, true], 2));
-    //     assert!(!state.update(&0, &[true, true], 2));
-    //     assert!(state.update(&0, &[true, false], 3));
-    //     assert!(state.update(&0, &[true, false], 4));
-    //     assert!(!state.update(&0, &[true, false], 5));
-    // }
+    #[test]
+    fn since_4() {
+        let formula = Pmtl::Since(
+            Box::new((
+                Pmtl::Atom(Atom::Predicate(0)),
+                Pmtl::Atom(Atom::Predicate(1)),
+            )),
+            1,
+            2,
+        );
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false, true], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 2);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, true], 2);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 4);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 5);
+        assert!(!state.output().unwrap());
+    }
 
-    // #[test]
-    // fn historically() {
-    //     let formula = Pmtl::Historically(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
-    //     let mut state = StateValuationVector::new(formula);
-    //     assert!(state.update(&0, &[false], 0));
-    //     assert!(state.update(&0, &[false], 0));
-    //     assert!(!state.update(&0, &[true], 1));
-    //     assert!(!state.update(&0, &[true], 2));
-    //     assert!(state.update(&0, &[true], 3));
-    //     assert!(state.update(&0, &[false], 3));
-    //     assert!(!state.update(&0, &[true], 4));
-    // }
+    #[test]
+    fn historically() {
+        let formula = Pmtl::Historically(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false], 0);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 0);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true], 2);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true], 4);
+        assert!(!state.output().unwrap());
+    }
 
-    // #[test]
-    // fn previously() {
-    //     let formula = Pmtl::Previously(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
-    //     let mut state = StateValuationVector::new(formula);
-    //     assert!(!state.update(&0, &[false], 0));
-    //     assert!(!state.update(&0, &[false], 0));
-    //     assert!(state.update(&0, &[true], 1));
-    //     assert!(state.update(&0, &[false], 2));
-    //     assert!(state.update(&0, &[false], 3));
-    //     assert!(state.update(&0, &[false], 3));
-    //     assert!(state.update(&0, &[true], 4));
-    // }
+    #[test]
+    fn previously() {
+        let formula = Pmtl::Previously(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true], 1);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 2);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true], 4);
+        assert!(state.output().unwrap());
+    }
 }
