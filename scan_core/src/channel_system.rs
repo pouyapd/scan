@@ -260,8 +260,12 @@ impl ChannelSystemDef {
         let higher = self.communications_pg_idxs[pg_id.0 + 1];
         let lower = self.communications_pg_idxs[pg_id.0];
         (self.communications[lower..higher])
-            .iter()
-            .find_map(|(a, c, m)| (*a == pg_action).then_some((*c, *m)))
+            .binary_search_by_key(&pg_action, |(a, _, _)| *a)
+            .map(|i| {
+                let (_, c, m) = self.communications[lower + i];
+                (c, m)
+            })
+            .ok()
     }
 }
 
