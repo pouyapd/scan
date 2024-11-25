@@ -95,9 +95,9 @@
 mod builder;
 // use ahash::AHashMap as HashMap;
 pub use builder::*;
-use hashbrown::HashMap;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use smallvec::SmallVec;
 
 use crate::program_graph::{
     Action as PgAction, Clock as PgClock, Location as PgLocation, Var as PgVar, *,
@@ -111,7 +111,7 @@ use thiserror::Error;
 ///
 /// These cannot be directly created or manipulated,
 /// but have to be generated and/or provided by a [`ChannelSystemBuilder`] or [`ChannelSystem`].
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PgId(pub usize);
 
 impl From<PgId> for usize {
@@ -138,7 +138,7 @@ pub struct Location(PgId, PgLocation);
 ///
 /// These cannot be directly created or manipulated,
 /// but have to be generated and/or provided by a [`ChannelSystemBuilder`] or [`ChannelSystem`].
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Action(PgId, PgAction);
 
 /// An indexing object for typed variables in a CS.
@@ -245,6 +245,26 @@ pub enum EventType {
     ProbeFullQueue,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChannelSystemDef {
+    channels: Vec<(Type, Option<usize>)>,
+    communications: Vec<(PgAction, Channel, Message)>,
+    communications_pg_idxs: Vec<usize>,
+}
+
+impl ChannelSystemDef {
+    #[inline(always)]
+    fn communication(&self, action: Action) -> Option<(Channel, Message)> {
+        let pg_id = action.0;
+        let pg_action = action.1;
+        let higher = self.communications_pg_idxs[pg_id.0 + 1];
+        let lower = self.communications_pg_idxs[pg_id.0];
+        (self.communications[lower..higher])
+            .iter()
+            .find_map(|(a, c, m)| (*a == pg_action).then_some((*c, *m)))
+    }
+}
+
 /// Representation of a CS that can be executed transition-by-transition.
 ///
 /// The structure of the CS cannot be changed,
@@ -259,9 +279,8 @@ pub enum EventType {
 pub struct ChannelSystem {
     time: Time,
     program_graphs: Vec<ProgramGraph>,
-    channels: Arc<Vec<(Type, Option<usize>)>>,
-    communications: Arc<HashMap<Action, (Channel, Message)>>,
     message_queue: Vec<VecDeque<Val>>,
+    def: Arc<ChannelSystemDef>,
 }
 
 impl ChannelSystem {
@@ -286,7 +305,7 @@ impl ChannelSystem {
                 pg.possible_transitions().filter_map(move |(action, post)| {
                     let action = Action(pg_id, action);
                     let post = Location(pg_id, post);
-                    if self.communications.contains_key(&action)
+                    if self.def.communication(action).is_some()
                         && self.check_communication(pg_id, action).is_err()
                     {
                         None
@@ -297,28 +316,27 @@ impl ChannelSystem {
             })
     }
 
-    pub(crate) fn monaco_execution<R: Rng>(
+    pub(crate) fn montecarlo_execution<R: Rng>(
         &mut self,
         rng: &mut R,
         duration: Time,
     ) -> Option<Event> {
-        let pg_list = Vec::from_iter((0..self.program_graphs.len()).map(PgId));
-        let mut shuffle = pg_list.to_owned();
+        let mut pg_list = Vec::from_iter((0..self.program_graphs.len()).map(PgId));
+        let mut possible_transitions: SmallVec<[_; 16]>;
         while self.time <= duration {
             while self.possible_transitions().any(|_| true) {
-                shuffle.shuffle(rng);
-                for &pg_id in &shuffle {
-                    let mut possible_transitions = self.program_graphs[pg_id.0]
+                pg_list.shuffle(rng);
+                for &pg_id in &pg_list {
+                    possible_transitions = self.program_graphs[pg_id.0]
                         .possible_transitions()
-                        .collect::<Vec<_>>();
+                        .collect::<SmallVec<[_; 16]>>();
                     possible_transitions.shuffle(rng);
                     while let Some((action, post)) = possible_transitions.pop() {
                         let cs_action = Action(pg_id, action);
-                        if self.communications.contains_key(&cs_action) {
+                        if self.def.communication(cs_action).is_some() {
                             if self.check_communication(pg_id, cs_action).is_ok() {
-                                let cs_post = Location(pg_id, post);
                                 let event = self
-                                    .transition(pg_id, cs_action, cs_post)
+                                    .transition(pg_id, cs_action, Location(pg_id, post))
                                     .expect("successful transition");
                                 assert!(event.is_some(), "must be a communication event");
                                 return event;
@@ -331,7 +349,7 @@ impl ChannelSystem {
                                 .expect("success");
                             possible_transitions = self.program_graphs[pg_id.0]
                                 .possible_transitions()
-                                .collect::<Vec<_>>();
+                                .collect::<SmallVec<_>>();
                             possible_transitions.shuffle(rng);
                         }
                     }
@@ -343,29 +361,31 @@ impl ChannelSystem {
     }
 
     fn check_communication(&self, pg_id: PgId, action: Action) -> Result<(), CsError> {
-        if action.0 != pg_id {
+        if pg_id.0 >= self.program_graphs.len() {
+            Err(CsError::MissingPg(pg_id))
+        } else if action.0 != pg_id {
             Err(CsError::ActionNotInPg(action, pg_id))
-        } else if let Some((channel, message)) = self.communications.get(&action) {
-            let (_, capacity) = self.channels[channel.0];
+        } else if let Some((channel, message)) = self.def.communication(action) {
+            let (_, capacity) = self.def.channels[channel.0];
             let queue = &self.message_queue[channel.0];
             // Channel capacity must never be exeeded!
             assert!(capacity.is_none() || capacity.is_some_and(|cap| queue.len() <= cap));
             match message {
                 Message::Send if capacity.is_some_and(|cap| queue.len() >= cap) => {
-                    Err(CsError::OutOfCapacity(*channel))
+                    Err(CsError::OutOfCapacity(channel))
                 }
-                Message::Receive if queue.is_empty() => Err(CsError::Empty(*channel)),
+                Message::Receive if queue.is_empty() => Err(CsError::Empty(channel)),
                 Message::ProbeEmptyQueue | Message::ProbeFullQueue
                     if matches!(capacity, Some(0)) =>
                 {
-                    Err(CsError::ProbingHandshakeQueue(*channel))
+                    Err(CsError::ProbingHandshakeQueue(channel))
                 }
                 Message::ProbeFullQueue if capacity.is_none() => {
-                    Err(CsError::ProbingInfiniteQueue(*channel))
+                    Err(CsError::ProbingInfiniteQueue(channel))
                 }
-                Message::ProbeEmptyQueue if !queue.is_empty() => Err(CsError::NotEmpty(*channel)),
+                Message::ProbeEmptyQueue if !queue.is_empty() => Err(CsError::NotEmpty(channel)),
                 Message::ProbeFullQueue if capacity.is_some_and(|cap| queue.len() < cap) => {
-                    Err(CsError::NotFull(*channel))
+                    Err(CsError::NotFull(channel))
                 }
                 _ => Ok(()),
             }
@@ -386,11 +406,13 @@ impl ChannelSystem {
         post: Location,
     ) -> Result<Option<Event>, CsError> {
         // If action is a communication, check it is legal
-        if action.0 != pg_id {
+        if pg_id.0 >= self.program_graphs.len() {
+            return Err(CsError::MissingPg(pg_id));
+        } else if action.0 != pg_id {
             return Err(CsError::ActionNotInPg(action, pg_id));
         } else if post.0 != pg_id {
             return Err(CsError::LocationNotInPg(post, pg_id));
-        } else if self.communications.contains_key(&action) {
+        } else if self.def.communication(action).is_some() {
             self.check_communication(pg_id, action)?;
         }
         // Transition the program graph
@@ -399,7 +421,7 @@ impl ChannelSystem {
             .get_mut(pg_id.0)
             .ok_or(CsError::MissingPg(pg_id))?;
         // If the action is a communication, send/receive the message
-        if let Some(&(channel, message)) = self.communications.get(&action) {
+        if let Some((channel, message)) = self.def.communication(action) {
             // communication has been verified before so there is a queue for channel.0
             let queue = &mut self.message_queue[channel.0];
             let event_type = match message {

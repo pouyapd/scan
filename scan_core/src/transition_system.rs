@@ -39,7 +39,11 @@ pub trait TransitionSystem: Clone + Send + Sync {
     /// The transition relation relates [`Self::Action`]s and post-states that constitutes possible transitions from the current state.
     // fn transitions(self) -> Vec<(Self::Action, Self)>;
 
-    fn monaco_transition<R: Rng>(&mut self, rng: &mut R, max_time: Time) -> Option<Self::Action>;
+    fn montecarlo_transition<R: Rng>(
+        &mut self,
+        rng: &mut R,
+        max_time: Time,
+    ) -> Option<Self::Action>;
 
     fn time(&self) -> Time {
         0
@@ -60,7 +64,7 @@ pub trait TransitionSystem: Clone + Send + Sync {
         if let Some(publisher) = publisher.as_mut() {
             publisher.init();
         }
-        while let Some(action) = self.monaco_transition(rng, duration) {
+        while let Some(action) = self.montecarlo_transition(rng, duration) {
             current_len += 1;
             let state = self.labels();
             let time = self.time();
@@ -116,6 +120,7 @@ pub trait TransitionSystem: Clone + Send + Sync {
         (0..usize::MAX)
             .into_par_iter()
             .take_any_while(|_| {
+                // .take_while(|_| {
                 let mut rng = rand::thread_rng();
                 let local_s;
                 let local_f;

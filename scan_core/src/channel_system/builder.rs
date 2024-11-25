@@ -2,6 +2,7 @@ use super::{
     Action, Channel, ChannelSystem, Clock, CsError, Location, Message, PgError, PgExpression, PgId,
     ProgramGraph, ProgramGraphBuilder, TimeConstraint, Var,
 };
+use crate::channel_system::ChannelSystemDef;
 use crate::grammar::Type;
 use crate::Expression;
 // use ahash::AHashMap as HashMap;
@@ -575,7 +576,6 @@ impl ChannelSystemBuilder {
             self.program_graphs.len(),
             self.channels.len(),
         );
-        self.program_graphs.shrink_to_fit();
         let mut program_graphs: Vec<ProgramGraph> = self
             .program_graphs
             .into_iter()
@@ -584,7 +584,31 @@ impl ChannelSystemBuilder {
 
         program_graphs.shrink_to_fit();
         self.channels.shrink_to_fit();
-        self.communications.shrink_to_fit();
+        let mut communications_map = Vec::from_iter(self.communications);
+        communications_map.sort_unstable_by_key(|(a, _)| *a);
+        let mut communications = Vec::with_capacity(communications_map.len());
+        let mut communications_pg_idxs = Vec::with_capacity(program_graphs.len() + 1);
+        communications_pg_idxs.push(0);
+        let mut current_pg = 0usize;
+        let mut counter = 0usize;
+        let mut prev_counter = 0usize;
+        for (action, (c, m)) in communications_map.into_iter() {
+            communications.push((action.1, c, m));
+            let pg_id = action.0;
+            if pg_id.0 != current_pg {
+                communications_pg_idxs
+                    .extend((0..(pg_id.0 - current_pg - 1)).map(|_| prev_counter));
+                communications_pg_idxs.push(counter);
+                current_pg = pg_id.0;
+                prev_counter = counter;
+            }
+            counter += 1;
+        }
+        communications_pg_idxs
+            .extend((0..(program_graphs.len() - 1 - current_pg)).map(|_| prev_counter));
+        communications_pg_idxs.push(counter);
+        assert_eq!(communications_pg_idxs.len(), program_graphs.len() + 1);
+
         let message_queue = self
             .channels
             .iter()
@@ -597,12 +621,17 @@ impl ChannelSystemBuilder {
             })
             .collect();
 
+        let def = ChannelSystemDef {
+            channels: self.channels,
+            communications,
+            communications_pg_idxs,
+        };
+
         ChannelSystem {
             time: 0,
             program_graphs,
-            communications: Arc::new(self.communications),
             message_queue,
-            channels: Arc::new(self.channels),
+            def: Arc::new(def),
         }
     }
 }
