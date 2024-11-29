@@ -36,7 +36,7 @@ pub trait TransitionSystem: Clone + Send + Sync {
     // TODO FIXME: bitset instead of Vec<bool>?
     fn labels(&self) -> Vec<bool>;
 
-    /// The transition relation relates [`Self::Action`]s and post-states that constitutes possible transitions from the current state.
+    // The transition relation relates [`Self::Action`]s and post-states that constitutes possible transitions from the current state.
     // fn transitions(self) -> Vec<(Self::Action, Self)>;
 
     fn montecarlo_transition<R: Rng>(
@@ -49,21 +49,24 @@ pub trait TransitionSystem: Clone + Send + Sync {
         0
     }
 
-    fn experiment<P, R: Rng>(
+    fn experiment<P>(
         mut self,
         mut oracle: PmtlOracle<Self::Action>,
         mut publisher: Option<P>,
         length: usize,
         duration: Time,
-        rng: &mut R,
     ) -> Option<bool>
     where
         P: Publisher<Self::Action>,
     {
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
         let mut current_len = 0;
         if let Some(publisher) = publisher.as_mut() {
             publisher.init();
         }
+        let rng = &mut SmallRng::from_entropy();
         while let Some(action) = self.montecarlo_transition(rng, duration) {
             current_len += 1;
             let state = self.labels();
@@ -121,16 +124,12 @@ pub trait TransitionSystem: Clone + Send + Sync {
             .into_par_iter()
             .take_any_while(|_| {
                 // .take_while(|_| {
-                let mut rng = rand::thread_rng();
                 let local_s;
                 let local_f;
-                if let Some(result) = self.clone().experiment(
-                    oracle.clone(),
-                    publisher.clone(),
-                    length,
-                    max_time,
-                    &mut rng,
-                ) {
+                if let Some(result) =
+                    self.clone()
+                        .experiment(oracle.clone(), publisher.clone(), length, max_time)
+                {
                     if result {
                         // If all guarantees are satisfied, the execution is successful
                         local_s = s.fetch_add(1, Ordering::Relaxed) + 1;

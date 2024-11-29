@@ -506,7 +506,7 @@ impl ModelBuilder {
                 pg_id,
                 set_int_origin,
                 origin_var,
-                CsExpression::from(usize::from(pg_id) as Integer),
+                CsExpression::from(u16::from(pg_id) as Integer),
             )
             .expect("hand-coded args");
         // Implement external queue
@@ -703,7 +703,7 @@ impl ModelBuilder {
                             CsExpression::Var(current_event_var, Type::Integer),
                         ))),
                         CsExpression::Equal(Box::new((
-                            CsExpression::from(usize::from(sender_id) as Integer),
+                            CsExpression::from(u16::from(sender_id) as Integer),
                             CsExpression::Var(origin_var, Type::Integer),
                         ))),
                     ]);
@@ -966,7 +966,7 @@ impl ModelBuilder {
                                 .ok_or(anyhow!(format!("target {target} not found")))?;
                             targets = vec![target_builder.pg_id];
                             target_expr = Some(CsExpression::from(
-                                usize::from(target_builder.pg_id) as Integer,
+                                u16::from(target_builder.pg_id) as Integer
                             ));
                         }
                         Target::Expr(targetexpr) => {
@@ -987,7 +987,7 @@ impl ModelBuilder {
                                 target_ext_queue,
                                 CsExpression::Tuple(vec![
                                     CsExpression::from(event_idx as Integer),
-                                    CsExpression::from(usize::from(pg_id) as Integer),
+                                    CsExpression::from(u16::from(pg_id) as Integer),
                                 ]),
                             )
                             .expect("params are hard-coded");
@@ -1002,7 +1002,7 @@ impl ModelBuilder {
                                 next_loc,
                                 target_expr.as_ref().map(|target_expr| {
                                     CsExpression::Equal(Box::new((
-                                        CsExpression::from(usize::from(target_id) as Integer),
+                                        CsExpression::from(u16::from(target_id) as Integer),
                                         target_expr.to_owned(),
                                     )))
                                 }),
@@ -1527,7 +1527,7 @@ impl ModelBuilder {
                         channel,
                         event_type: EventType::Send(Val::Tuple(vec![
                             Val::Integer(event_id as Integer),
-                            Val::Integer(Into::<usize>::into(origin) as Integer),
+                            Val::Integer(u16::from(origin) as Integer),
                         ])),
                     }),
                 );
@@ -1684,7 +1684,7 @@ impl ModelBuilder {
             fsm_indexes: self
                 .fsm_builders
                 .into_iter()
-                .map(|(name, b)| (usize::from(b.pg_id), name))
+                .map(|(name, b)| (u16::from(b.pg_id) as usize, name))
                 .collect(),
             predicates,
         }
