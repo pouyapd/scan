@@ -299,14 +299,8 @@ impl ProgramGraphBuilder {
                 .and_modify(|previous_guard| {
                     if let Some(previous_guard) = previous_guard.as_mut() {
                         if let Some(guard) = guard.clone() {
-                            if let PgExpression::Or(exprs) = previous_guard {
-                                exprs.push(guard.to_owned());
-                            } else {
-                                *previous_guard = PgExpression::Or(vec![
-                                    previous_guard.to_owned(),
-                                    guard.to_owned(),
-                                ]);
-                            }
+                            *previous_guard =
+                                PgExpression::or(vec![previous_guard.clone(), guard.clone()]);
                         }
                     } else {
                         *previous_guard = guard.clone()
@@ -356,7 +350,7 @@ impl ProgramGraphBuilder {
                 lower_bound.into_iter().chain(upper_bound)
             });
 
-        let guard = PgExpression::And(time_constraints.chain(guard).collect());
+        let guard = PgExpression::and(time_constraints.chain(guard).collect());
 
         self.add_transition(pre, action, post, Some(guard))
     }

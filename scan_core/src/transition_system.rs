@@ -1,11 +1,10 @@
 use crate::{Pmtl, PmtlOracle, Time};
-use log::info;
+use log::{info, trace};
 use rand::prelude::*;
 use rayon::prelude::*;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Atom<A: Clone + PartialEq + Eq> {
@@ -55,6 +54,7 @@ pub trait TransitionSystem: Clone + Send + Sync {
         mut publisher: Option<P>,
         length: usize,
         duration: Time,
+        run_state: Arc<Mutex<(u32, u32, bool)>>,
     ) -> Option<bool>
     where
         P: Publisher<Self::Action>,
@@ -63,10 +63,11 @@ pub trait TransitionSystem: Clone + Send + Sync {
         use rand::SeedableRng;
 
         let mut current_len = 0;
+        let rng = &mut SmallRng::from_entropy();
         if let Some(publisher) = publisher.as_mut() {
             publisher.init();
         }
-        let rng = &mut SmallRng::from_entropy();
+        trace!("new run starting");
         while let Some(action) = self.montecarlo_transition(rng, duration) {
             current_len += 1;
             let state = self.labels();
@@ -78,6 +79,7 @@ pub trait TransitionSystem: Clone + Send + Sync {
             match oracle.output() {
                 Some(true) => {
                     if current_len >= length {
+                        trace!("run exceeds maximum lenght");
                         if let Some(publisher) = publisher {
                             publisher.finalize(None);
                         }
@@ -85,19 +87,28 @@ pub trait TransitionSystem: Clone + Send + Sync {
                     }
                 }
                 Some(false) => {
+                    trace!("run fails");
                     if let Some(publisher) = publisher {
                         publisher.finalize(Some(false));
                     }
                     return Some(false);
                 }
                 None => {
+                    trace!("run undetermined");
                     if let Some(publisher) = publisher {
                         publisher.finalize(None);
                     }
                     return None;
                 }
             }
+            if !run_state.lock().expect("lock state").2 {
+                if let Some(publisher) = publisher {
+                    publisher.finalize(None);
+                }
+                return None;
+            }
         }
+        trace!("run succeeds");
         if let Some(publisher) = publisher {
             publisher.finalize(Some(true));
         }
@@ -111,50 +122,52 @@ pub trait TransitionSystem: Clone + Send + Sync {
         confidence: f64,
         precision: f64,
         length: usize,
-        max_time: Time,
-        s: Arc<AtomicU32>,
-        f: Arc<AtomicU32>,
+        duration: Time,
         publisher: Option<P>,
+        state: Arc<Mutex<(u32, u32, bool)>>,
     ) where
         P: Publisher<Self::Action> + Clone + Send + Sync,
     {
+        info!("verification starting");
         let oracle = PmtlOracle::new(assumes, guarantees);
         // WARN FIXME TODO: Implement algorithm for 2.4 Distributed sample generation in Budde et al.
         (0..usize::MAX)
             .into_par_iter()
             .take_any_while(|_| {
                 // .take_while(|_| {
-                let local_s;
-                let local_f;
-                if let Some(result) =
-                    self.clone()
-                        .experiment(oracle.clone(), publisher.clone(), length, max_time)
-                {
-                    if result {
-                        // If all guarantees are satisfied, the execution is successful
-                        local_s = s.fetch_add(1, Ordering::Relaxed) + 1;
-                        local_f = f.load(Ordering::Relaxed);
-                        info!("runs: {local_s} successes");
-                    } else {
-                        // If guarantee is violated, we have found a counter-example!
-                        local_s = s.load(Ordering::Relaxed);
-                        local_f = f.fetch_add(1, Ordering::Relaxed) + 1;
-                        info!("runs: {local_f} failures");
+                let result = self.clone().experiment(
+                    oracle.clone(),
+                    publisher.clone(),
+                    length,
+                    duration,
+                    state.clone(),
+                );
+                let (s, f, running) = &mut *state.lock().expect("lock state");
+                if *running {
+                    if let Some(result) = result {
+                        if result {
+                            *s += 1;
+                            // If all guarantees are satisfied, the execution is successful
+                            info!("runs: {s} successes");
+                        } else {
+                            *f += 1;
+                            // If guarantee is violated, we have found a counter-example!
+                            info!("runs: {f} failures");
+                        }
+                        let n = *s + *f;
+                        // Avoid division by 0
+                        let avg = if n == 0 { 0.5f64 } else { *s as f64 / n as f64 };
+                        if adaptive_bound(avg, confidence, precision) <= n as f64 {
+                            info!("adaptive bound satisfied");
+                            *running = false;
+                        }
                     }
-                } else {
-                    local_f = f.load(Ordering::Relaxed);
-                    local_s = s.load(Ordering::Relaxed);
                 }
-                let n = local_s + local_f;
-                // Avoid division by 0
-                let avg = if n == 0 {
-                    0.5f64
-                } else {
-                    local_s as f64 / n as f64
-                };
-                adaptive_bound(avg, confidence, precision) > n as f64
+                info!("returning {running} to iter");
+                *running
             })
             .count();
+        info!("verification terminating");
     }
 }
 

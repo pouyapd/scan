@@ -524,7 +524,7 @@ impl ChannelSystemBuilder {
             .ok_or(CsError::MissingChannel(channel))?;
         if matches!(cap, Some(0)) {
             // it makes no sense to probe an handshake channel
-            Err(CsError::ProbingHandshakeQueue(channel))
+            Err(CsError::ProbingHandshakeChannel(channel))
         } else {
             let action = self
                 .program_graphs
@@ -552,7 +552,7 @@ impl ChannelSystemBuilder {
             .ok_or(CsError::MissingChannel(channel))?;
         if matches!(cap, Some(0)) {
             // it makes no sense to probe an handshake channel
-            Err(CsError::ProbingHandshakeQueue(channel))
+            Err(CsError::ProbingHandshakeChannel(channel))
         } else if cap.is_none() {
             // it makes no sense to probe for fullness an handshake channel
             Err(CsError::ProbingInfiniteQueue(channel))
@@ -589,24 +589,24 @@ impl ChannelSystemBuilder {
         let mut communications = Vec::with_capacity(communications_map.len());
         let mut communications_pg_idxs = Vec::with_capacity(program_graphs.len() + 1);
         communications_pg_idxs.push(0);
-        let mut current_pg = 0u16;
-        let mut counter = 0u16;
-        let mut prev_counter = 0u16;
+        // PG we are counting the occurrences of, yet to be inserted
         for (action, (c, m)) in communications_map.into_iter() {
-            communications.push((action.1, c, m));
             let pg_id = action.0;
-            if pg_id.0 != current_pg {
+            if pg_id.0 != communications_pg_idxs.len() as u16 - 1 {
+                let last = *communications_pg_idxs.last().unwrap();
                 communications_pg_idxs
-                    .extend((0..(pg_id.0 - current_pg - 1)).map(|_| prev_counter));
-                communications_pg_idxs.push(counter);
-                current_pg = pg_id.0;
-                prev_counter = counter;
+                    .extend((0..(pg_id.0 - communications_pg_idxs.len() as u16)).map(|_| last));
+                communications_pg_idxs.push(communications.len() as u16);
+                assert_eq!(communications_pg_idxs.len() as u16, pg_id.0 + 1);
             }
-            counter += 1;
+            communications.push((action.1, c, m));
         }
-        communications_pg_idxs
-            .extend((0..(program_graphs.len() as u16 - 1 - current_pg)).map(|_| prev_counter));
-        communications_pg_idxs.push(counter);
+        communications_pg_idxs.push(communications.len() as u16);
+        let last = *communications_pg_idxs.last().unwrap();
+        communications_pg_idxs.extend(
+            (0..(program_graphs.len() as u16 + 1 - communications_pg_idxs.len() as u16))
+                .map(|_| last),
+        );
         assert_eq!(communications_pg_idxs.len(), program_graphs.len() + 1);
 
         let message_queue = self

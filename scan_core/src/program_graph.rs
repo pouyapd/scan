@@ -274,19 +274,31 @@ impl ProgramGraph {
                 }) {
                     if let Ok(Some(time_invariant)) = self.def.guard(*post_state, WAIT, *post_state)
                     {
-                        let mut vars = self.vars.clone();
+                        // If action has effects
                         if *action != EPSILON {
                             if let FnEffect::Effects(ref effects) =
                                 self.def.effects[action.0 as usize]
                             {
-                                for (var, effect) in effects {
-                                    vars[var.0 as usize] =
-                                        effect.eval(&|var| vars[var.0 as usize].clone());
+                                if !effects.is_empty() {
+                                    // Avoid cloning variables unless it is absolutley necessary
+                                    let mut vars = self.vars.clone();
+                                    for (var, effect) in effects {
+                                        vars[var.0 as usize] =
+                                            effect.eval(&|var| vars[var.0 as usize].clone());
+                                    }
+                                    if let Val::Boolean(pass) = time_invariant
+                                        .eval(&move |var| vars[var.0 as usize].clone())
+                                    {
+                                        return pass.then_some((*action, *post_state));
+                                    } else {
+                                        panic!("guard is not a boolean");
+                                    }
                                 }
                             }
                         }
+                        // If action has no effects
                         if let Val::Boolean(pass) =
-                            time_invariant.eval(&move |var| vars[var.0 as usize].clone())
+                            time_invariant.eval(&|var| self.vars[var.0 as usize].clone())
                         {
                             pass.then_some((*action, *post_state))
                         } else {
@@ -332,12 +344,16 @@ impl ProgramGraph {
             return Err(PgError::UnsatisfiedGuard);
         } else if let Ok(Some(time_invariant)) = self.def.guard(post_state, WAIT, post_state) {
             let mut backup = Vec::with_capacity(self.vars.len());
+            // If action has effects
             if action != EPSILON {
                 if let FnEffect::Effects(ref effects) = self.def.effects[action.0 as usize] {
-                    backup = self.vars.clone();
-                    for (var, effect) in effects {
-                        self.vars[var.0 as usize] =
-                            effect.eval(&|var| self.vars[var.0 as usize].clone());
+                    if !effects.is_empty() {
+                        // Clone only if necessary
+                        backup = self.vars.clone();
+                        for (var, effect) in effects {
+                            self.vars[var.0 as usize] =
+                                effect.eval(&|var| self.vars[var.0 as usize].clone());
+                        }
                     }
                 } else {
                     return Err(PgError::Communication(action));
@@ -348,7 +364,8 @@ impl ProgramGraph {
                 time_invariant.eval(&|var| self.vars[var.0 as usize].clone())
             {
                 if !pass {
-                    if action != EPSILON {
+                    // Backup is unused if empty
+                    if action != EPSILON && !backup.is_empty() {
                         self.vars = backup;
                     }
                     return Err(PgError::UnsatisfiedGuard);

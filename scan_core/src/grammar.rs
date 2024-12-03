@@ -338,11 +338,147 @@ where
             }
         }
     }
+
+    pub fn and(args: Vec<Self>) -> Self {
+        match args.len() {
+            0 => Expression::Const(Val::Boolean(true)),
+            1 => args[0].clone(),
+            _ => {
+                let mut subformulae = Vec::new();
+                for subformula in args.into_iter() {
+                    if let Expression::And(subs) = subformula {
+                        subformulae.extend(subs);
+                    } else {
+                        subformulae.push(subformula);
+                    }
+                }
+                Expression::And(subformulae)
+            }
+        }
+    }
+
+    pub fn or(args: Vec<Self>) -> Self {
+        match args.len() {
+            0 => Expression::Const(Val::Boolean(false)),
+            1 => args[0].clone(),
+            _ => {
+                let mut subformulae = Vec::new();
+                for subformula in args.into_iter() {
+                    if let Expression::Or(subs) = subformula {
+                        subformulae.extend(subs);
+                    } else {
+                        subformulae.push(subformula);
+                    }
+                }
+                Expression::Or(subformulae)
+            }
+        }
+    }
+
+    pub fn component(self, index: usize) -> Self {
+        if let Expression::Tuple(args) = self {
+            args[index].clone()
+        } else {
+            Expression::Component(index, Box::new(self))
+        }
+    }
+}
+
+impl<V> std::ops::Not for Expression<V>
+where
+    V: Clone,
+{
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        if let Expression::Not(sub) = self {
+            *sub
+        } else {
+            Expression::Not(Box::new(self))
+        }
+    }
+}
+
+impl<V> std::ops::Neg for Expression<V>
+where
+    V: Clone,
+{
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        if let Expression::Opposite(sub) = self {
+            *sub
+        } else {
+            Expression::Opposite(Box::new(self))
+        }
+    }
+}
+
+impl<V> std::ops::Add for Expression<V>
+where
+    V: Clone,
+{
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let mut subformulae = Vec::new();
+        if let Expression::Sum(subs) = self {
+            subformulae.extend(subs);
+        } else {
+            subformulae.push(self);
+        }
+        if let Expression::Sum(subs) = rhs {
+            subformulae.extend(subs);
+        } else {
+            subformulae.push(rhs);
+        }
+        Expression::Sum(subformulae)
+    }
+}
+
+impl<V> std::ops::Mul for Expression<V>
+where
+    V: Clone,
+{
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        let mut subformulae = Vec::new();
+        if let Expression::Mult(subs) = self {
+            subformulae.extend(subs);
+        } else {
+            subformulae.push(self);
+        }
+        if let Expression::Mult(subs) = rhs {
+            subformulae.extend(subs);
+        } else {
+            subformulae.push(rhs);
+        }
+        Expression::Mult(subformulae)
+    }
+}
+
+impl<V> std::iter::Sum for Expression<V>
+where
+    V: Clone,
+{
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|acc, e| acc + e).unwrap_or(Self::from(0))
+    }
+}
+
+impl<V> std::iter::Product for Expression<V>
+where
+    V: Clone,
+{
+    fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.reduce(|acc, e| acc * e).unwrap_or(Self::from(1))
+    }
 }
 
 impl<V> From<bool> for Expression<V>
 where
-    V: Clone + Copy,
+    V: Clone,
 {
     fn from(value: bool) -> Self {
         Expression::Const(Val::Boolean(value))
@@ -351,7 +487,7 @@ where
 
 impl<V> From<Integer> for Expression<V>
 where
-    V: Clone + Copy,
+    V: Clone,
 {
     fn from(value: Integer) -> Self {
         Expression::Const(Val::Integer(value))
@@ -360,7 +496,7 @@ where
 
 impl<V> From<Float> for Expression<V>
 where
-    V: Clone + Copy,
+    V: Clone,
 {
     fn from(value: Float) -> Self {
         Expression::Const(Val::Float(OrderedFloat(value)))

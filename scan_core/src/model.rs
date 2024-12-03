@@ -104,9 +104,9 @@ impl TransitionSystem for CsModel {
         self.last_event = self.cs.montecarlo_execution(rng, duration);
         if let Some(event) = self.last_event.as_ref() {
             if let EventType::Send(ref val) = event.event_type {
-                self.vals.insert(event.channel, val.to_owned());
+                self.vals.insert(event.channel, val.clone());
             }
         }
-        self.last_event.to_owned()
+        self.last_event.clone()
     }
 }
