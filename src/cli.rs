@@ -42,7 +42,7 @@ impl Cli {
             .unwrap_or("model");
         let confidence = self.confidence;
         let precision = self.precision;
-        println!("SCANning '{model_name}' (confidence {confidence}; precision {precision})");
+        println!("SCANning '{model_name}' (target confidence {confidence}, precision {precision})");
         let run_state = Arc::new(Mutex::new((0, 0, true)));
         let bar_state = run_state.clone();
         let bar = std::thread::spawn(move || print_progress_bar(confidence, precision, bar_state));
@@ -67,12 +67,13 @@ impl Cli {
         bar.join().expect("terminate bar process");
         let (s, f, running) = *run_state.lock().expect("lock state");
         assert!(!running);
-        println!("Completed {} runs with {s} successes, {f} failures", s + f);
+        // println!("Completed {} runs with {s} successes, {f} failures", s + f);
         let rate = s as f64 / (s + f) as f64;
         let mag = precision.log10().abs().ceil() as usize;
         println!(
-            "Success rate {rate:.0$}±{precision} (confidence {confidence})",
-            mag
+            "Success rate {rate:.0$} ({1} runs with {s} successes, {f} failures)",
+            mag,
+            s + f
         );
         Ok(())
     }
@@ -80,54 +81,40 @@ impl Cli {
 
 fn print_progress_bar(confidence: f64, precision: f64, bar_state: Arc<Mutex<(u32, u32, bool)>>) {
     const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
-    let avg = 0.5f64;
-    let mut bound = adaptive_bound(avg, confidence, precision);
+    let bound = okamoto_bound(confidence, precision);
     let style = ProgressStyle::with_template(
-        "[{elapsed_precise}] {percent:>2}% {wide_bar} {msg} ETA: {eta:<5}",
+        "[{elapsed_precise}] {percent:>2}% [{wide_bar}] {msg} ETA: {eta:<5}",
     )
     .unwrap()
     .progress_chars(FINE_BAR);
-    let bar = ProgressBar::new(bound.ceil() as u64).with_style(style);
-    bar.set_position(0);
+    let bar = ProgressBar::new(bound.ceil() as u64)
+        .with_style(style)
+        .with_position(0)
+        .with_message("Rate: N.A. (0/0)".to_string());
+    bar.tick();
     // Magnitude of precision, to round results to sensible number of digits
     let mag = precision.log10().abs().ceil() as usize;
-    bar.set_message(format!("Success rate: {avg:.0$}", mag));
-    bar.tick();
-    // bar.enable_steady_tick(Duration::from_millis(32));
-    // bar.update(|state| {
-    //     if RUNNING.load(Ordering::Relaxed) {
-    //         let s = SUCCESSES.load(Ordering::Relaxed);
-    //         let f = FAILURES.load(Ordering::Relaxed);
-    //         if s + f > bar.position() as u32 {
-    //             let runs = s + f;
-    //             let avg = s as f64 / runs as f64;
-    //             bound = adaptive_bound(avg, confidence, precision);
-    //             state.set_len(bound.ceil() as u64);
-    //             state.set_pos(runs as u64);
-    //             // let derived_precision = derive_precision(s, f, confidence);
-    //         }
-    //     } else {
-    //         state.set_pos(state.len().unwrap_or(1));
-    //     }
-    // });
-    let (mut s, mut f, mut running) = *bar_state.lock().expect("lock state");
-    while running {
-        if s + f > bar.position() as u32 {
-            let runs = s + f;
-            let avg = s as f64 / runs as f64;
-            bound = adaptive_bound(avg, confidence, precision);
-            bar.set_length(bound.ceil() as u64);
-            bar.set_position(runs as u64);
-            let derived_precision = derive_precision(s, f, confidence);
-            bar.set_message(format!(
-                "Success rate: {avg:.0$}±{derived_precision:.0$}",
-                mag
-            ));
+    loop {
+        let (s, f, running) = *bar_state.lock().expect("lock state");
+        if running {
+            let runs = (s + f) as u64;
+            if runs > bar.position() {
+                let avg = s as f64 / runs as f64;
+                let bound = adaptive_bound(avg, confidence, precision);
+                bar.set_length(bound.ceil() as u64);
+                bar.set_position(runs);
+                let derived_precision = derive_precision(s, f, confidence);
+                bar.set_message(format!(
+                    "Rate: {avg:.0$}±{derived_precision:.0$} ({s}/{f})",
+                    mag
+                ));
+            }
+            bar.tick();
+            // Sleep a while to limit update/refresh rate.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        } else {
+            bar.finish_and_clear();
+            break;
         }
-        bar.tick();
-        // Sleep a while to limit update/refresh rate.
-        std::thread::sleep(std::time::Duration::from_millis(32));
-        (s, f, running) = *bar_state.lock().expect("lock state");
     }
-    bar.finish_and_clear();
 }
