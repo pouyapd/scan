@@ -3,6 +3,12 @@ name = "scan"
 version = "0.1.0"
 edition = "2021"
 
+[profile.optimized]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [workspace]
 members = ["scan_core", "scan_fmt_xml"]
