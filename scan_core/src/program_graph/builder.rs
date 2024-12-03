@@ -8,7 +8,7 @@ use crate::{
     Integer,
 };
 // use ahash::{AHashMap as HashMap, AHashSet as HashSet};
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use log::info;
 use std::sync::Arc;
 
@@ -43,11 +43,9 @@ impl From<Effect> for FnEffect {
 pub struct ProgramGraphBuilder {
     // Effects are indexed by actions
     effects: Vec<Effect>,
-    guards: HashMap<(Location, Action, Location), PgExpression>,
     // Transitions are indexed by locations
     // We can assume there is at most one condition by logical disjunction
-    transitions: HashSet<(Location, Action, Location)>,
-    indexed_transitions: Vec<Vec<(Action, Location)>>,
+    transitions: Vec<HashMap<(Action, Location), Option<PgExpression>>>,
     vars: Vec<Val>,
 }
 
@@ -66,10 +64,8 @@ impl ProgramGraphBuilder {
     pub fn new() -> Self {
         let mut pgb = Self {
             effects: Vec::new(),
-            guards: HashMap::new(),
-            transitions: HashSet::new(),
             vars: Vec::new(),
-            indexed_transitions: Vec::new(),
+            transitions: Vec::new(),
         };
         // Create an initial location and make sure it is equal to the constant `Self::INITIAL_LOCATION`
         // This is the simplest way to make sure the state of the builder is always consistent
@@ -91,7 +87,7 @@ impl ProgramGraphBuilder {
     // Gets the type of a variable.
     pub(crate) fn var_type(&self, var: Var) -> Result<Type, PgError> {
         self.vars
-            .get(var.0)
+            .get(var.0 as usize)
             .map(Val::r#type)
             .ok_or(PgError::MissingVar(var))
     }
@@ -115,17 +111,17 @@ impl ProgramGraphBuilder {
         let idx = self.vars.len();
         // We check the type to make sure the expression is well-formed
         let _ = init.r#type().map_err(PgError::Type)?;
-        init.context(&|var| self.vars.get(var.0).map(Val::r#type))
+        init.context(&|var| self.vars.get(var.0 as usize).map(Val::r#type))
             .map_err(PgError::Type)?;
-        let val = FnExpression::from(init).eval(&|var| self.vars[var.0].clone());
+        let val = FnExpression::from(init).eval(&|var| self.vars[var.0 as usize].clone());
         self.vars.push(val);
-        Ok(Var(idx))
+        Ok(Var(idx as u16))
     }
 
     pub fn new_clock(&mut self) -> Clock {
         let idx = self.vars.len();
         self.vars.push(Val::Integer(0));
-        Clock(idx)
+        Clock(idx as u16)
     }
 
     /// Adds a new action to the PG.
@@ -133,7 +129,7 @@ impl ProgramGraphBuilder {
         // Actions are indexed progressively
         let idx = self.effects.len();
         self.effects.push(Effect::Effects(Vec::new()));
-        Action(idx)
+        Action(idx as u16)
     }
 
     /// Adds an effect to the given action.
@@ -165,17 +161,17 @@ impl ProgramGraphBuilder {
             return Err(PgError::NoEffects);
         }
         effect
-            .context(&|var| self.vars.get(var.0).map(Val::r#type))
+            .context(&|var| self.vars.get(var.0 as usize).map(Val::r#type))
             .map_err(PgError::Type)?;
         let var_type = self
             .vars
-            .get(var.0)
+            .get(var.0 as usize)
             .map(Val::r#type)
             .ok_or_else(|| PgError::MissingVar(var.to_owned()))?;
         if var_type == effect.r#type().map_err(PgError::Type)? {
             match self
                 .effects
-                .get_mut(action.0)
+                .get_mut(action.0 as usize)
                 .ok_or(PgError::MissingAction(action))?
             {
                 Effect::Effects(effects) => {
@@ -205,40 +201,40 @@ impl ProgramGraphBuilder {
 
     pub(crate) fn new_send(&mut self, msg: PgExpression) -> Result<Action, PgError> {
         // Check message is well-typed
-        msg.context(&|var| self.vars.get(var.0).map(Val::r#type))
+        msg.context(&|var| self.vars.get(var.0 as usize).map(Val::r#type))
             .map_err(PgError::Type)?;
         let _ = msg.r#type().map_err(PgError::Type)?;
         // Actions are indexed progressively
         let idx = self.effects.len();
         self.effects.push(Effect::Send(msg));
-        Ok(Action(idx))
+        Ok(Action(idx as u16))
     }
 
     pub(crate) fn new_receive(&mut self, var: Var) -> Result<Action, PgError> {
-        if self.vars.len() <= var.0 {
+        if self.vars.len() as u16 <= var.0 {
             Err(PgError::MissingVar(var.to_owned()))
         } else {
             // Actions are indexed progressively
             let idx = self.effects.len();
             self.effects.push(Effect::Receive(var));
-            Ok(Action(idx))
+            Ok(Action(idx as u16))
         }
     }
 
     /// Adds a new location to the PG.
     pub fn new_location(&mut self) -> Location {
         // Locations are indexed progressively
-        let idx = self.indexed_transitions.len();
-        self.indexed_transitions.push(Vec::new());
-        Location(idx)
+        let idx = self.transitions.len();
+        self.transitions.push(HashMap::new());
+        Location(idx as u16)
     }
 
     /// TODO
     pub fn new_timed_location(&mut self, invariants: &[TimeConstraint]) -> Location {
         // Locations are indexed progressively
-        let idx = self.indexed_transitions.len();
-        self.indexed_transitions.push(Vec::new());
-        let loc = Location(idx);
+        let idx = self.transitions.len();
+        self.transitions.push(HashMap::new());
+        let loc = Location(idx as u16);
         self.add_timed_transition(loc, WAIT, loc, None, invariants)
             .expect("add wait transition");
         loc
@@ -279,11 +275,11 @@ impl ProgramGraphBuilder {
         guard: Option<PgExpression>,
     ) -> Result<(), PgError> {
         // Check 'pre' and 'post' locations exists
-        if self.indexed_transitions.len() <= pre.0 {
+        if self.transitions.len() as u16 <= pre.0 {
             Err(PgError::MissingLocation(pre))
-        } else if self.indexed_transitions.len() <= post.0 {
+        } else if self.transitions.len() as u16 <= post.0 {
             Err(PgError::MissingLocation(post))
-        } else if action != EPSILON && action != WAIT && self.effects.len() <= action.0 {
+        } else if action != EPSILON && action != WAIT && self.effects.len() as u16 <= action.0 {
             // Check 'action' exists
             Err(PgError::MissingAction(action))
         } else if guard
@@ -292,26 +288,25 @@ impl ProgramGraphBuilder {
         {
             Err(PgError::TypeMismatch)
         } else {
-            if let Some(guard) = guard {
+            if let Some(guard) = guard.clone() {
                 guard
-                    .context(&|var| self.vars.get(var.0).map(Val::r#type))
+                    .context(&|var| self.vars.get(var.0 as usize).map(Val::r#type))
                     .map_err(PgError::Type)?;
-                let _ = self
-                    .guards
-                    .entry((pre, action, post))
-                    .and_modify(|previous_guard| {
-                        if let PgExpression::Or(exprs) = previous_guard {
-                            exprs.push(guard.to_owned());
-                        } else {
+            }
+            let transitions = &mut self.transitions[pre.0 as usize];
+            let _ = transitions
+                .entry((action, post))
+                .and_modify(|previous_guard| {
+                    if let Some(previous_guard) = previous_guard.as_mut() {
+                        if let Some(guard) = guard.clone() {
                             *previous_guard =
-                                PgExpression::Or(vec![previous_guard.to_owned(), guard.to_owned()]);
+                                PgExpression::or(vec![previous_guard.clone(), guard.clone()]);
                         }
-                    })
-                    .or_insert(guard);
-            }
-            if self.transitions.insert((pre, action, post)) {
-                self.indexed_transitions[pre.0].push((action, post));
-            }
+                    } else {
+                        *previous_guard = guard.clone()
+                    }
+                })
+                .or_insert(guard);
             Ok(())
         }
     }
@@ -355,7 +350,7 @@ impl ProgramGraphBuilder {
                 lower_bound.into_iter().chain(upper_bound)
             });
 
-        let guard = PgExpression::And(time_constraints.chain(guard).collect());
+        let guard = PgExpression::and(time_constraints.chain(guard).collect());
 
         self.add_transition(pre, action, post, Some(guard))
     }
@@ -410,31 +405,33 @@ impl ProgramGraphBuilder {
         // Since vectors of effects and transitions will become unmutable,
         // they should be shrunk to take as little space as possible
         self.effects.shrink_to_fit();
-        self.guards.shrink_to_fit();
         self.transitions.shrink_to_fit();
-        self.indexed_transitions.shrink_to_fit();
-        self.indexed_transitions
-            .iter_mut()
-            .for_each(|v| v.shrink_to_fit());
+        let transitions = self
+            .transitions
+            .into_iter()
+            .map(|v| {
+                let mut trans = Vec::from_iter(
+                    v.into_iter()
+                        .map(|((a, p), g)| (a, p, g.map(FnExpression::from))),
+                );
+                trans.sort_unstable_by_key(|(a, p, _)| (*a, *p));
+                trans.shrink_to_fit();
+                trans
+            })
+            .collect::<Vec<Vec<_>>>();
         // Vars are not going to be unmutable,
         // but their number will be constant anyway
         self.vars.shrink_to_fit();
         // Build program graph
         info!(
             "create Program Graph with:\n{} locations\n{} actions\n{} vars",
-            self.transitions.len(),
+            transitions.len(),
             self.effects.len(),
             self.vars.len()
         );
         let def = ProgramGraphDef {
             effects: self.effects.into_iter().map(FnEffect::from).collect(),
-            guards: self
-                .guards
-                .into_iter()
-                .map(|(t, g)| (t, FnExpression::from(g)))
-                .collect(),
-            transitions: self.transitions,
-            indexed_transitions: self.indexed_transitions,
+            transitions,
         };
         ProgramGraph {
             current_location: Self::INITIAL,

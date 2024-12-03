@@ -67,14 +67,9 @@
 
 mod builder;
 
-// use ahash::{AHashMap as HashMap, AHashSet as HashSet};
-pub use builder::*;
-use hashbrown::{HashMap, HashSet};
-
-use crate::Time;
-
-// TODO: use fast hasher (?)
 use super::grammar::*;
+use crate::Time;
+pub use builder::*;
 use core::panic;
 use std::sync::Arc;
 use thiserror::Error;
@@ -83,24 +78,24 @@ use thiserror::Error;
 ///
 /// These cannot be directly created or manipulated,
 /// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Location(usize);
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Location(u16);
 
 /// An indexing object for actions in a PG.
 ///
 /// These cannot be directly created or manipulated,
 /// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Action(usize);
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Action(u16);
 
 /// Epsilon action to enable autonomous transitions.
 /// It cannot have effects.
-const EPSILON: Action = Action(usize::MAX);
+const EPSILON: Action = Action(u16::MAX);
 
 /// Wait action to advance time.
 /// Not to be used directly as an action or exposed to the user.
 /// It cannot have effects.
-const WAIT: Action = Action(usize::MAX - 1);
+const WAIT: Action = Action(u16::MAX - 1);
 
 /// Reference clock of Program Graph.
 /// Not to be reset or exposed to the user.
@@ -111,11 +106,16 @@ const TIME: Clock = Clock(0);
 /// These cannot be directly created or manipulated,
 /// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Var(usize);
+pub struct Var(u16);
 
+/// An indexing object for clocks in a PG.
+///
+/// These cannot be directly created or manipulated,
+/// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Clock(Time);
+pub struct Clock(u16);
 
+/// A time constraint given by a clock and, optionally, a lower bound and/or an upper bound.
 pub type TimeConstraint = (Clock, Option<Time>, Option<Time>);
 
 /// An expression using PG's [`Var`] as variables.
@@ -185,12 +185,31 @@ enum FnEffect {
     Receive(Var),
 }
 
+type Transition = (Action, Location, Option<FnExpression<Var>>);
+
 #[derive(Debug)]
-pub struct ProgramGraphDef {
+struct ProgramGraphDef {
     effects: Vec<FnEffect>,
-    guards: HashMap<(Location, Action, Location), FnExpression<Var>>,
-    transitions: HashSet<(Location, Action, Location)>,
-    indexed_transitions: Vec<Vec<(Action, Location)>>,
+    transitions: Vec<Vec<Transition>>,
+}
+
+impl ProgramGraphDef {
+    // Returns transition's guard.
+    // Panics if the pre- or post-state do not exist.
+    // Returns error if the transition does not exist.
+    #[inline(always)]
+    fn guard(
+        &self,
+        pre_state: Location,
+        action: Action,
+        post_state: Location,
+    ) -> Result<Option<&FnExpression<Var>>, PgError> {
+        let transitions = &self.transitions[pre_state.0 as usize];
+        transitions
+            .binary_search_by_key(&(action, post_state), |(a, p, _)| (*a, *p))
+            .map(|guard_idx| transitions[guard_idx].2.as_ref())
+            .map_err(|_| PgError::MissingTransition)
+    }
 }
 
 /// Representation of a PG that can be executed transition-by-transition.
@@ -239,60 +258,79 @@ impl ProgramGraph {
     /// (the pre-state being necessarily the current state of the machine).
     /// The guard (if any) is guaranteed to be satisfied.
     pub fn possible_transitions(&self) -> impl Iterator<Item = (Action, Location)> + '_ {
-        self.def.indexed_transitions[self.current_location.0]
+        self.def.transitions[self.current_location.0 as usize]
             .iter()
-            .filter(|(action, post)| {
+            .filter_map(|(action, post_state, guard)| {
                 // WAIT should not be called directly!
-                *action != WAIT && self.is_transition_active(*action, *post).unwrap()
+                if *action == WAIT {
+                    None
+                } else if guard.as_ref().map_or(true, |guard| {
+                    if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0 as usize].clone())
+                    {
+                        pass
+                    } else {
+                        panic!("guard is not a boolean");
+                    }
+                }) {
+                    if let Ok(Some(time_invariant)) = self.def.guard(*post_state, WAIT, *post_state)
+                    {
+                        // If action has effects
+                        if *action != EPSILON {
+                            if let FnEffect::Effects(ref effects) =
+                                self.def.effects[action.0 as usize]
+                            {
+                                if !effects.is_empty() {
+                                    // Avoid cloning variables unless it is absolutley necessary
+                                    let mut vars = self.vars.clone();
+                                    for (var, effect) in effects {
+                                        vars[var.0 as usize] =
+                                            effect.eval(&|var| vars[var.0 as usize].clone());
+                                    }
+                                    if let Val::Boolean(pass) = time_invariant
+                                        .eval(&move |var| vars[var.0 as usize].clone())
+                                    {
+                                        return pass.then_some((*action, *post_state));
+                                    } else {
+                                        panic!("guard is not a boolean");
+                                    }
+                                }
+                            }
+                        }
+                        // If action has no effects
+                        if let Val::Boolean(pass) =
+                            time_invariant.eval(&|var| self.vars[var.0 as usize].clone())
+                        {
+                            pass.then_some((*action, *post_state))
+                        } else {
+                            panic!("guard is not a boolean");
+                        }
+                    } else {
+                        Some((*action, *post_state))
+                    }
+                } else {
+                    None
+                }
             })
-            .cloned()
     }
 
     #[inline(always)]
-    fn satisfies_guard(&self, action: Action, post_state: Location) -> bool {
-        self.def
-            .guards
-            .get(&(self.current_location, action, post_state))
-            .map_or(true, |guard| {
-                if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0].clone()) {
-                    pass
+    fn satisfies_guard(&self, action: Action, post_state: Location) -> Result<bool, PgError> {
+        let transitions = &self.def.transitions[self.current_location.0 as usize];
+        transitions
+            .binary_search_by_key(&(action, post_state), |(a, p, _)| (*a, *p))
+            .map(|guard_idx| {
+                if let Some(ref guard) = transitions[guard_idx].2 {
+                    if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0 as usize].clone())
+                    {
+                        pass
+                    } else {
+                        panic!("guard is not a boolean");
+                    }
                 } else {
-                    panic!("guard is not a boolean");
+                    true
                 }
             })
-    }
-
-    /// Checks a transition characterized by the argument action and post-state.
-    fn is_transition_active(&self, action: Action, post_state: Location) -> Result<bool, PgError> {
-        if action == WAIT {
-            Err(PgError::Wait)
-        } else if self
-            .def
-            .transitions
-            .contains(&(self.current_location, action, post_state))
-        {
-            if !self.satisfies_guard(action, post_state) {
-                Ok(false)
-            } else if let Some(guard) = self.def.guards.get(&(post_state, WAIT, post_state)) {
-                let mut vars = self.vars.clone();
-                if action != EPSILON {
-                    if let FnEffect::Effects(ref effects) = self.def.effects[action.0] {
-                        for (var, effect) in effects {
-                            vars[var.0] = effect.eval(&|var| vars[var.0].clone());
-                        }
-                    }
-                }
-                if let Val::Boolean(pass) = guard.eval(&move |var| vars[var.0].clone()) {
-                    Ok(pass)
-                } else {
-                    panic!("guard is not a boolean");
-                }
-            } else {
-                Ok(true)
-            }
-        } else {
-            Err(PgError::MissingTransition)
-        }
+            .map_err(|_| PgError::MissingTransition)
     }
 
     /// Executes a transition characterized by the argument action and post-state.
@@ -301,56 +339,58 @@ impl ProgramGraph {
     /// or if the post-location time invariants are violated.
     pub fn transition(&mut self, action: Action, post_state: Location) -> Result<(), PgError> {
         if action == WAIT {
-            Err(PgError::Wait)
-        } else if self
-            .def
-            .transitions
-            .contains(&(self.current_location, action, post_state))
-        {
-            if !self.satisfies_guard(action, post_state) {
-                return Err(PgError::UnsatisfiedGuard);
-            } else if let Some(guard) = self.def.guards.get(&(post_state, WAIT, post_state)) {
-                let mut backup = Vec::with_capacity(self.vars.len());
-                if action != EPSILON {
-                    if let FnEffect::Effects(ref effects) = self.def.effects[action.0] {
+            return Err(PgError::Wait);
+        } else if !self.satisfies_guard(action, post_state)? {
+            return Err(PgError::UnsatisfiedGuard);
+        } else if let Ok(Some(time_invariant)) = self.def.guard(post_state, WAIT, post_state) {
+            let mut backup = Vec::with_capacity(self.vars.len());
+            // If action has effects
+            if action != EPSILON {
+                if let FnEffect::Effects(ref effects) = self.def.effects[action.0 as usize] {
+                    if !effects.is_empty() {
+                        // Clone only if necessary
                         backup = self.vars.clone();
                         for (var, effect) in effects {
-                            self.vars[var.0] = effect.eval(&|var| self.vars[var.0].clone());
+                            self.vars[var.0 as usize] =
+                                effect.eval(&|var| self.vars[var.0 as usize].clone());
                         }
-                    } else {
-                        return Err(PgError::Communication(action));
-                    }
-                }
-                // Self::satisfies_guard should only be called after setting the post-location!
-                if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0].clone()) {
-                    if !pass {
-                        if action != EPSILON {
-                            self.vars = backup;
-                        }
-                        return Err(PgError::UnsatisfiedGuard);
-                    }
-                } else {
-                    panic!("guard is not a boolean");
-                }
-            } else if action != EPSILON {
-                if let FnEffect::Effects(ref effects) = self.def.effects[action.0] {
-                    for (var, effect) in effects {
-                        self.vars[var.0] = effect.eval(&|var| self.vars[var.0].clone());
                     }
                 } else {
                     return Err(PgError::Communication(action));
                 }
             }
-            self.current_location = post_state;
-            Ok(())
-        } else {
-            Err(PgError::MissingTransition)
+            // Self::satisfies_guard should only be called after setting the post-location!
+            if let Val::Boolean(pass) =
+                time_invariant.eval(&|var| self.vars[var.0 as usize].clone())
+            {
+                if !pass {
+                    // Backup is unused if empty
+                    if action != EPSILON && !backup.is_empty() {
+                        self.vars = backup;
+                    }
+                    return Err(PgError::UnsatisfiedGuard);
+                }
+            } else {
+                panic!("guard is not a boolean");
+            }
+        } else if action != EPSILON {
+            if let FnEffect::Effects(ref effects) = self.def.effects[action.0 as usize] {
+                for (var, effect) in effects {
+                    self.vars[var.0 as usize] =
+                        effect.eval(&|var| self.vars[var.0 as usize].clone());
+                }
+            } else {
+                return Err(PgError::Communication(action));
+            }
         }
+        self.current_location = post_state;
+        Ok(())
     }
 
     /// Returns the current time of the Program Graph.
+    #[inline(always)]
     pub fn time(&self) -> Time {
-        if let Val::Integer(time) = self.vars[TIME.0] {
+        if let Val::Integer(time) = self.vars[TIME.0 as usize] {
             time as Time
         } else {
             panic!("Time must be an Integer variable");
@@ -362,34 +402,48 @@ impl ProgramGraph {
     /// (which can happen by violating some time invariant).
     #[inline(always)]
     pub(crate) fn set_time(&mut self, time: Time) {
-        self.vars[TIME.0] = Val::Integer(time as Integer);
+        self.vars[TIME.0 as usize] = Val::Integer(time as Integer);
     }
 
     pub fn wait(&mut self, delta: Time) -> Result<(), PgError> {
-        if let Val::Integer(ref mut time) = self.vars[TIME.0] {
+        let prev_time;
+        if let Val::Integer(ref mut time) = self.vars[TIME.0 as usize] {
+            prev_time = *time;
             *time += delta as Integer;
         } else {
             panic!("Time must be an Integer variable");
         }
-        if self.satisfies_guard(WAIT, self.current_location) {
+        let transitions = &self.def.transitions[self.current_location.0 as usize];
+        if transitions
+            .binary_search_by_key(&(WAIT, self.current_location), |(a, p, _)| (*a, *p))
+            .map(|guard_idx| {
+                if let Some(ref guard) = transitions[guard_idx].2 {
+                    if let Val::Boolean(pass) = guard.eval(&|var| self.vars[var.0 as usize].clone())
+                    {
+                        pass
+                    } else {
+                        panic!("guard is not a boolean");
+                    }
+                } else {
+                    true
+                }
+            })
+            .unwrap_or(true)
+        {
             Ok(())
         } else {
             // If the location's invariant is not satisfied,
             // reset time to original value.
-            if let Val::Integer(ref mut time) = self.vars[TIME.0] {
-                *time -= delta as Integer;
-            } else {
-                panic!("Time must be an Integer variable");
-            }
+            self.vars[TIME.0 as usize] = Val::Integer(prev_time);
             Err(PgError::UnsatisfiedGuard)
         }
     }
 
     pub(crate) fn send(&mut self, action: Action, post_state: Location) -> Result<Val, PgError> {
-        if !self.satisfies_guard(action, post_state) {
+        if !self.satisfies_guard(action, post_state)? {
             Err(PgError::UnsatisfiedGuard)
-        } else if let FnEffect::Send(effect) = &self.def.effects[action.0] {
-            let val = effect.eval(&|var| self.vars[var.0].clone());
+        } else if let FnEffect::Send(effect) = &self.def.effects[action.0 as usize] {
+            let val = effect.eval(&|var| self.vars[var.0 as usize].clone());
             self.current_location = post_state;
             Ok(val)
         } else {
@@ -402,16 +456,15 @@ impl ProgramGraph {
         action: Action,
         post_state: Location,
         val: Val,
-    ) -> Result<Val, PgError> {
-        if !self.satisfies_guard(action, post_state) {
+    ) -> Result<(), PgError> {
+        if !self.satisfies_guard(action, post_state)? {
             Err(PgError::UnsatisfiedGuard)
-        } else if let FnEffect::Receive(var) = &self.def.effects[action.0] {
-            let var_content = self.vars.get_mut(var.0).expect("variable exists");
+        } else if let FnEffect::Receive(var) = self.def.effects[action.0 as usize] {
+            let var_content = self.vars.get_mut(var.0 as usize).expect("variable exists");
             if var_content.r#type() == val.r#type() {
-                let previous_val = var_content.clone();
                 *var_content = val;
                 self.current_location = post_state;
-                Ok(previous_val)
+                Ok(())
             } else {
                 Err(PgError::TypeMismatch)
             }

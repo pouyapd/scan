@@ -1,9 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc,
-    },
+    sync::{Arc, Mutex},
 };
 
 use crate::PrintTrace;
@@ -29,7 +26,7 @@ pub struct Cli {
     length: usize,
     /// Max duration of execution (in model-time)
     #[arg(short, long, default_value = "10000")]
-    duration: usize,
+    duration: Time,
     /// Saves execution traces in gz-compressed csv format
     #[arg(long = "save-traces", default_value = "false")]
     trace: bool,
@@ -45,12 +42,10 @@ impl Cli {
             .unwrap_or("model");
         let confidence = self.confidence;
         let precision = self.precision;
-        println!("SCANning '{model_name}' (confidence {confidence}; precision {precision})");
-        let s = Arc::new(AtomicU32::new(0));
-        let f = Arc::new(AtomicU32::new(0));
-        let bar_s = s.to_owned();
-        let bar_f = f.to_owned();
-        std::thread::spawn(move || print_progress_bar(bar_s, bar_f, confidence, precision));
+        println!("SCANning '{model_name}' (target confidence {confidence}, precision {precision})");
+        let run_state = Arc::new(Mutex::new((0, 0, true)));
+        let bar_state = run_state.clone();
+        let bar = std::thread::spawn(move || print_progress_bar(confidence, precision, bar_state));
         if self.trace {
             std::fs::remove_dir_all("./traces").ok();
             std::fs::create_dir("./traces").expect("create traces dir");
@@ -60,80 +55,66 @@ impl Cli {
             std::fs::create_dir("./traces/undetermined").expect("create undetermined dir");
         }
         scxml_model.model.par_adaptive(
-            &Vec::from_iter(
-                scxml_model
-                    .guarantees
-                    .iter()
-                    .cloned()
-                    .map(StateValuationVector::new),
-            ),
-            &Vec::from_iter(
-                scxml_model
-                    .assumes
-                    .iter()
-                    .cloned()
-                    .map(StateValuationVector::new),
-            ),
+            &scxml_model.guarantees,
+            &scxml_model.assumes,
             confidence,
             precision,
             self.length,
             self.duration,
-            s.to_owned(),
-            f.to_owned(),
             self.trace.then_some(PrintTrace::new(&scxml_model)),
+            run_state.clone(),
         );
-        let s = s.load(Ordering::Relaxed);
-        let f = f.load(Ordering::Relaxed);
-        println!("Completed {} runs with {s} successes, {f} failures", s + f);
+        bar.join().expect("terminate bar process");
+        let (s, f, running) = *run_state.lock().expect("lock state");
+        assert!(!running);
+        // println!("Completed {} runs with {s} successes, {f} failures", s + f);
         let rate = s as f64 / (s + f) as f64;
         let mag = precision.log10().abs().ceil() as usize;
         println!(
-            "Success rate {rate:.0$}±{precision} (confidence {confidence})",
-            mag
+            "Success rate {rate:.0$} ({1} runs with {s} successes, {f} failures)",
+            mag,
+            s + f
         );
         Ok(())
     }
 }
 
-fn print_progress_bar(s: Arc<AtomicU32>, f: Arc<AtomicU32>, confidence: f64, precision: f64) {
+fn print_progress_bar(confidence: f64, precision: f64, bar_state: Arc<Mutex<(u32, u32, bool)>>) {
     const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
-    let mut local_s = s.load(Ordering::Relaxed);
-    let mut local_f = f.load(Ordering::Relaxed);
-    let runs = local_s + local_f;
-    let avg = if runs != 0 {
-        local_s as f64 / runs as f64
-    } else {
-        0.5f64
-    };
-    let mut bound = adaptive_bound(avg, confidence, precision);
+    let bound = okamoto_bound(confidence, precision);
     let style = ProgressStyle::with_template(
-        "[{elapsed_precise}] {percent:>2}% {wide_bar} {msg} ETA: {eta:<5}",
+        "[{elapsed_precise}] {percent:>2}% [{wide_bar}] {msg} ETA: {eta:<5}",
     )
     .unwrap()
     .progress_chars(FINE_BAR);
-    let bar = ProgressBar::new(bound.ceil() as u64).with_style(style);
-    bar.set_position(0);
+    let bar = ProgressBar::new(bound.ceil() as u64)
+        .with_style(style)
+        .with_position(0)
+        .with_message("Rate: N.A. (0/0)".to_string());
+    bar.tick();
     // Magnitude of precision, to round results to sensible number of digits
     let mag = precision.log10().abs().ceil() as usize;
-    while bound > (local_s + local_f) as f64 {
-        // Check if new runs arrived
-        if local_s + local_f > bar.position() as u32 {
-            let runs = local_s + local_f;
-            let avg = local_s as f64 / runs as f64;
-            bound = adaptive_bound(avg, confidence, precision);
-            bar.set_length(bound.ceil() as u64);
-            bar.set_position(runs as u64);
-            let derived_precision = derive_precision(local_s, local_f, confidence);
-            bar.set_message(format!(
-                "Success rate: {avg:.0$}±{derived_precision:.0$}",
-                mag
-            ));
+    loop {
+        let (s, f, running) = *bar_state.lock().expect("lock state");
+        if running {
+            let runs = (s + f) as u64;
+            if runs > bar.position() {
+                let avg = s as f64 / runs as f64;
+                let bound = adaptive_bound(avg, confidence, precision);
+                bar.set_length(bound.ceil() as u64);
+                bar.set_position(runs);
+                let derived_precision = derive_precision(s, f, confidence);
+                bar.set_message(format!(
+                    "Rate: {avg:.0$}±{derived_precision:.0$} ({s}/{f})",
+                    mag
+                ));
+            }
+            bar.tick();
+            // Sleep a while to limit update/refresh rate.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        } else {
+            bar.finish_and_clear();
+            break;
         }
-        bar.tick();
-        // Sleep a while to limit update/refresh rate.
-        std::thread::sleep(std::time::Duration::from_millis(32));
-        local_s = s.load(Ordering::Relaxed);
-        local_f = f.load(Ordering::Relaxed);
     }
-    bar.finish_and_clear();
 }

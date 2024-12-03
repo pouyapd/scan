@@ -7,7 +7,7 @@ use log::{info, trace};
 use scan_core::{channel_system::*, *};
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    ops::Not,
 };
 
 // TODO:
@@ -509,7 +509,7 @@ impl ModelBuilder {
                 pg_id,
                 set_int_origin,
                 origin_var,
-                CsExpression::from(usize::from(pg_id) as Integer),
+                CsExpression::from(u16::from(pg_id) as Integer),
             )
             .expect("hand-coded args");
         // Implement external queue
@@ -706,7 +706,7 @@ impl ModelBuilder {
                             CsExpression::Var(current_event_var, Type::Integer),
                         ))),
                         CsExpression::Equal(Box::new((
-                            CsExpression::from(usize::from(sender_id) as Integer),
+                            CsExpression::from(u16::from(sender_id) as Integer),
                             CsExpression::Var(origin_var, Type::Integer),
                         ))),
                     ]);
@@ -747,7 +747,7 @@ impl ModelBuilder {
             let unknown_event = if known_events.is_empty() {
                 None
             } else {
-                Some(Expression::Not(Box::new(Expression::Or(known_events))))
+                Some(CsExpression::not(CsExpression::or(known_events)))
             };
             self.cs
                 .add_autonomous_transition(
@@ -824,7 +824,7 @@ impl ModelBuilder {
                     )));
                     // TODO FIXME: optimize And/Or expressions
                     guard = cond
-                        .map(|cond| CsExpression::And(vec![event_match.clone(), cond]))
+                        .map(|cond| CsExpression::and(vec![event_match.clone(), cond]))
                         .or(Some(event_match));
                     // Check this transition after the other eventful transitions.
                     check_trans_loc = eventful_trans;
@@ -872,7 +872,7 @@ impl ModelBuilder {
                 // NOTE: an autonomous transition without cond is always active so there is no point processing further transitions.
                 // This happens in State Charts already, so we model it faithfully without optimizations.
                 let not_guard = guard
-                    .map(|guard| CsExpression::Not(Box::new(guard)))
+                    .map(CsExpression::not)
                     .unwrap_or(CsExpression::from(false));
                 self.cs
                     .add_autonomous_transition(
@@ -969,7 +969,7 @@ impl ModelBuilder {
                                 .ok_or(anyhow!(format!("target {target} not found")))?;
                             targets = vec![target_builder.pg_id];
                             target_expr = Some(CsExpression::from(
-                                usize::from(target_builder.pg_id) as Integer,
+                                u16::from(target_builder.pg_id) as Integer
                             ));
                         }
                         Target::Expr(targetexpr) => {
@@ -990,7 +990,7 @@ impl ModelBuilder {
                                 target_ext_queue,
                                 CsExpression::Tuple(vec![
                                     CsExpression::from(event_idx as Integer),
-                                    CsExpression::from(usize::from(pg_id) as Integer),
+                                    CsExpression::from(u16::from(pg_id) as Integer),
                                 ]),
                             )
                             .expect("params are hard-coded");
@@ -1005,7 +1005,7 @@ impl ModelBuilder {
                                 next_loc,
                                 target_expr.as_ref().map(|target_expr| {
                                     CsExpression::Equal(Box::new((
-                                        CsExpression::from(usize::from(target_id) as Integer),
+                                        CsExpression::from(u16::from(target_id) as Integer),
                                         target_expr.to_owned(),
                                     )))
                                 }),
@@ -1096,7 +1096,7 @@ impl ModelBuilder {
                             pg_id,
                             old_loc,
                             curr_loc,
-                            Some(Expression::Not(Box::new(cond))),
+                            Some(Expression::not(cond)),
                         )
                         .unwrap();
                 }
@@ -1209,9 +1209,9 @@ impl ModelBuilder {
                 use boa_ast::expression::operator::unary::UnaryOp;
                 let expr = self.expression(unary.target(), interner, vars, origin, params)?;
                 match unary.op() {
-                    UnaryOp::Minus => Expression::Opposite(Box::new(expr)),
+                    UnaryOp::Minus => -expr,
                     UnaryOp::Plus => expr,
-                    UnaryOp::Not => Expression::Not(Box::new(expr)),
+                    UnaryOp::Not => Expression::not(expr),
                     _ => return Err(anyhow!("unimplemented operator")),
                 }
             }
@@ -1223,20 +1223,16 @@ impl ModelBuilder {
                 let rhs = self.expression(bin.rhs(), interner, vars, origin, params)?;
                 match bin.op() {
                     BinaryOp::Arithmetic(ar_bin) => match ar_bin {
-                        ArithmeticOp::Add => CsExpression::Sum(vec![lhs, rhs]),
-                        ArithmeticOp::Sub => {
-                            CsExpression::Sum(vec![lhs, CsExpression::Opposite(Box::new(rhs))])
-                        }
+                        ArithmeticOp::Add => lhs + rhs,
+                        ArithmeticOp::Sub => lhs + (-rhs),
                         ArithmeticOp::Div => todo!(),
-                        ArithmeticOp::Mul => CsExpression::Mult(vec![lhs, rhs]),
+                        ArithmeticOp::Mul => lhs * rhs,
                         ArithmeticOp::Exp => todo!(),
                         ArithmeticOp::Mod => CsExpression::Mod(Box::new((lhs, rhs))),
                     },
                     BinaryOp::Relational(rel_bin) => match rel_bin {
                         RelationalOp::Equal => CsExpression::Equal(Box::new((lhs, rhs))),
-                        RelationalOp::NotEqual => {
-                            CsExpression::Not(Box::new(CsExpression::Equal(Box::new((lhs, rhs)))))
-                        }
+                        RelationalOp::NotEqual => !(CsExpression::Equal(Box::new((lhs, rhs)))),
                         RelationalOp::GreaterThan => CsExpression::Greater(Box::new((lhs, rhs))),
                         RelationalOp::GreaterThanOrEqual => {
                             CsExpression::GreaterEq(Box::new((lhs, rhs)))
@@ -1246,8 +1242,8 @@ impl ModelBuilder {
                         _ => return Err(anyhow!("unimplemented operator")),
                     },
                     BinaryOp::Logical(op) => match op {
-                        LogicalOp::And => CsExpression::And(vec![lhs, rhs]),
-                        LogicalOp::Or => CsExpression::Or(vec![lhs, rhs]),
+                        LogicalOp::And => CsExpression::and(vec![lhs, rhs]),
+                        LogicalOp::Or => CsExpression::or(vec![lhs, rhs]),
                         _ => return Err(anyhow!("unimplemented operator")),
                     },
                     BinaryOp::Comma => todo!(),
@@ -1374,7 +1370,7 @@ impl ModelBuilder {
                             (
                                 String::from("origin"),
                                 EcmaObj::PrimitiveData(
-                                    Expression::Var(
+                                    CsExpression::Var(
                                         origin.ok_or(anyhow!("missing origin of _event"))?,
                                         Type::Integer,
                                     ),
@@ -1429,7 +1425,7 @@ impl ModelBuilder {
                             .to_owned();
                         let (_, t) = self.types.get(&type_name).expect("var type");
                         Ok(EcmaObj::PrimitiveData(
-                            Expression::Var(var, t.to_owned()),
+                            CsExpression::Var(var, t.to_owned()),
                             type_name,
                         ))
                     }
@@ -1474,7 +1470,7 @@ impl ModelBuilder {
                                                     .get(ident)
                                                     .ok_or(anyhow!("field {} not found", ident))?;
                                                 Ok(EcmaObj::PrimitiveData(
-                                                    Expression::Component(index, Box::new(expr)),
+                                                    CsExpression::component(expr, index),
                                                     field_type_name.to_owned(),
                                                 ))
                                             }
@@ -1530,7 +1526,7 @@ impl ModelBuilder {
                         channel,
                         event_type: EventType::Send(Val::Tuple(vec![
                             Val::Integer(event_id as Integer),
-                            Val::Integer(Into::<usize>::into(origin) as Integer),
+                            Val::Integer(u16::from(origin) as Integer),
                         ])),
                     }),
                 );
@@ -1571,32 +1567,23 @@ impl ModelBuilder {
                 .iter()
                 .map(|expr| self.build_predicate(expr))
                 .collect::<Result<_, _>>()
-                .map(Expression::And),
+                .map(Expression::and),
             Expression::Or(exprs) => exprs
                 .iter()
                 .map(|expr| self.build_predicate(expr))
                 .collect::<Result<_, _>>()
-                .map(Expression::Or),
+                .map(Expression::or),
             Expression::Implies(exprs) => Ok(Expression::Implies(Box::new((
                 self.build_predicate(&exprs.0)?,
                 self.build_predicate(&exprs.1)?,
             )))),
-            Expression::Not(expr) => self
-                .build_predicate(expr)
-                .map(|expr| Expression::Not(Box::new(expr))),
-            Expression::Opposite(expr) => self
-                .build_predicate(expr)
-                .map(|expr| Expression::Opposite(Box::new(expr))),
-            Expression::Sum(exprs) => exprs
-                .iter()
-                .map(|expr| self.build_predicate(expr))
-                .collect::<Result<_, _>>()
-                .map(Expression::Sum),
+            Expression::Not(expr) => self.build_predicate(expr).map(|expr| !expr),
+            Expression::Opposite(expr) => self.build_predicate(expr).map(|expr| -expr),
+            Expression::Sum(exprs) => exprs.iter().map(|expr| self.build_predicate(expr)).sum(),
             Expression::Mult(exprs) => exprs
                 .iter()
                 .map(|expr| self.build_predicate(expr))
-                .collect::<Result<_, _>>()
-                .map(Expression::Mult),
+                .product(),
             Expression::Equal(exprs) => Ok(Expression::Equal(Box::new((
                 self.build_predicate(&exprs.0)?,
                 self.build_predicate(&exprs.1)?,
@@ -1687,7 +1674,7 @@ impl ModelBuilder {
             fsm_indexes: self
                 .fsm_builders
                 .into_iter()
-                .map(|(name, b)| (usize::from(b.pg_id), name))
+                .map(|(name, b)| (u16::from(b.pg_id) as usize, name))
                 .collect(),
             predicates,
         }
@@ -1723,12 +1710,12 @@ impl ModelBuilder {
                     .map(|f| Self::build_pmtl_property(atoms, f, predicates))
                     .collect::<Result<_, _>>()?,
             )),
-            Pmtl::Not(formula) => Ok(Pmtl::Not(Arc::new(Self::build_pmtl_property(
+            Pmtl::Not(formula) => Ok(Pmtl::Not(Box::new(Self::build_pmtl_property(
                 atoms, formula, predicates,
             )?))),
             Pmtl::Implies(formulae) => {
                 let (ref lhs, ref rhs) = **formulae;
-                Ok(Pmtl::Implies(Arc::new((
+                Ok(Pmtl::Implies(Box::new((
                     Self::build_pmtl_property(atoms, lhs, predicates)?,
                     Self::build_pmtl_property(atoms, rhs, predicates)?,
                 ))))
@@ -1736,7 +1723,7 @@ impl ModelBuilder {
             Pmtl::Since(formulae, lower_bound, upper_bound) => {
                 let (ref lhs, ref rhs) = **formulae;
                 Ok(Pmtl::Since(
-                    Arc::new((
+                    Box::new((
                         Self::build_pmtl_property(atoms, lhs, predicates)?,
                         Self::build_pmtl_property(atoms, rhs, predicates)?,
                     )),
@@ -1747,7 +1734,7 @@ impl ModelBuilder {
             Pmtl::Historically(formula, lower_bound, upper_bound) => {
                 let formula = formula.as_ref();
                 Ok(Pmtl::Historically(
-                    Arc::new(Self::build_pmtl_property(atoms, formula, predicates)?),
+                    Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
                     *lower_bound,
                     *upper_bound,
                 ))
@@ -1755,7 +1742,7 @@ impl ModelBuilder {
             Pmtl::Previously(formula, lower_bound, upper_bound) => {
                 let formula = formula.as_ref();
                 Ok(Pmtl::Previously(
-                    Arc::new(Self::build_pmtl_property(atoms, formula, predicates)?),
+                    Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
                     *lower_bound,
                     *upper_bound,
                 ))

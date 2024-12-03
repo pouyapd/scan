@@ -1,7 +1,7 @@
 mod numset;
 
-use crate::{Atom, Oracle, Time};
-use hashbrown::{HashMap, HashSet};
+use crate::{Atom, Time};
+use hashbrown::HashSet;
 use numset::NumSet;
 use std::{hash::Hash, sync::Arc};
 
@@ -17,11 +17,123 @@ where
     Atom(V),
     And(Vec<Pmtl<V>>),
     Or(Vec<Pmtl<V>>),
-    Not(Arc<Pmtl<V>>),
-    Implies(Arc<(Pmtl<V>, Pmtl<V>)>),
-    Historically(Arc<Pmtl<V>>, Time, Time),
-    Previously(Arc<Pmtl<V>>, Time, Time),
-    Since(Arc<(Pmtl<V>, Pmtl<V>)>, Time, Time),
+    Not(Box<Pmtl<V>>),
+    Implies(Box<(Pmtl<V>, Pmtl<V>)>),
+    Historically(Box<Pmtl<V>>, Time, Time),
+    Previously(Box<Pmtl<V>>, Time, Time),
+    Since(Box<(Pmtl<V>, Pmtl<V>)>, Time, Time),
+}
+
+impl<V> Pmtl<V>
+where
+    V: Clone + Eq,
+{
+    fn is_same(&self, value: &ArcPmtl<V>) -> bool {
+        match value {
+            ArcPmtl::True => matches!(self, &Pmtl::True),
+            ArcPmtl::False => matches!(self, &Pmtl::False),
+            ArcPmtl::Atom(v) => {
+                if let Pmtl::Atom(self_v) = self {
+                    v == self_v
+                } else {
+                    false
+                }
+            }
+            ArcPmtl::And(subs) => {
+                if let Pmtl::And(self_subs) = self {
+                    subs.len() == self_subs.len()
+                        && self_subs
+                            .iter()
+                            .zip(subs)
+                            .all(|(s, (v, _))| s.is_same(v.as_ref()))
+                } else {
+                    false
+                }
+            }
+            ArcPmtl::Or(subs) => {
+                if let Pmtl::Or(self_subs) = self {
+                    subs.len() == self_subs.len()
+                        && self_subs
+                            .iter()
+                            .zip(subs)
+                            .all(|(s, (v, _))| s.is_same(v.as_ref()))
+                } else {
+                    false
+                }
+            }
+            ArcPmtl::Not((sub, _)) => {
+                if let Pmtl::Not(self_sub) = self {
+                    self_sub.is_same(sub.as_ref())
+                } else {
+                    false
+                }
+            }
+            ArcPmtl::Implies((lhs, _), (rhs, _)) => {
+                if let Pmtl::Implies(self_sub) = self {
+                    self_sub.0.is_same(lhs.as_ref()) && self_sub.1.is_same(rhs.as_ref())
+                } else {
+                    false
+                }
+            }
+            ArcPmtl::Historically((sub, _), lower_bound, upper_bound) => {
+                if let Pmtl::Historically(self_sub, self_lower_bound, self_upper_bound) = self {
+                    self_sub.is_same(sub.as_ref())
+                        && lower_bound == self_lower_bound
+                        && upper_bound == self_upper_bound
+                } else {
+                    false
+                }
+            }
+            ArcPmtl::Previously((sub, _), lower_bound, upper_bound) => {
+                if let Pmtl::Previously(self_sub, self_lower_bound, self_upper_bound) = self {
+                    self_sub.is_same(sub.as_ref())
+                        && lower_bound == self_lower_bound
+                        && upper_bound == self_upper_bound
+                } else {
+                    false
+                }
+            }
+            ArcPmtl::Since((lhs, _), (rhs, _), lower_bound, upper_bound) => {
+                if let Pmtl::Since(self_sub, self_lower_bound, self_upper_bound) = self {
+                    self_sub.0.is_same(lhs.as_ref())
+                        && self_sub.1.is_same(rhs.as_ref())
+                        && lower_bound == self_lower_bound
+                        && upper_bound == self_upper_bound
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ArcPmtl<V>
+where
+    V: Clone,
+{
+    True,
+    False,
+    Atom(V),
+    And(Vec<IdxPmtl<V>>),
+    Or(Vec<IdxPmtl<V>>),
+    Not(IdxPmtl<V>),
+    Implies(IdxPmtl<V>, IdxPmtl<V>),
+    Historically(IdxPmtl<V>, Time, Time),
+    Previously(IdxPmtl<V>, Time, Time),
+    Since(IdxPmtl<V>, IdxPmtl<V>, Time, Time),
+}
+
+type IdxPmtl<V> = (Arc<ArcPmtl<V>>, usize);
+
+#[derive(Debug, Clone)]
+pub struct PmtlOracle<V: Clone + Eq + Hash> {
+    time: DenseTime,
+    assumes: Vec<usize>,
+    guarantees: Vec<usize>,
+    subformulae: Arc<Vec<ArcPmtl<Atom<V>>>>,
+    valuations: Vec<NumSet>,
+    outputs: Vec<NumSet>,
 }
 
 impl<V> Pmtl<V>
@@ -47,14 +159,88 @@ where
         formulae.insert(self);
         formulae
     }
+}
 
-    pub(crate) fn subformulae(self) -> Vec<Pmtl<V>> {
-        let set = self.set_subformulae();
-        let mut vec = Vec::from_iter(set);
-        vec.sort_unstable_by_key(Self::depth);
-        vec.shrink_to_fit();
-        vec
+fn subformulae<V: Clone + Eq + Hash>(set: HashSet<Pmtl<V>>) -> Vec<ArcPmtl<V>> {
+    let mut vec = Vec::from_iter(set);
+    vec.sort_unstable_by_key(Pmtl::depth);
+    vec.shrink_to_fit();
+    let mut idx_vec: Vec<ArcPmtl<V>> = Vec::new();
+    for pmtl in vec {
+        let arc_pmtl = match pmtl {
+            Pmtl::True => ArcPmtl::True,
+            Pmtl::False => ArcPmtl::False,
+            Pmtl::Atom(p) => ArcPmtl::Atom(p),
+            Pmtl::And(subs) => {
+                let mut arc_subs = Vec::new();
+                for sub in subs {
+                    let idx = idx_vec.iter().position(|f| sub.is_same(f)).expect("index");
+                    arc_subs.push((Arc::new(idx_vec[idx].clone()), idx));
+                }
+                ArcPmtl::And(arc_subs)
+            }
+            Pmtl::Or(subs) => {
+                let mut arc_subs = Vec::new();
+                for sub in subs {
+                    let idx = idx_vec.iter().position(|f| sub.is_same(f)).expect("index");
+                    arc_subs.push((Arc::new(idx_vec[idx].clone()), idx));
+                }
+                ArcPmtl::Or(arc_subs)
+            }
+            Pmtl::Not(sub) => {
+                let idx = idx_vec.iter().position(|f| sub.is_same(f)).expect("index");
+                ArcPmtl::Not((Arc::new(idx_vec[idx].clone()), idx))
+            }
+            Pmtl::Implies(subs) => {
+                let idx_0 = idx_vec
+                    .iter()
+                    .position(|f| subs.0.is_same(f))
+                    .expect("index");
+                let idx_1 = idx_vec
+                    .iter()
+                    .position(|f| subs.1.is_same(f))
+                    .expect("index");
+                ArcPmtl::Implies(
+                    (Arc::new(idx_vec[idx_0].clone()), idx_0),
+                    (Arc::new(idx_vec[idx_1].clone()), idx_1),
+                )
+            }
+            Pmtl::Historically(sub, lower_bound, upper_bound) => {
+                let idx = idx_vec.iter().position(|f| sub.is_same(f)).expect("index");
+                ArcPmtl::Historically(
+                    (Arc::new(idx_vec[idx].clone()), idx),
+                    lower_bound,
+                    upper_bound,
+                )
+            }
+            Pmtl::Previously(sub, lower_bound, upper_bound) => {
+                let idx = idx_vec.iter().position(|f| sub.is_same(f)).expect("index");
+                ArcPmtl::Previously(
+                    (Arc::new(idx_vec[idx].clone()), idx),
+                    lower_bound,
+                    upper_bound,
+                )
+            }
+            Pmtl::Since(subs, lower_bound, upper_bound) => {
+                let idx_0 = idx_vec
+                    .iter()
+                    .position(|f| subs.0.is_same(f))
+                    .expect("index");
+                let idx_1 = idx_vec
+                    .iter()
+                    .position(|f| subs.1.is_same(f))
+                    .expect("index");
+                ArcPmtl::Since(
+                    (Arc::new(idx_vec[idx_0].clone()), idx_0),
+                    (Arc::new(idx_vec[idx_1].clone()), idx_1),
+                    lower_bound,
+                    upper_bound,
+                )
+            }
+        };
+        idx_vec.push(arc_pmtl);
     }
+    idx_vec
 }
 
 impl<V> Pmtl<V>
@@ -73,151 +259,130 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct StateValuationVector<V: Clone + Eq + Hash> {
-    time: DenseTime,
-    subformulae: Arc<Vec<Pmtl<Atom<V>>>>,
-    // The first NumSet represents the valuation,
-    // the second NumSet represents the output.
-    val_output: HashMap<Pmtl<Atom<V>>, (NumSet, NumSet)>,
-}
-
-impl<V: std::fmt::Debug + Clone + Eq + Hash> Oracle<V> for StateValuationVector<V> {
-    fn update(&mut self, action: &V, state: &[bool], time: Time) -> bool {
-        *self = self.valuation_update(action, state, time);
-        self.output(self.subformulae.last().expect("formula"))
-    }
-}
-
-impl<V: std::fmt::Debug + Clone + Eq + Hash> StateValuationVector<V> {
-    pub fn new(formula: Pmtl<Atom<V>>) -> Self {
-        let subformulae = Arc::new(formula.subformulae());
+impl<V: std::fmt::Debug + Clone + Eq + Hash> PmtlOracle<V> {
+    pub fn new(assumes: &[Pmtl<Atom<V>>], guarantees: &[Pmtl<Atom<V>>]) -> Self {
+        let set = HashSet::from_iter(
+            assumes
+                .iter()
+                .chain(guarantees)
+                .flat_map(|f| f.clone().set_subformulae().into_iter()),
+        );
+        let subformulae = Arc::new(subformulae(set));
+        let assumes = assumes
+            .iter()
+            .map(|a| {
+                subformulae
+                    .iter()
+                    .position(|f| a.is_same(f))
+                    .expect("find assume")
+            })
+            .collect();
+        let guarantees = guarantees
+            .iter()
+            .map(|g| {
+                subformulae
+                    .iter()
+                    .position(|f| g.is_same(f))
+                    .expect("find assume")
+            })
+            .collect();
 
         Self {
             // WARN: all Hell brakes loose with time: (0, 0)
             time: (0, 1),
-            val_output: HashMap::from_iter(
-                subformulae
-                    .iter()
-                    .cloned()
-                    .map(|f| (f, (NumSet::new(), NumSet::new()))),
-            ),
+            assumes,
+            guarantees,
+            valuations: Vec::from_iter((0..subformulae.len()).map(|_| NumSet::new())),
+            outputs: Vec::from_iter((0..subformulae.len()).map(|_| NumSet::new())),
             subformulae,
         }
     }
 
-    fn output(&self, formula: &Pmtl<Atom<V>>) -> bool {
-        self.val_output
-            .get(formula)
-            .map(|(_, out)| out.contains(self.time))
-            .unwrap()
-        // .unwrap_or(false)
+    #[inline(always)]
+    fn formula_output(&self, formula: usize) -> bool {
+        self.outputs[formula].contains(self.time)
     }
 
-    fn valuation_update(&self, event: &V, state: &[bool], time: Time) -> Self {
+    pub(crate) fn output(&self) -> Option<bool> {
+        self.assumes
+            .iter()
+            .all(|a| self.formula_output(*a))
+            .then_some(self.guarantees.iter().all(|g| self.formula_output(*g)))
+    }
+
+    pub(crate) fn update(self, event: &V, state: &[bool], time: Time) -> Self {
         assert!(self.time.0 <= time);
-        let mut new_valuation = Self {
-            time: (time, self.time.1 + 1),
-            subformulae: Arc::clone(&self.subformulae),
-            val_output: HashMap::with_capacity(self.subformulae.len()),
-        };
-        for formula in self.subformulae.iter() {
+        let new_time = (time, self.time.1 + 1);
+        let mut valuations = Vec::with_capacity(self.subformulae.len());
+        let mut outputs = Vec::with_capacity(self.subformulae.len());
+        for (idx, formula) in self.subformulae.iter().enumerate() {
             match formula {
-                Pmtl::True => {
-                    new_valuation.val_output.insert(
-                        formula.clone(),
-                        (
-                            NumSet::full(),
-                            NumSet::from_range(self.time, new_valuation.time),
-                        ),
-                    );
+                ArcPmtl::True => {
+                    valuations.push(NumSet::full());
+                    outputs.push(NumSet::from_range(self.time, new_time));
                 }
-                Pmtl::False => {
-                    new_valuation
-                        .val_output
-                        .insert(formula.clone(), (NumSet::new(), NumSet::new()));
+                ArcPmtl::False => {
+                    valuations.push(NumSet::new());
+                    outputs.push(NumSet::new());
                 }
-                Pmtl::Atom(atom) => match atom {
+                ArcPmtl::Atom(atom) => match atom {
                     Atom::Predicate(p) if state[*p] => {
-                        let numset = NumSet::from_range(self.time, new_valuation.time);
-                        new_valuation
-                            .val_output
-                            .insert(formula.clone(), (numset.clone(), numset));
+                        let numset = NumSet::from_range(self.time, new_time);
+                        valuations.push(numset.clone());
+                        outputs.push(numset);
                     }
                     Atom::Event(e) if event == e => {
-                        let numset = NumSet::from_range(
-                            (new_valuation.time.0, new_valuation.time.1 - 1),
-                            new_valuation.time,
-                        );
-                        new_valuation
-                            .val_output
-                            .insert(formula.clone(), (numset.clone(), numset));
+                        let numset = NumSet::from_range((new_time.0, new_time.1 - 1), new_time);
+                        valuations.push(numset.clone());
+                        outputs.push(numset);
                     }
                     _ => {
-                        new_valuation
-                            .val_output
-                            .insert(formula.clone(), (NumSet::new(), NumSet::new()));
+                        valuations.push(NumSet::new());
+                        outputs.push(NumSet::new());
                     }
                 },
-                Pmtl::And(subs) => {
-                    let nset = NumSet::intersection(
-                        subs.iter()
-                            .filter_map(|f| new_valuation.val_output.get(f).map(|(_, val)| val))
-                            .cloned(),
-                    )
-                    .simplify();
-                    new_valuation
-                        .val_output
-                        .insert(formula.clone(), (nset.clone(), nset));
+                ArcPmtl::And(subs) => {
+                    let nset =
+                        NumSet::intersection(subs.iter().filter_map(|f| outputs.get(f.1)).cloned())
+                            .simplify();
+                    valuations.push(nset.clone());
+                    outputs.push(nset);
                 }
-                Pmtl::Or(subs) => {
+                ArcPmtl::Or(subs) => {
                     let nset = subs
                         .iter()
-                        .filter_map(|sub| new_valuation.val_output.get(sub))
-                        .fold(NumSet::new(), |mut union, (_, numset)| {
+                        .filter_map(|sub| outputs.get(sub.1))
+                        .fold(NumSet::new(), |mut union, numset| {
                             union.union(numset);
                             union
                         })
                         .simplify();
-                    new_valuation
-                        .val_output
-                        .insert(formula.clone(), (nset.clone(), nset));
+                    valuations.push(nset.clone());
+                    outputs.push(nset);
                 }
-                Pmtl::Not(subformula) => {
-                    let mut nset = new_valuation
-                        .val_output
-                        .get(subformula.as_ref())
-                        .expect("nset")
-                        .1
-                        .clone();
+                ArcPmtl::Not(subformula) => {
+                    let mut nset = outputs.get(subformula.1).expect("nset").clone();
                     nset.complement();
-                    nset.cut(self.time, new_valuation.time);
+                    nset.cut(self.time, new_time);
                     nset.simplify();
-                    new_valuation
-                        .val_output
-                        .insert(formula.clone(), (nset.clone(), nset));
+                    valuations.push(nset.clone());
+                    outputs.push(nset);
                 }
-                Pmtl::Implies(subs) => {
-                    let out_lhs = &new_valuation.val_output.get(&subs.0).expect("output lhs").1;
-                    let out_rhs = &new_valuation.val_output.get(&subs.1).expect("output rhs").1;
+                ArcPmtl::Implies(sub_0, sub_1) => {
+                    let out_lhs = outputs.get(sub_0.1).expect("output lhs");
+                    let out_rhs = outputs.get(sub_1.1).expect("output rhs");
                     let mut nset = out_lhs.clone();
                     nset.complement();
                     nset.union(out_rhs);
-                    nset.cut(self.time, new_valuation.time);
+                    nset.cut(self.time, new_time);
                     nset.simplify();
-                    new_valuation
-                        .val_output
-                        .insert(formula.clone(), (nset.clone(), nset));
+                    valuations.push(nset.clone());
+                    outputs.push(nset);
                 }
-                Pmtl::Historically(sub, lower_bound, upper_bound) => {
-                    let mut output_sub = new_valuation
-                        .val_output
-                        .get(sub.as_ref())
-                        .expect("nset")
-                        .1
-                        .clone();
-                    output_sub.insert_bound(new_valuation.time);
-                    let mut valuation = self.val_output.get(formula).expect("formula").0.clone();
+                ArcPmtl::Historically(sub, lower_bound, upper_bound) => {
+                    let mut output_sub = outputs.get(sub.1).expect("nset").clone();
+                    output_sub.insert_bound(new_time);
+                    let mut valuation = self.valuations.get(idx).expect("formula").clone();
                     let mut partial_lower_bound = self.time;
                     let mut nset_output = NumSet::new();
                     for (partial_upper_bound, out_sub) in
@@ -246,22 +411,15 @@ impl<V: std::fmt::Debug + Clone + Eq + Hash> StateValuationVector<V> {
                         partial_lower_bound = *partial_upper_bound;
                     }
                     nset_output.complement();
-                    nset_output.cut(self.time, new_valuation.time);
+                    nset_output.cut(self.time, new_time);
                     valuation.cut(self.time, (Time::MAX, Time::MAX));
-                    new_valuation.val_output.insert(
-                        formula.clone(),
-                        (valuation.simplify(), nset_output.simplify()),
-                    );
+                    valuations.push(valuation.simplify());
+                    outputs.push(nset_output.simplify());
                 }
-                Pmtl::Previously(sub, lower_bound, upper_bound) => {
-                    let mut output_sub = new_valuation
-                        .val_output
-                        .get(sub.as_ref())
-                        .expect("nset")
-                        .1
-                        .clone();
-                    output_sub.insert_bound(new_valuation.time);
-                    let mut valuation = self.val_output.get(formula).expect("formula").0.clone();
+                ArcPmtl::Previously(sub, lower_bound, upper_bound) => {
+                    let mut output_sub = outputs.get(sub.1).expect("nset").clone();
+                    output_sub.insert_bound(new_time);
+                    let mut valuation = self.valuations.get(idx).expect("formula").clone();
                     let mut partial_lower_bound = self.time;
                     let mut output = NumSet::new();
                     for (partial_upper_bound, out_sub) in
@@ -269,7 +427,7 @@ impl<V: std::fmt::Debug + Clone + Eq + Hash> StateValuationVector<V> {
                     {
                         assert!(partial_lower_bound < *partial_upper_bound);
                         assert!(self.time < *partial_upper_bound);
-                        assert!(*partial_upper_bound <= new_valuation.time);
+                        assert!(*partial_upper_bound <= new_time);
                         if *out_sub {
                             let interval_lower_bound = if *lower_bound > 0 {
                                 lower_bound
@@ -291,24 +449,18 @@ impl<V: std::fmt::Debug + Clone + Eq + Hash> StateValuationVector<V> {
                         partial_lower_bound = *partial_upper_bound;
                     }
                     valuation.cut(self.time, (Time::MAX, Time::MAX));
-                    new_valuation
-                        .val_output
-                        .insert(formula.clone(), (valuation.simplify(), output.simplify()));
+                    valuations.push(valuation.simplify());
+                    outputs.push(output.simplify());
                 }
-                Pmtl::Since(subs, lower_bound, upper_bound) => {
-                    let mut nset_lhs = new_valuation
-                        .val_output
-                        .get(&subs.0)
-                        .expect("nset")
-                        .1
-                        .clone();
-                    let nset_rhs_orig = &new_valuation.val_output.get(&subs.1).expect("nset").1;
+                ArcPmtl::Since(sub_0, sub_1, lower_bound, upper_bound) => {
+                    let mut nset_lhs = outputs.get(sub_0.1).expect("nset").clone();
+                    let nset_rhs_orig = outputs.get(sub_1.1).expect("nset");
                     let mut nset_rhs = nset_rhs_orig.clone();
-                    nset_rhs.insert_bound(new_valuation.time);
-                    nset_lhs.insert_bound(new_valuation.time);
+                    nset_rhs.insert_bound(new_time);
+                    nset_lhs.insert_bound(new_time);
                     nset_rhs.sync(&nset_lhs);
                     nset_lhs.sync(nset_rhs_orig);
-                    let mut valuation = self.val_output.get(formula).expect("formula").0.clone();
+                    let mut valuation = self.valuations.get(idx).expect("formula").clone();
                     let mut partial_lower_bound = self.time;
                     let mut nset_output = NumSet::new();
                     for (idx, (partial_upper_bound, out_lhs)) in nset_lhs
@@ -363,14 +515,19 @@ impl<V: std::fmt::Debug + Clone + Eq + Hash> StateValuationVector<V> {
                         partial_lower_bound = *partial_upper_bound;
                     }
                     valuation.cut(self.time, (Time::MAX, Time::MAX));
-                    new_valuation.val_output.insert(
-                        formula.clone(),
-                        (valuation.simplify(), nset_output.simplify()),
-                    );
+                    valuations.push(valuation.simplify());
+                    outputs.push(nset_output.simplify());
                 }
             }
         }
-        new_valuation
+        Self {
+            time: new_time,
+            assumes: self.assumes,
+            guarantees: self.guarantees,
+            subformulae: self.subformulae,
+            valuations,
+            outputs,
+        }
     }
 }
 
@@ -380,144 +537,197 @@ mod tests {
 
     #[test]
     fn subformulae_1() {
-        let subformulae: Vec<Pmtl<usize>> =
-            Pmtl::Since(Arc::new((Pmtl::True, Pmtl::True)), 0, Time::MAX).subformulae();
+        let subformulae: Vec<ArcPmtl<usize>> = subformulae(
+            Pmtl::Since(Box::new((Pmtl::True, Pmtl::True)), 0, Time::MAX).set_subformulae(),
+        );
         assert_eq!(
             subformulae,
             vec![
-                Pmtl::True,
-                Pmtl::Since(Arc::new((Pmtl::True, Pmtl::True)), 0, Time::MAX)
+                ArcPmtl::True,
+                ArcPmtl::Since(
+                    (Arc::new(ArcPmtl::True), 0),
+                    (Arc::new(ArcPmtl::True), 0),
+                    0,
+                    Time::MAX
+                ),
             ]
         );
     }
 
     #[test]
     fn subformulae_2() {
-        let subformulae: Vec<Pmtl<usize>> =
-            Pmtl::Since(Arc::new((Pmtl::Atom(0), Pmtl::Atom(0))), 0, Time::MAX).subformulae();
+        let subformulae: Vec<ArcPmtl<usize>> = subformulae(
+            Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(0))), 0, Time::MAX).set_subformulae(),
+        );
         assert_eq!(
             subformulae,
             vec![
-                Pmtl::Atom(0),
-                Pmtl::Since(Arc::new((Pmtl::Atom(0), Pmtl::Atom(0))), 0, Time::MAX)
+                ArcPmtl::Atom(0),
+                ArcPmtl::Since(
+                    (Arc::new(ArcPmtl::Atom(0)), 0),
+                    (Arc::new(ArcPmtl::Atom(0)), 0),
+                    0,
+                    Time::MAX
+                ),
             ]
         );
     }
 
     #[test]
     fn subformulae_3() {
-        let subformulae: Vec<Pmtl<usize>> = Pmtl::And(vec![
-            Pmtl::Atom(0),
-            Pmtl::Not(Arc::new(Pmtl::Atom(0))),
-            Pmtl::True,
-        ])
-        .subformulae();
+        let subformulae: Vec<ArcPmtl<usize>> = subformulae(
+            Pmtl::And(vec![
+                Pmtl::Atom(0),
+                Pmtl::Not(Box::new(Pmtl::Atom(0))),
+                Pmtl::True,
+            ])
+            .set_subformulae(),
+        );
         assert_eq!(subformulae.len(), 4);
-        assert!(matches!(subformulae[0], Pmtl::Atom(0) | Pmtl::True));
-        assert!(matches!(subformulae[1], Pmtl::Atom(0) | Pmtl::True));
-        assert_eq!(subformulae[2], Pmtl::Not(Arc::new(Pmtl::Atom(0))));
+        assert!(matches!(subformulae[0], ArcPmtl::Atom(0) | ArcPmtl::True));
+        assert!(matches!(subformulae[1], ArcPmtl::Atom(0) | ArcPmtl::True));
+        assert!(matches!(subformulae[2], ArcPmtl::Not((_, 0 | 1))));
     }
 
     #[test]
     fn since_1() {
         let formula = Pmtl::Since(
-            Arc::new((
+            Box::new((
                 Pmtl::Atom(Atom::Predicate(0)),
                 Pmtl::Atom(Atom::Predicate(1)),
             )),
             0,
             Time::MAX,
         );
-        let mut state = StateValuationVector::new(formula);
-        assert!(!state.update(&0, &[false, true], 0));
-        assert!(!state.update(&0, &[false, true], 1));
-        assert!(state.update(&0, &[true, true], 2));
-        assert!(state.update(&0, &[true, true], 3));
-        assert!(state.update(&0, &[true, false], 4));
-        assert!(!state.update(&0, &[false, false], 5));
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false, true], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, true], 2);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, true], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 4);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false, false], 5);
+        assert!(!state.output().unwrap());
     }
 
     #[test]
     fn since_2() {
         let formula = Pmtl::Since(
-            Arc::new((
+            Box::new((
                 Pmtl::Atom(Atom::Predicate(0)),
                 Pmtl::Atom(Atom::Predicate(1)),
             )),
             0,
             2,
         );
-        let mut state = StateValuationVector::new(formula);
-        assert!(!state.update(&0, &[false, true], 0));
-        assert!(!state.update(&0, &[false, true], 1));
-        assert!(state.update(&0, &[true, true], 2));
-        assert!(state.update(&0, &[true, false], 3));
-        assert!(state.update(&0, &[true, false], 4));
-        assert!(!state.update(&0, &[true, false], 5));
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false, true], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, true], 2);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 4);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 5);
+        assert!(!state.output().unwrap());
     }
 
     #[test]
     fn since_3() {
         let formula = Pmtl::Since(
-            Arc::new((
+            Box::new((
                 Pmtl::Atom(Atom::Predicate(0)),
                 Pmtl::Atom(Atom::Predicate(1)),
             )),
             1,
             2,
         );
-        let mut state = StateValuationVector::new(formula);
-        assert!(!state.update(&0, &[false, true], 0));
-        assert!(!state.update(&0, &[false, true], 1));
-        assert!(state.update(&0, &[true, true], 2));
-        assert!(state.update(&0, &[true, false], 3));
-        assert!(state.update(&0, &[true, false], 4));
-        assert!(!state.update(&0, &[true, false], 5));
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false, true], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, true], 2);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 4);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 5);
+        assert!(!state.output().unwrap());
     }
 
     #[test]
     fn since_4() {
         let formula = Pmtl::Since(
-            Arc::new((
+            Box::new((
                 Pmtl::Atom(Atom::Predicate(0)),
                 Pmtl::Atom(Atom::Predicate(1)),
             )),
             1,
             2,
         );
-        let mut state = StateValuationVector::new(formula);
-        assert!(!state.update(&0, &[false, true], 0));
-        assert!(!state.update(&0, &[false, true], 1));
-        assert!(!state.update(&0, &[false, true], 2));
-        assert!(!state.update(&0, &[true, true], 2));
-        assert!(state.update(&0, &[true, false], 3));
-        assert!(state.update(&0, &[true, false], 4));
-        assert!(!state.update(&0, &[true, false], 5));
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false, true], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false, true], 2);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, true], 2);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true, false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 4);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true, false], 5);
+        assert!(!state.output().unwrap());
     }
 
     #[test]
     fn historically() {
-        let formula = Pmtl::Historically(Arc::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
-        let mut state = StateValuationVector::new(formula);
-        assert!(state.update(&0, &[false], 0));
-        assert!(state.update(&0, &[false], 0));
-        assert!(!state.update(&0, &[true], 1));
-        assert!(!state.update(&0, &[true], 2));
-        assert!(state.update(&0, &[true], 3));
-        assert!(state.update(&0, &[false], 3));
-        assert!(!state.update(&0, &[true], 4));
+        let formula = Pmtl::Historically(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false], 0);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 0);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true], 1);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true], 2);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true], 4);
+        assert!(!state.output().unwrap());
     }
 
     #[test]
     fn previously() {
-        let formula = Pmtl::Previously(Arc::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
-        let mut state = StateValuationVector::new(formula);
-        assert!(!state.update(&0, &[false], 0));
-        assert!(!state.update(&0, &[false], 0));
-        assert!(state.update(&0, &[true], 1));
-        assert!(state.update(&0, &[false], 2));
-        assert!(state.update(&0, &[false], 3));
-        assert!(state.update(&0, &[false], 3));
-        assert!(state.update(&0, &[true], 4));
+        let formula = Pmtl::Previously(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
+        let mut state = PmtlOracle::new(&[], &[formula]);
+        state = state.update(&0, &[false], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[false], 0);
+        assert!(!state.output().unwrap());
+        state = state.update(&0, &[true], 1);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 2);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[false], 3);
+        assert!(state.output().unwrap());
+        state = state.update(&0, &[true], 4);
+        assert!(state.output().unwrap());
     }
 }

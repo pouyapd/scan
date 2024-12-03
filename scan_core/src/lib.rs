@@ -18,4 +18,4 @@ pub use model::*;
 pub use pmtl::*;
 pub use transition_system::*;
 
-pub type Time = usize;
+pub type Time = u32;

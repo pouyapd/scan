@@ -2,6 +2,7 @@ use super::{
     Action, Channel, ChannelSystem, Clock, CsError, Location, Message, PgError, PgExpression, PgId,
     ProgramGraph, ProgramGraphBuilder, TimeConstraint, Var,
 };
+use crate::channel_system::ChannelSystemDef;
 use crate::grammar::Type;
 use crate::Expression;
 // use ahash::AHashMap as HashMap;
@@ -118,7 +119,7 @@ impl ChannelSystemBuilder {
 
     /// Add a new PG to the CS.
     pub fn new_program_graph(&mut self) -> PgId {
-        let pg_id = PgId(self.program_graphs.len());
+        let pg_id = PgId(self.program_graphs.len() as u16);
         let pg = ProgramGraphBuilder::new();
         self.program_graphs.push(pg);
         pg_id
@@ -130,7 +131,7 @@ impl ChannelSystemBuilder {
     pub fn initial_location(&mut self, pg_id: PgId) -> Result<Location, CsError> {
         let pg = self
             .program_graphs
-            .get(pg_id.0)
+            .get(pg_id.0 as usize)
             .ok_or(CsError::MissingPg(pg_id))?;
         let initial = Location(pg_id, pg.initial_location());
         Ok(initial)
@@ -144,7 +145,7 @@ impl ChannelSystemBuilder {
     pub fn new_var(&mut self, pg_id: PgId, init: CsExpression) -> Result<Var, CsError> {
         let pg = self
             .program_graphs
-            .get_mut(pg_id.0)
+            .get_mut(pg_id.0 as usize)
             .ok_or(CsError::MissingPg(pg_id))?;
         let init = PgExpression::try_from((pg_id, init))?;
         let var = pg
@@ -155,7 +156,7 @@ impl ChannelSystemBuilder {
 
     pub fn new_clock(&mut self, pg_id: PgId) -> Result<Clock, CsError> {
         self.program_graphs
-            .get_mut(pg_id.0)
+            .get_mut(pg_id.0 as usize)
             .ok_or(CsError::MissingPg(pg_id))
             .map(|pg| Clock(pg_id, pg.new_clock()))
     }
@@ -167,7 +168,7 @@ impl ChannelSystemBuilder {
     /// See also [`ProgramGraphBuilder::new_action`].
     pub fn new_action(&mut self, pg_id: PgId) -> Result<Action, CsError> {
         self.program_graphs
-            .get_mut(pg_id.0)
+            .get_mut(pg_id.0 as usize)
             .ok_or(CsError::MissingPg(pg_id))
             .map(|pg| Action(pg_id, pg.new_action()))
     }
@@ -225,7 +226,7 @@ impl ChannelSystemBuilder {
         } else {
             let effect = PgExpression::try_from((pg_id, effect))?;
             self.program_graphs
-                .get_mut(pg_id.0)
+                .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))
                 .and_then(|pg| {
                     pg.add_effect(action.1, var.1, effect)
@@ -246,7 +247,7 @@ impl ChannelSystemBuilder {
             Err(CsError::DifferentPgs(pg_id, clock.0))
         } else {
             self.program_graphs
-                .get_mut(pg_id.0)
+                .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))
                 .and_then(|pg| {
                     pg.reset_clock(action.1, clock.1)
@@ -262,7 +263,7 @@ impl ChannelSystemBuilder {
     /// See also [`ProgramGraphBuilder::new_location`].
     pub fn new_location(&mut self, pg_id: PgId) -> Result<Location, CsError> {
         self.program_graphs
-            .get_mut(pg_id.0)
+            .get_mut(pg_id.0 as usize)
             .ok_or(CsError::MissingPg(pg_id))
             .map(|pg| Location(pg_id, pg.new_location()))
     }
@@ -284,7 +285,7 @@ impl ChannelSystemBuilder {
             })
             .collect::<Result<Vec<_>, CsError>>()?;
         self.program_graphs
-            .get_mut(pg_id.0)
+            .get_mut(pg_id.0 as usize)
             .ok_or(CsError::MissingPg(pg_id))
             .map(|pg| Location(pg_id, pg.new_timed_location(&invariants)))
     }
@@ -314,7 +315,7 @@ impl ChannelSystemBuilder {
                 .map(|guard| PgExpression::try_from((pg_id, guard)))
                 .transpose()?;
             self.program_graphs
-                .get_mut(pg_id.0)
+                .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))
                 .and_then(|pg| {
                     pg.add_transition(pre.1, action.1, post.1, guard)
@@ -354,7 +355,7 @@ impl ChannelSystemBuilder {
                 })
                 .collect::<Result<Vec<_>, CsError>>()?;
             self.program_graphs
-                .get_mut(pg_id.0)
+                .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))
                 .and_then(|pg| {
                     pg.add_timed_transition(pre.1, action.1, post.1, guard, &constraints)
@@ -385,7 +386,7 @@ impl ChannelSystemBuilder {
                 .map(|guard| PgExpression::try_from((pg_id, guard)))
                 .transpose()?;
             self.program_graphs
-                .get_mut(pg_id.0)
+                .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))
                 .and_then(|pg| {
                     pg.add_autonomous_transition(pre.1, post.1, guard)
@@ -422,7 +423,7 @@ impl ChannelSystemBuilder {
                 })
                 .collect::<Result<Vec<_>, CsError>>()?;
             self.program_graphs
-                .get_mut(pg_id.0)
+                .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))
                 .and_then(|pg| {
                     pg.add_autonomous_timed_transition(pre.1, post.1, guard, &constraints)
@@ -436,7 +437,7 @@ impl ChannelSystemBuilder {
     /// - [`None`] capacity means that the channel's capacity is unlimited.
     /// - [`Some(0)`] capacity means the channel uses the handshake protocol (NOT YET IMPLEMENTED!)
     pub fn new_channel(&mut self, var_type: Type, capacity: Option<usize>) -> Channel {
-        let channel = Channel(self.channels.len());
+        let channel = Channel(self.channels.len() as u16);
         self.channels.push((var_type, capacity));
         channel
     }
@@ -452,7 +453,7 @@ impl ChannelSystemBuilder {
     ) -> Result<Action, CsError> {
         let channel_type = self
             .channels
-            .get(channel.0)
+            .get(channel.0 as usize)
             .ok_or(CsError::MissingChannel(channel))?
             .0
             .to_owned();
@@ -461,7 +462,7 @@ impl ChannelSystemBuilder {
         if channel_type != message_type {
             Err(CsError::ProgramGraph(pg_id, PgError::TypeMismatch))
         } else {
-            let action = self.program_graphs[pg_id.0]
+            let action = self.program_graphs[pg_id.0 as usize]
                 .new_send(msg)
                 .map_err(|err| CsError::ProgramGraph(pg_id, err))?;
             let action = Action(pg_id, action);
@@ -484,13 +485,13 @@ impl ChannelSystemBuilder {
         } else {
             let channel_type = self
                 .channels
-                .get(channel.0)
+                .get(channel.0 as usize)
                 .ok_or(CsError::MissingChannel(channel))?
                 .0
                 .to_owned();
             let message_type = self
                 .program_graphs
-                .get(pg_id.0)
+                .get(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))?
                 .var_type(var.1)
                 .map_err(|err| CsError::ProgramGraph(pg_id, err))?
@@ -498,7 +499,7 @@ impl ChannelSystemBuilder {
             if channel_type != message_type {
                 Err(CsError::ProgramGraph(pg_id, PgError::TypeMismatch))
             } else {
-                let action = self.program_graphs[pg_id.0]
+                let action = self.program_graphs[pg_id.0 as usize]
                     .new_receive(var.1)
                     .map_err(|err| CsError::ProgramGraph(pg_id, err))?;
                 let action = Action(pg_id, action);
@@ -519,15 +520,15 @@ impl ChannelSystemBuilder {
     ) -> Result<Action, CsError> {
         let (_, cap) = self
             .channels
-            .get(channel.0)
+            .get(channel.0 as usize)
             .ok_or(CsError::MissingChannel(channel))?;
         if matches!(cap, Some(0)) {
             // it makes no sense to probe an handshake channel
-            Err(CsError::ProbingHandshakeQueue(channel))
+            Err(CsError::ProbingHandshakeChannel(channel))
         } else {
             let action = self
                 .program_graphs
-                .get_mut(pg_id.0)
+                .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))?
                 .new_action();
             let action = Action(pg_id, action);
@@ -547,18 +548,18 @@ impl ChannelSystemBuilder {
     ) -> Result<Action, CsError> {
         let (_, cap) = self
             .channels
-            .get(channel.0)
+            .get(channel.0 as usize)
             .ok_or(CsError::MissingChannel(channel))?;
         if matches!(cap, Some(0)) {
             // it makes no sense to probe an handshake channel
-            Err(CsError::ProbingHandshakeQueue(channel))
+            Err(CsError::ProbingHandshakeChannel(channel))
         } else if cap.is_none() {
             // it makes no sense to probe for fullness an handshake channel
             Err(CsError::ProbingInfiniteQueue(channel))
         } else {
             let action = self
                 .program_graphs
-                .get_mut(pg_id.0)
+                .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))?
                 .new_action();
             let action = Action(pg_id, action);
@@ -575,7 +576,6 @@ impl ChannelSystemBuilder {
             self.program_graphs.len(),
             self.channels.len(),
         );
-        self.program_graphs.shrink_to_fit();
         let mut program_graphs: Vec<ProgramGraph> = self
             .program_graphs
             .into_iter()
@@ -584,7 +584,31 @@ impl ChannelSystemBuilder {
 
         program_graphs.shrink_to_fit();
         self.channels.shrink_to_fit();
-        self.communications.shrink_to_fit();
+        let mut communications_map = Vec::from_iter(self.communications);
+        communications_map.sort_unstable_by_key(|(a, _)| *a);
+        let mut communications = Vec::with_capacity(communications_map.len());
+        let mut communications_pg_idxs = Vec::with_capacity(program_graphs.len() + 1);
+        communications_pg_idxs.push(0);
+        // PG we are counting the occurrences of, yet to be inserted
+        for (action, (c, m)) in communications_map.into_iter() {
+            let pg_id = action.0;
+            if pg_id.0 != communications_pg_idxs.len() as u16 - 1 {
+                let last = *communications_pg_idxs.last().unwrap();
+                communications_pg_idxs
+                    .extend((0..(pg_id.0 - communications_pg_idxs.len() as u16)).map(|_| last));
+                communications_pg_idxs.push(communications.len() as u16);
+                assert_eq!(communications_pg_idxs.len() as u16, pg_id.0 + 1);
+            }
+            communications.push((action.1, c, m));
+        }
+        communications_pg_idxs.push(communications.len() as u16);
+        let last = *communications_pg_idxs.last().unwrap();
+        communications_pg_idxs.extend(
+            (0..(program_graphs.len() as u16 + 1 - communications_pg_idxs.len() as u16))
+                .map(|_| last),
+        );
+        assert_eq!(communications_pg_idxs.len(), program_graphs.len() + 1);
+
         let message_queue = self
             .channels
             .iter()
@@ -597,12 +621,17 @@ impl ChannelSystemBuilder {
             })
             .collect();
 
+        let def = ChannelSystemDef {
+            channels: self.channels,
+            communications,
+            communications_pg_idxs,
+        };
+
         ChannelSystem {
             time: 0,
             program_graphs,
-            communications: Arc::new(self.communications),
             message_queue,
-            channels: Arc::new(self.channels),
+            def: Arc::new(def),
         }
     }
 }

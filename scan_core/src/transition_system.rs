@@ -1,9 +1,10 @@
-use crate::Time;
-use log::info;
+use crate::{Pmtl, PmtlOracle, Time};
+use log::{info, trace};
 use rand::prelude::*;
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::fmt::Debug;
+use std::hash::Hash;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Atom<A: Clone + PartialEq + Eq> {
@@ -13,10 +14,6 @@ pub enum Atom<A: Clone + PartialEq + Eq> {
 
 // WARN: Representing a trace as a Vec of Vecs may be expensive.
 pub type Trace<A> = Vec<(Time, A, Vec<bool>)>;
-
-pub trait Oracle<A> {
-    fn update(&mut self, action: &A, state: &[bool], time: Time) -> bool;
-}
 
 pub trait Publisher<A> {
     fn init(&mut self);
@@ -32,135 +29,145 @@ pub trait Publisher<A> {
 /// [^1]: Baier, C., & Katoen, J. (2008). *Principles of model checking*. MIT Press.
 pub trait TransitionSystem: Clone + Send + Sync {
     /// The type of the actions that trigger transitions between states in the TS.
-    type Action: Clone + Eq + Send + Sync;
+    type Action: Debug + Clone + Eq + Send + Sync + Hash;
 
     /// The label function of the TS valuates the propositions of its set of propositions for the current state.
     // TODO FIXME: bitset instead of Vec<bool>?
     fn labels(&self) -> Vec<bool>;
 
-    /// The transition relation relates [`Self::Action`]s and post-states that constitutes possible transitions from the current state.
+    // The transition relation relates [`Self::Action`]s and post-states that constitutes possible transitions from the current state.
     // fn transitions(self) -> Vec<(Self::Action, Self)>;
 
-    fn monaco_transition<R: Rng>(&mut self, rng: &mut R, max_time: Time) -> Option<Self::Action>;
+    fn montecarlo_transition<R: Rng>(
+        &mut self,
+        rng: &mut R,
+        max_time: Time,
+    ) -> Option<Self::Action>;
 
     fn time(&self) -> Time {
         0
     }
 
-    fn experiment<O, P, R: Rng>(
+    fn experiment<P>(
         mut self,
-        mut guarantees: Vec<O>,
-        mut assumes: Vec<O>,
+        mut oracle: PmtlOracle<Self::Action>,
         mut publisher: Option<P>,
         length: usize,
         duration: Time,
-        rng: &mut R,
+        run_state: Arc<Mutex<(u32, u32, bool)>>,
     ) -> Option<bool>
     where
-        O: Oracle<Self::Action> + Clone,
         P: Publisher<Self::Action>,
     {
+        use rand::rngs::SmallRng;
+        use rand::SeedableRng;
+
         let mut current_len = 0;
+        let rng = &mut SmallRng::from_entropy();
         if let Some(publisher) = publisher.as_mut() {
             publisher.init();
         }
-        while let Some(action) = self.monaco_transition(rng, duration) {
+        trace!("new run starting");
+        while let Some(action) = self.montecarlo_transition(rng, duration) {
             current_len += 1;
             let state = self.labels();
             let time = self.time();
             if let Some(publisher) = publisher.as_mut() {
                 publisher.publish(&action, time, &state);
             }
-            if assumes
-                .iter_mut()
-                .map(|o| o.update(&action, &state, time))
-                .all(|b| b)
-            {
-                if guarantees
-                    .iter_mut()
-                    .map(|o| o.update(&action, &state, time))
-                    .all(|b| b)
-                {
+            oracle = oracle.update(&action, &state, time);
+            match oracle.output() {
+                Some(true) => {
                     if current_len >= length {
+                        trace!("run exceeds maximum lenght");
                         if let Some(publisher) = publisher {
                             publisher.finalize(None);
                         }
                         return None;
                     }
-                } else {
+                }
+                Some(false) => {
+                    trace!("run fails");
                     if let Some(publisher) = publisher {
                         publisher.finalize(Some(false));
                     }
                     return Some(false);
                 }
-            } else {
+                None => {
+                    trace!("run undetermined");
+                    if let Some(publisher) = publisher {
+                        publisher.finalize(None);
+                    }
+                    return None;
+                }
+            }
+            if !run_state.lock().expect("lock state").2 {
                 if let Some(publisher) = publisher {
                     publisher.finalize(None);
                 }
                 return None;
             }
         }
+        trace!("run succeeds");
         if let Some(publisher) = publisher {
             publisher.finalize(Some(true));
         }
         Some(true)
     }
 
-    fn par_adaptive<O, P>(
+    fn par_adaptive<P>(
         &self,
-        guarantees: &[O],
-        assumes: &[O],
+        guarantees: &[Pmtl<Atom<Self::Action>>],
+        assumes: &[Pmtl<Atom<Self::Action>>],
         confidence: f64,
         precision: f64,
         length: usize,
-        max_time: Time,
-        s: Arc<AtomicU32>,
-        f: Arc<AtomicU32>,
+        duration: Time,
         publisher: Option<P>,
+        state: Arc<Mutex<(u32, u32, bool)>>,
     ) where
-        O: Oracle<Self::Action> + Clone + Send + Sync,
         P: Publisher<Self::Action> + Clone + Send + Sync,
     {
+        info!("verification starting");
+        let oracle = PmtlOracle::new(assumes, guarantees);
         // WARN FIXME TODO: Implement algorithm for 2.4 Distributed sample generation in Budde et al.
         (0..usize::MAX)
             .into_par_iter()
             .take_any_while(|_| {
-                let mut rng = rand::thread_rng();
-                let local_s;
-                let local_f;
-                if let Some(result) = self.clone().experiment(
-                    Vec::from(guarantees),
-                    Vec::from(assumes),
+                // .take_while(|_| {
+                let result = self.clone().experiment(
+                    oracle.clone(),
                     publisher.clone(),
                     length,
-                    max_time,
-                    &mut rng,
-                ) {
-                    if result {
-                        // If all guarantees are satisfied, the execution is successful
-                        local_s = s.fetch_add(1, Ordering::Relaxed) + 1;
-                        local_f = f.load(Ordering::Relaxed);
-                        info!("runs: {local_s} successes");
-                    } else {
-                        // If guarantee is violated, we have found a counter-example!
-                        local_s = s.load(Ordering::Relaxed);
-                        local_f = f.fetch_add(1, Ordering::Relaxed) + 1;
-                        info!("runs: {local_f} failures");
+                    duration,
+                    state.clone(),
+                );
+                let (s, f, running) = &mut *state.lock().expect("lock state");
+                if *running {
+                    if let Some(result) = result {
+                        if result {
+                            *s += 1;
+                            // If all guarantees are satisfied, the execution is successful
+                            info!("runs: {s} successes");
+                        } else {
+                            *f += 1;
+                            // If guarantee is violated, we have found a counter-example!
+                            info!("runs: {f} failures");
+                        }
+                        let n = *s + *f;
+                        // Avoid division by 0
+                        let avg = if n == 0 { 0.5f64 } else { *s as f64 / n as f64 };
+                        if adaptive_bound(avg, confidence, precision) <= n as f64 {
+                            info!("adaptive bound satisfied");
+                            *running = false;
+                        }
                     }
-                } else {
-                    local_f = f.load(Ordering::Relaxed);
-                    local_s = s.load(Ordering::Relaxed);
                 }
-                let n = local_s + local_f;
-                // Avoid division by 0
-                let avg = if n == 0 {
-                    0.5f64
-                } else {
-                    local_s as f64 / n as f64
-                };
-                adaptive_bound(avg, confidence, precision) > n as f64
+                info!("returning {running} to iter");
+                *running
             })
             .count();
+        info!("verification terminating");
     }
 }
 
