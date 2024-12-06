@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::str::Utf8Error;
 
 use anyhow::{anyhow, Context};
+use boa_interner::Interner;
 use log::{error, info, trace, warn};
 use quick_xml::events::attributes::{AttrError, Attribute};
 use quick_xml::events::Event;
@@ -81,15 +82,19 @@ impl From<ConvinceTag> for &'static str {
 #[derive(Debug)]
 pub struct Parser {
     root_folder: PathBuf,
-    pub(crate) process_list: HashMap<String, Fsm>,
+    pub(crate) process_list: HashMap<String, Scxml>,
     pub(crate) types: OmgTypes,
     pub(crate) properties: Properties,
+    pub(crate) interner: Interner,
+    pub(crate) scope: boa_ast::scope::Scope,
 }
 
 impl Parser {
     pub fn parse_folder(path: &Path) -> anyhow::Result<Parser> {
         let mut process_list = HashMap::new();
         let mut properties = Properties::new();
+        let mut interner = Interner::new();
+        let scope = boa_ast::scope::Scope::new_global();
         if path.is_dir() {
             for entry in std::fs::read_dir(path)? {
                 let entry = entry?;
@@ -102,8 +107,8 @@ impl Parser {
                 {
                     info!("creating reader from file {0}", path.display());
                     let mut reader = Reader::from_file(path)?;
-                    let fsm = Fsm::parse(&mut reader)?;
-                    process_list.insert(fsm.scxml.id.to_owned(), fsm);
+                    let fsm = Scxml::parse(&mut reader, &mut interner, &scope)?;
+                    process_list.insert(fsm.id.to_owned(), fsm);
                 }
             }
             for entry in std::fs::read_dir(path)? {
@@ -117,7 +122,7 @@ impl Parser {
                 {
                     info!("creating reader from file {0}", path.display());
                     let mut reader = Reader::from_file(path)?;
-                    properties = Properties::parse(&mut reader)?;
+                    properties = Properties::parse(&mut reader, &scope, &mut interner)?;
                 }
             }
         }
@@ -126,6 +131,8 @@ impl Parser {
             process_list,
             types: OmgTypes::new(),
             properties,
+            interner,
+            scope,
         })
     }
 
@@ -140,6 +147,8 @@ impl Parser {
             process_list: HashMap::new(),
             types: OmgTypes::new(),
             properties: Properties::new(),
+            interner: Interner::new(),
+            scope: boa_ast::scope::Scope::new_global(),
         };
         let mut buf = Vec::new();
         let mut stack = Vec::new();
@@ -304,7 +313,7 @@ impl Parser {
             "fsm" => {
                 info!("creating reader from file {0}", root_path.display());
                 let mut reader = Reader::from_file(root_path)?;
-                Fsm::parse(&mut reader)?
+                Scxml::parse(&mut reader, &mut self.interner, &self.scope)?
             }
             moc => {
                 return Err(anyhow!(ParserError::UnknownMoC(moc.to_string())));
@@ -368,7 +377,7 @@ impl Parser {
         root_path.extend(&PathBuf::from(path));
         info!("creating reader from file {0}", root_path.display());
         let mut reader = Reader::from_file(root_path)?;
-        self.properties = Properties::parse(&mut reader)?;
+        self.properties = Properties::parse(&mut reader, &self.scope, &mut self.interner)?;
         Ok(())
     }
 }

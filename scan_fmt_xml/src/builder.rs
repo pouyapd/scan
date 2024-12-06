@@ -1,8 +1,8 @@
 //! Model builder for SCAN's XML specification format.
 
-use crate::parser::{Executable, Fsm, If, OmgType, OmgTypes, Param, Parser, Scxml, Send, Target};
+use crate::parser::{Executable, If, OmgType, OmgTypes, Param, Parser, Scxml, Send, Target};
 use anyhow::anyhow;
-use boa_interner::ToInternedString;
+use boa_interner::{Interner, ToInternedString};
 use log::{info, trace};
 use scan_core::{channel_system::*, *};
 use std::{
@@ -126,7 +126,7 @@ impl ModelBuilder {
 
         info!("Visit process list");
         for (_id, fsm) in parser.process_list.iter() {
-            model_builder.build_fsm(fsm)?;
+            model_builder.build_fsm(fsm, &mut parser.interner)?;
         }
 
         model_builder.build_predicates(&parser)?;
@@ -209,7 +209,7 @@ impl ModelBuilder {
     fn prebuild_processes(&mut self, parser: &mut Parser) -> anyhow::Result<()> {
         for (id, fsm) in parser.process_list.iter_mut() {
             let pg_id = self.fsm_builder(id).pg_id;
-            self.prebuild_fsms(pg_id, &mut fsm.scxml, &fsm.interner)?;
+            self.prebuild_fsms(pg_id, fsm, &parser.interner)?;
         }
         Ok(())
     }
@@ -218,7 +218,7 @@ impl ModelBuilder {
         &mut self,
         pg_id: PgId,
         fmt: &mut Scxml,
-        interner: &boa_interner::Interner,
+        interner: &Interner,
     ) -> anyhow::Result<()> {
         let mut types = HashMap::new();
         for data in &fmt.datamodel {
@@ -251,7 +251,7 @@ impl ModelBuilder {
         pg_id: PgId,
         executable: &mut Executable,
         types: &HashMap<String, String>,
-        interner: &boa_interner::Interner,
+        interner: &Interner,
     ) -> anyhow::Result<()> {
         match executable {
             Executable::Assign {
@@ -311,10 +311,9 @@ impl ModelBuilder {
         &self,
         expr: &boa_ast::Expression,
         types: &HashMap<String, String>,
-        interner: &boa_interner::Interner,
+        interner: &Interner,
     ) -> anyhow::Result<String> {
         match expr {
-            boa_ast::Expression::This => todo!(),
             boa_ast::Expression::Identifier(ident) => {
                 let ident = ident.to_interned_string(interner);
                 types
@@ -337,45 +336,18 @@ impl ModelBuilder {
                     Literal::Int(_) => Ok(String::from("int32")),
                     Literal::BigInt(_) => todo!(),
                     Literal::Bool(_) => Ok(String::from("bool")),
-                    Literal::Null => todo!(),
-                    Literal::Undefined => todo!(),
+                    _ => unimplemented!(),
                 }
             }
-            boa_ast::Expression::RegExpLiteral(_) => todo!(),
-            boa_ast::Expression::ArrayLiteral(_) => todo!(),
-            boa_ast::Expression::ObjectLiteral(_) => todo!(),
-            boa_ast::Expression::Spread(_) => todo!(),
-            boa_ast::Expression::Function(_) => todo!(),
-            boa_ast::Expression::ArrowFunction(_) => todo!(),
-            boa_ast::Expression::AsyncArrowFunction(_) => todo!(),
-            boa_ast::Expression::Generator(_) => todo!(),
-            boa_ast::Expression::AsyncFunction(_) => todo!(),
-            boa_ast::Expression::AsyncGenerator(_) => todo!(),
-            boa_ast::Expression::Class(_) => todo!(),
-            boa_ast::Expression::TemplateLiteral(_) => todo!(),
-            boa_ast::Expression::PropertyAccess(_) => todo!(),
-            boa_ast::Expression::New(_) => todo!(),
-            boa_ast::Expression::Call(_) => todo!(),
-            boa_ast::Expression::SuperCall(_) => todo!(),
-            boa_ast::Expression::ImportCall(_) => todo!(),
-            boa_ast::Expression::Optional(_) => todo!(),
-            boa_ast::Expression::TaggedTemplate(_) => todo!(),
-            boa_ast::Expression::NewTarget => todo!(),
-            boa_ast::Expression::ImportMeta => todo!(),
-            boa_ast::Expression::Assign(_) => todo!(),
             boa_ast::Expression::Unary(unary) => {
                 let type_name = self.infer_type(unary.target(), types, interner)?;
                 match unary.op() {
                     boa_ast::expression::operator::unary::UnaryOp::Minus
                     | boa_ast::expression::operator::unary::UnaryOp::Plus => Ok(type_name),
                     boa_ast::expression::operator::unary::UnaryOp::Not => Ok(String::from("bool")),
-                    boa_ast::expression::operator::unary::UnaryOp::Tilde => todo!(),
-                    boa_ast::expression::operator::unary::UnaryOp::TypeOf => todo!(),
-                    boa_ast::expression::operator::unary::UnaryOp::Delete => todo!(),
-                    boa_ast::expression::operator::unary::UnaryOp::Void => todo!(),
+                    _ => unimplemented!(),
                 }
             }
-            boa_ast::Expression::Update(_) => todo!(),
             boa_ast::Expression::Binary(bin) => {
                 let type_name = self.infer_type(bin.lhs(), types, interner)?;
                 let lhs = self
@@ -405,17 +377,11 @@ impl ModelBuilder {
                     boa_ast::expression::operator::binary::BinaryOp::Comma => todo!(),
                 }
             }
-            boa_ast::Expression::BinaryInPrivate(_) => todo!(),
-            boa_ast::Expression::Conditional(_) => todo!(),
-            boa_ast::Expression::Await(_) => todo!(),
-            boa_ast::Expression::Yield(_) => todo!(),
-            boa_ast::Expression::Parenthesized(_) => todo!(),
-            _ => todo!(),
+            _ => unimplemented!(),
         }
     }
 
-    fn build_fsm(&mut self, fsm: &Fsm) -> anyhow::Result<()> {
-        let scxml = &fsm.scxml;
+    fn build_fsm(&mut self, scxml: &Scxml, interner: &mut Interner) -> anyhow::Result<()> {
         trace!("build fsm {}", scxml.id);
         // Initialize fsm.
         let pg_builder = self
@@ -447,7 +413,7 @@ impl ModelBuilder {
             vars.insert(data.id.to_owned(), (var, data.omg_type.to_owned()));
             // Initialize variable with `expr`, if any, by adding it as effect of `initialize` action.
             if let Some(ref expr) = data.expression {
-                let expr = self.expression(expr, &fsm.interner, &vars, None, &HashMap::new())?;
+                let expr = self.expression(expr, interner, &vars, None, &HashMap::new())?;
                 // Initialization has at least an effect, so we need to perform it.
                 // Create action if there was none.
                 let initialize = *initialize.get_or_insert_with(|| {
@@ -617,7 +583,7 @@ impl ModelBuilder {
                     &vars,
                     None,
                     &HashMap::new(),
-                    &fsm.interner,
+                    interner,
                 )?;
             }
             // Make immutable
@@ -797,9 +763,7 @@ impl ModelBuilder {
                 let cond: Option<CsExpression> = transition
                     .cond
                     .as_ref()
-                    .map(|cond| {
-                        self.expression(cond, &fsm.interner, &vars, exec_origin, &exec_params)
-                    })
+                    .map(|cond| self.expression(cond, interner, &vars, exec_origin, &exec_params))
                     .transpose()?;
 
                 // Location corresponding to checking if the transition is active.
@@ -860,7 +824,7 @@ impl ModelBuilder {
                         &vars,
                         exec_origin,
                         &exec_params,
-                        &fsm.interner,
+                        interner,
                     )?;
                 }
                 // Transitioning to the target state/location.
@@ -905,7 +869,7 @@ impl ModelBuilder {
         vars: &HashMap<String, (Var, String)>,
         origin: Option<Var>,
         params: &HashMap<String, (Var, String)>,
-        interner: &boa_interner::Interner,
+        interner: &Interner,
     ) -> Result<Location, anyhow::Error> {
         match executable {
             Executable::Raise { event } => {
@@ -1124,7 +1088,7 @@ impl ModelBuilder {
         vars: &HashMap<String, (Var, String)>,
         origin: Option<Var>,
         params: &HashMap<String, (Var, String)>,
-        interner: &boa_interner::Interner,
+        interner: &Interner,
     ) -> Result<Location, anyhow::Error> {
         // Get param type.
         let scan_type = self
@@ -1153,7 +1117,7 @@ impl ModelBuilder {
     fn expression(
         &mut self,
         expr: &boa_ast::Expression,
-        interner: &boa_interner::Interner,
+        interner: &Interner,
         vars: &HashMap<String, (Var, String)>,
         origin: Option<Var>,
         params: &HashMap<String, (Var, String)>,
@@ -1259,11 +1223,7 @@ impl ModelBuilder {
         Ok(expr)
     }
 
-    fn value(
-        &self,
-        expr: &boa_ast::Expression,
-        interner: &boa_interner::Interner,
-    ) -> anyhow::Result<Val> {
+    fn value(&self, expr: &boa_ast::Expression, interner: &Interner) -> anyhow::Result<Val> {
         let expr = match expr {
             boa_ast::Expression::This => todo!(),
             boa_ast::Expression::Identifier(ident) => {
@@ -1355,7 +1315,7 @@ impl ModelBuilder {
     fn expression_prop_access(
         &mut self,
         expr: &boa_ast::Expression,
-        interner: &boa_interner::Interner,
+        interner: &Interner,
         vars: &HashMap<String, (Var, String)>,
         origin: Option<Var>,
         params: &HashMap<String, (Var, String)>,
@@ -1511,7 +1471,7 @@ impl ModelBuilder {
                 .get(&port.event)
                 .ok_or(anyhow!("missing event {}", port.event))?;
             if let Some((param, init)) = &port.param {
-                let init = self.value(init, &boa_interner::Interner::new())?;
+                let init = self.value(init, &Interner::new())?;
                 let channel = *self
                     .parameters
                     .get(&(origin, target, event_id, param.to_owned()))
