@@ -5,10 +5,8 @@ use super::{
 use crate::channel_system::ChannelSystemDef;
 use crate::grammar::Type;
 use crate::Expression;
-// use ahash::AHashMap as HashMap;
-use hashbrown::HashMap;
 use log::info;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 /// An expression using CS's [`Var`] as variables.

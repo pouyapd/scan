@@ -1,8 +1,8 @@
 mod numset;
 
 use crate::{Atom, Time};
-use hashbrown::HashSet;
 use numset::NumSet;
+use std::collections::HashSet;
 use std::{hash::Hash, sync::Arc};
 
 type DenseTime = (Time, Time);

@@ -7,9 +7,8 @@ use crate::{
     program_graph::ProgramGraphDef,
     Integer,
 };
-// use ahash::{AHashMap as HashMap, AHashSet as HashSet};
-use hashbrown::HashMap;
 use log::info;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
