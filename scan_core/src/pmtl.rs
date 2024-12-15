@@ -7,20 +7,31 @@ use std::{hash::Hash, sync::Arc};
 
 type DenseTime = (Time, Time);
 
+/// A Past-time Metric Temporal Logic (PMTL) formula.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Pmtl<V>
 where
     V: Clone,
 {
+    /// The true formula.
     True,
+    /// The false formula.
     False,
+    /// An atomic formula.
     Atom(V),
+    /// Logical disjunction of a list of formulae.
     And(Vec<Pmtl<V>>),
+    /// Logical conjunction of a list of formulae.
     Or(Vec<Pmtl<V>>),
+    /// Logical negation of a formula.
     Not(Box<Pmtl<V>>),
+    /// Logical implication of a antecedent formula and a consequent formula.
     Implies(Box<(Pmtl<V>, Pmtl<V>)>),
+    /// Temporal historical predicate over a formula (with bounds).
     Historically(Box<Pmtl<V>>, Time, Time),
+    /// Temporal previously predicate over a formula (with bounds).
     Previously(Box<Pmtl<V>>, Time, Time),
+    /// Temporal since predicate over a formula (with bounds).
     Since(Box<(Pmtl<V>, Pmtl<V>)>, Time, Time),
 }
 
@@ -126,6 +137,7 @@ where
 
 type IdxPmtl<V> = (Arc<ArcPmtl<V>>, usize);
 
+/// An oracle for PMTL properties over timed, dense traces.
 #[derive(Debug, Clone)]
 pub struct PmtlOracle<V: Clone + Eq + Hash> {
     time: DenseTime,
@@ -260,6 +272,7 @@ where
 }
 
 impl<V: std::fmt::Debug + Clone + Eq + Hash> PmtlOracle<V> {
+    /// Creates an oracle from assumes and guarantees PMTL formulae.
     pub fn new(assumes: &[Pmtl<Atom<V>>], guarantees: &[Pmtl<Atom<V>>]) -> Self {
         let set = HashSet::from_iter(
             assumes
