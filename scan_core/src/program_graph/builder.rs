@@ -335,7 +335,7 @@ impl ProgramGraphBuilder {
     /// let action = pg_builder.new_action();
     ///
     /// // Add a new clock
-    /// let clock = pg_builder.add_clock();
+    /// let clock = pg_builder.new_clock();
     ///
     /// // Add a timed transition
     /// pg_builder
@@ -431,6 +431,9 @@ impl ProgramGraphBuilder {
     /// # let mut pg_builder = ProgramGraphBuilder::new();
     /// // The builder is initialized with an initial location
     /// let initial_loc = pg_builder.initial_location();
+    ///
+    /// // Add a new clock
+    /// let clock = pg_builder.new_clock();
     ///
     /// // Add an autonomous timed transition
     /// pg_builder
