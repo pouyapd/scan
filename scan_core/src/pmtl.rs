@@ -1,5 +1,6 @@
 mod numset;
 
+use crate::channel_system::Event;
 use crate::{Atom, Time};
 use numset::NumSet;
 use std::collections::HashSet;
@@ -139,11 +140,11 @@ type IdxPmtl<V> = (Arc<ArcPmtl<V>>, usize);
 
 /// An oracle for PMTL properties over timed, dense traces.
 #[derive(Debug, Clone)]
-pub struct PmtlOracle<V: Clone + Eq + Hash> {
+pub struct PmtlOracle {
     time: DenseTime,
     assumes: Vec<usize>,
     guarantees: Vec<usize>,
-    subformulae: Arc<Vec<ArcPmtl<Atom<V>>>>,
+    subformulae: Arc<Vec<ArcPmtl<Atom>>>,
     valuations: Vec<NumSet>,
     outputs: Vec<NumSet>,
 }
@@ -271,9 +272,9 @@ where
     }
 }
 
-impl<V: std::fmt::Debug + Clone + Eq + Hash> PmtlOracle<V> {
+impl PmtlOracle {
     /// Creates an oracle from assumes and guarantees PMTL formulae.
-    pub fn new(assumes: &[Pmtl<Atom<V>>], guarantees: &[Pmtl<Atom<V>>]) -> Self {
+    pub fn new(assumes: &[Pmtl<Atom>], guarantees: &[Pmtl<Atom>]) -> Self {
         let set = HashSet::from_iter(
             assumes
                 .iter()
@@ -323,7 +324,7 @@ impl<V: std::fmt::Debug + Clone + Eq + Hash> PmtlOracle<V> {
             .then_some(self.guarantees.iter().all(|g| self.formula_output(*g)))
     }
 
-    pub(crate) fn update(self, event: &V, state: &[bool], time: Time) -> Self {
+    pub(crate) fn update(self, event: &Event, state: &[bool], time: Time) -> Self {
         assert!(self.time.0 <= time);
         let new_time = (time, self.time.1 + 1);
         let mut valuations = Vec::with_capacity(self.subformulae.len());
@@ -547,6 +548,7 @@ impl<V: std::fmt::Debug + Clone + Eq + Hash> PmtlOracle<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel_system::ChannelSystemBuilder;
 
     #[test]
     fn subformulae_1() {
@@ -602,6 +604,15 @@ mod tests {
         assert!(matches!(subformulae[2], ArcPmtl::Not((_, 0 | 1))));
     }
 
+    fn dummy_event() -> Event {
+        let mut cs = ChannelSystemBuilder::new();
+        Event {
+            pg_id: cs.new_program_graph(),
+            channel: cs.new_channel(crate::Type::Boolean, None),
+            event_type: crate::channel_system::EventType::ProbeEmptyQueue,
+        }
+    }
+
     #[test]
     fn since_1() {
         let formula = Pmtl::Since(
@@ -612,18 +623,19 @@ mod tests {
             0,
             Time::MAX,
         );
+        let dummy_event = dummy_event();
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&0, &[false, true], 0);
+        state = state.update(&dummy_event, &[false, true], 0);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[false, true], 1);
+        state = state.update(&dummy_event, &[false, true], 1);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[true, true], 2);
+        state = state.update(&dummy_event, &[true, true], 2);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, true], 3);
+        state = state.update(&dummy_event, &[true, true], 3);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 4);
+        state = state.update(&dummy_event, &[true, false], 4);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[false, false], 5);
+        state = state.update(&dummy_event, &[false, false], 5);
         assert!(!state.output().unwrap());
     }
 
@@ -638,17 +650,18 @@ mod tests {
             2,
         );
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&0, &[false, true], 0);
+        let dummy_event = dummy_event();
+        state = state.update(&dummy_event, &[false, true], 0);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[false, true], 1);
+        state = state.update(&dummy_event, &[false, true], 1);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[true, true], 2);
+        state = state.update(&dummy_event, &[true, true], 2);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 3);
+        state = state.update(&dummy_event, &[true, false], 3);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 4);
+        state = state.update(&dummy_event, &[true, false], 4);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 5);
+        state = state.update(&dummy_event, &[true, false], 5);
         assert!(!state.output().unwrap());
     }
 
@@ -663,17 +676,18 @@ mod tests {
             2,
         );
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&0, &[false, true], 0);
+        let dummy_event = dummy_event();
+        state = state.update(&dummy_event, &[false, true], 0);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[false, true], 1);
+        state = state.update(&dummy_event, &[false, true], 1);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[true, true], 2);
+        state = state.update(&dummy_event, &[true, true], 2);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 3);
+        state = state.update(&dummy_event, &[true, false], 3);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 4);
+        state = state.update(&dummy_event, &[true, false], 4);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 5);
+        state = state.update(&dummy_event, &[true, false], 5);
         assert!(!state.output().unwrap());
     }
 
@@ -688,19 +702,20 @@ mod tests {
             2,
         );
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&0, &[false, true], 0);
+        let dummy_event = dummy_event();
+        state = state.update(&dummy_event, &[false, true], 0);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[false, true], 1);
+        state = state.update(&dummy_event, &[false, true], 1);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[false, true], 2);
+        state = state.update(&dummy_event, &[false, true], 2);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[true, true], 2);
+        state = state.update(&dummy_event, &[true, true], 2);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[true, false], 3);
+        state = state.update(&dummy_event, &[true, false], 3);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 4);
+        state = state.update(&dummy_event, &[true, false], 4);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true, false], 5);
+        state = state.update(&dummy_event, &[true, false], 5);
         assert!(!state.output().unwrap());
     }
 
@@ -708,19 +723,20 @@ mod tests {
     fn historically() {
         let formula = Pmtl::Historically(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&0, &[false], 0);
+        let dummy_event = dummy_event();
+        state = state.update(&dummy_event, &[false], 0);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[false], 0);
+        state = state.update(&dummy_event, &[false], 0);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true], 1);
+        state = state.update(&dummy_event, &[true], 1);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[true], 2);
+        state = state.update(&dummy_event, &[true], 2);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[true], 3);
+        state = state.update(&dummy_event, &[true], 3);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[false], 3);
+        state = state.update(&dummy_event, &[false], 3);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true], 4);
+        state = state.update(&dummy_event, &[true], 4);
         assert!(!state.output().unwrap());
     }
 
@@ -728,19 +744,20 @@ mod tests {
     fn previously() {
         let formula = Pmtl::Previously(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&0, &[false], 0);
+        let dummy_event = dummy_event();
+        state = state.update(&dummy_event, &[false], 0);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[false], 0);
+        state = state.update(&dummy_event, &[false], 0);
         assert!(!state.output().unwrap());
-        state = state.update(&0, &[true], 1);
+        state = state.update(&dummy_event, &[true], 1);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[false], 2);
+        state = state.update(&dummy_event, &[false], 2);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[false], 3);
+        state = state.update(&dummy_event, &[false], 3);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[false], 3);
+        state = state.update(&dummy_event, &[false], 3);
         assert!(state.output().unwrap());
-        state = state.update(&0, &[true], 4);
+        state = state.update(&dummy_event, &[true], 4);
         assert!(state.output().unwrap());
     }
 }
