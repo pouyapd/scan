@@ -18,8 +18,8 @@ use std::{
 pub struct ScxmlModel {
     pub model: CsModel,
     pub predicates: Vec<String>,
-    pub guarantees: Vec<Pmtl<Atom<Event>>>,
-    pub assumes: Vec<Pmtl<Atom<Event>>>,
+    pub guarantees: Vec<Pmtl<Atom>>,
+    pub assumes: Vec<Pmtl<Atom>>,
     pub fsm_names: HashMap<PgId, String>,
     pub fsm_indexes: HashMap<usize, String>,
     pub parameters: HashMap<Channel, (PgId, PgId, usize, String)>,
@@ -88,7 +88,7 @@ pub struct ModelBuilder {
     guarantees: HashMap<String, Pmtl<String>>,
     assumes: HashMap<String, Pmtl<String>>,
     predicates: HashMap<String, Expression<Channel>>,
-    atoms: HashMap<String, Atom<Event>>,
+    atoms: HashMap<String, Atom>,
     ports: HashMap<String, (Channel, Val)>,
     // extra data
     int_queues: HashSet<Channel>,
@@ -129,7 +129,7 @@ impl ModelBuilder {
             model_builder.build_fsm(fsm, &mut parser.interner)?;
         }
 
-        model_builder.build_predicates(&parser)?;
+        model_builder.build_properties(&parser)?;
 
         let model = model_builder.build_model();
 
@@ -1454,7 +1454,7 @@ impl ModelBuilder {
         }
     }
 
-    fn build_predicates(&mut self, parser: &Parser) -> anyhow::Result<()> {
+    fn build_properties(&mut self, parser: &Parser) -> anyhow::Result<()> {
         for (port_id, port) in parser.properties.ports.iter() {
             let origin_builder = self
                 .fsm_builders
@@ -1596,24 +1596,32 @@ impl ModelBuilder {
             assert_eq!(id, predicates.len());
             predicates.push(pred_name);
         }
+        let assumes = self
+            .assumes
+            .values()
+            .map(|prop| {
+                Self::build_pmtl_property(&self.atoms, prop, &pred_names)
+                    .expect("hopefully a property")
+            })
+            .collect::<Vec<_>>();
+        assumes.iter().cloned().for_each(|prop| {
+            model.add_assume(prop);
+        });
+        let guarantees = self
+            .guarantees
+            .values()
+            .map(|prop| {
+                Self::build_pmtl_property(&self.atoms, prop, &pred_names)
+                    .expect("hopefully a property")
+            })
+            .collect::<Vec<_>>();
+        guarantees.iter().cloned().for_each(|prop| {
+            model.add_guarantee(prop);
+        });
         ScxmlModel {
             model: model.build(),
-            guarantees: self
-                .guarantees
-                .values()
-                .map(|prop| {
-                    Self::build_pmtl_property(&self.atoms, prop, &pred_names)
-                        .expect("hopefully a property")
-                })
-                .collect(),
-            assumes: self
-                .assumes
-                .values()
-                .map(|prop| {
-                    Self::build_pmtl_property(&self.atoms, prop, &pred_names)
-                        .expect("hopefully a property")
-                })
-                .collect(),
+            guarantees,
+            assumes,
             fsm_names: self.fsm_names,
             parameters: self
                 .parameters
@@ -1641,10 +1649,10 @@ impl ModelBuilder {
     }
 
     fn build_pmtl_property(
-        atoms: &HashMap<String, Atom<Event>>,
+        atoms: &HashMap<String, Atom>,
         property: &Pmtl<String>,
         predicates: &HashMap<String, usize>,
-    ) -> anyhow::Result<Pmtl<Atom<Event>>> {
+    ) -> anyhow::Result<Pmtl<Atom>> {
         match property {
             Pmtl::True => Ok(Pmtl::True),
             Pmtl::False => Ok(Pmtl::False),

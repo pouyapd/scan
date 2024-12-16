@@ -146,10 +146,16 @@ pub struct Action(PgId, PgAction);
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Var(PgId, PgVar);
 
+/// An indexing object for clocks in a CS.
+///
+/// These cannot be directly created or manipulated,
+/// but have to be generated and/or provided by a [`ChannelSystemBuilder`] or [`ChannelSystem`].
+///
+/// See also [`PgClock`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Clock(PgId, PgClock);
 
-pub type TimeConstraint = (Clock, Option<Time>, Option<Time>);
+type TimeConstraint = (Clock, Option<Time>, Option<Time>);
 
 /// A message to be sent through a CS's channel.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -244,7 +250,7 @@ pub enum EventType {
 }
 
 #[derive(Debug, Clone)]
-pub struct ChannelSystemDef {
+struct ChannelSystemDef {
     channels: Vec<(Type, Option<usize>)>,
     communications: Vec<(PgAction, Channel, Message)>,
     communications_pg_idxs: Vec<u16>,
@@ -286,6 +292,7 @@ pub struct ChannelSystem {
 }
 
 impl ChannelSystem {
+    /// Returns the current time of the CS.
     #[inline(always)]
     pub fn time(&self) -> Time {
         self.time

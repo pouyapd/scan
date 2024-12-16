@@ -117,6 +117,9 @@ impl ProgramGraphBuilder {
         Ok(Var(idx as u16))
     }
 
+    /// Adds a new clock returns a [`Clock`] id object.
+    ///
+    /// See also [`crate::channel_system::ChannelSystemBuilder::new_clock`].
     pub fn new_clock(&mut self) -> Clock {
         let idx = self.vars.len();
         self.vars.push(Val::Integer(0));
@@ -185,6 +188,11 @@ impl ProgramGraphBuilder {
         }
     }
 
+    /// Adds resetting the clock as an effect of the given action.
+    ///
+    /// Fails if either the action or the clock do not belong to the PG.
+    ///
+    /// See also [`crate::channel_system::ChannelSystemBuilder::reset_clock`].
     pub fn reset_clock(&mut self, action: Action, clock: Clock) -> Result<(), PgError> {
         if clock == TIME {
             // return an error
@@ -220,7 +228,7 @@ impl ProgramGraphBuilder {
         }
     }
 
-    /// Adds a new location to the PG.
+    /// Adds a new location to the PG and returns its [`Location`] indexing object.
     pub fn new_location(&mut self) -> Location {
         // Locations are indexed progressively
         let idx = self.transitions.len();
@@ -228,7 +236,8 @@ impl ProgramGraphBuilder {
         Location(idx as u16)
     }
 
-    /// TODO
+    /// Adds a new location to the PG with the given time invariants,
+    /// and returns its [`Location`] indexing object.
     pub fn new_timed_location(&mut self, invariants: &[TimeConstraint]) -> Location {
         // Locations are indexed progressively
         let idx = self.transitions.len();
@@ -310,7 +319,32 @@ impl ProgramGraphBuilder {
         }
     }
 
-    /// TODO
+    /// Adds a timed transition to the PG under timed constraints.
+    /// Requires specifying the same data as [`ProgramGraphBuilder::add_transition`],
+    /// plus a slice of time constraints.
+    ///
+    /// Fails if the provided guard is not a boolean expression.
+    ///
+    /// ```
+    /// # use scan_core::program_graph::{PgExpression, ProgramGraphBuilder};
+    /// # let mut pg_builder = ProgramGraphBuilder::new();
+    /// // The builder is initialized with an initial location
+    /// let initial_loc = pg_builder.initial_location();
+    ///
+    /// // Create a new action
+    /// let action = pg_builder.new_action();
+    ///
+    /// // Add a new clock
+    /// let clock = pg_builder.new_clock();
+    ///
+    /// // Add a timed transition
+    /// pg_builder
+    ///     .add_timed_transition(initial_loc, action, initial_loc, None, &[(clock, None, Some(1))])
+    ///     .expect("this transition can be added");
+    /// pg_builder
+    ///     .add_timed_transition(initial_loc, action, initial_loc, Some(PgExpression::from(1)), &[(clock, Some(1), None)])
+    ///     .expect_err("the guard expression is not boolean");
+    /// ```
     pub fn add_timed_transition(
         &mut self,
         pre: Location,
@@ -386,6 +420,29 @@ impl ProgramGraphBuilder {
         self.add_transition(pre, EPSILON, post, guard)
     }
 
+    /// Adds an autonomous timed transition to the PG, i.e., a transition enabled by the epsilon action under time constraints.
+    /// Requires specifying the same data as [`ProgramGraphBuilder::add_autonomous_transition`],
+    /// plus a slice of time constraints.
+    ///
+    /// Fails if the provided guard is not a boolean expression.
+    ///
+    /// ```
+    /// # use scan_core::program_graph::{PgExpression, ProgramGraphBuilder};
+    /// # let mut pg_builder = ProgramGraphBuilder::new();
+    /// // The builder is initialized with an initial location
+    /// let initial_loc = pg_builder.initial_location();
+    ///
+    /// // Add a new clock
+    /// let clock = pg_builder.new_clock();
+    ///
+    /// // Add an autonomous timed transition
+    /// pg_builder
+    ///     .add_autonomous_timed_transition(initial_loc, initial_loc, None, &[(clock, None, Some(1))])
+    ///     .expect("this transition can be added");
+    /// pg_builder
+    ///     .add_autonomous_timed_transition(initial_loc, initial_loc, Some(PgExpression::from(1)), &[(clock, Some(1), None)])
+    ///     .expect_err("the guard expression is not boolean");
+    /// ```
     pub fn add_autonomous_timed_transition(
         &mut self,
         pre: Location,

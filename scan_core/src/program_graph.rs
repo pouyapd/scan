@@ -405,6 +405,9 @@ impl ProgramGraph {
         self.vars[TIME.0 as usize] = Val::Integer(time as Integer);
     }
 
+    /// Waits a given amount of time-units.
+    ///
+    /// Returns error if the waiting would violate the current location's time invariant (if any).
     pub fn wait(&mut self, delta: Time) -> Result<(), PgError> {
         let prev_time;
         if let Val::Integer(ref mut time) = self.vars[TIME.0 as usize] {
