@@ -8,13 +8,12 @@ for which standard verification techniques do not scale.
 
 SCAN is currently under developement at DIBRIS, University of Genoa (UniGe)
 in the context of the [CONVINCE project](https://convince-project.eu/).
-There is no released version yet.
 
 ## Documentation
 
-API docs for the library crates are hosted at [https://convince-project.github.io/scan/scan](https://convince-project.github.io/scan/scan).
+User documentation: [The SCAN Book](https://convince-project.github.io/scan).
 
-There is no user documentation/manual yet.
+API docs for the library crates: [https://convince-project.github.io/scan/crates/scan](https://convince-project.github.io/scan/crates/scan).
 
 ## Formalism
 
@@ -65,16 +64,16 @@ which will show the available functionalities and commands' syntax.
 The general syntax to run SCAN is
 
 ```
-scan <MODEL> <COMMAND>
+scan <MODEL>
 ```
 
-where `MODEL` is the path to your model file and `COMMAND=parse|build|execute`.
+where `MODEL` is the path to your model file or folder.
 
 It can be helpful to run SCAN with logging activated.
 Use
 
 ```
-RUST_LOG=<LOG_LEVEL> scan <MODEL> <COMMAND>
+RUST_LOG=<LOG_LEVEL> scan <MODEL>
 ```
 where `LOG_LEVEL=error|warn|info|debug|trace`.
 
