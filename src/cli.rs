@@ -33,7 +33,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn run(&self) -> anyhow::Result<()> {
         let scxml_model = scan_fmt_xml::load(&self.model)?;
         let model_name = self
             .model

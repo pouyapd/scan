@@ -84,7 +84,7 @@ impl Data {
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_DATA}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned())));
                 }
             }
         }
@@ -154,7 +154,7 @@ impl State {
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_STATE}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned())));
                 }
             }
         }
@@ -216,7 +216,7 @@ impl Transition {
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_TRANSITION}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned())));
                 }
             }
         }
@@ -288,7 +288,7 @@ impl Executable {
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_TRANSITION}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned())));
                 }
             }
         }
@@ -316,7 +316,7 @@ impl Executable {
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_TRANSITION}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned())));
                 }
             }
         }
@@ -401,7 +401,7 @@ impl Send {
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_TRANSITION}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned())));
                 }
             }
         }
@@ -459,7 +459,7 @@ impl If {
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_TRANSITION}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned())));
                 }
             }
         }
@@ -519,7 +519,7 @@ impl Param {
                 }
                 key => {
                     error!("found unknown attribute {key} in {TAG_TRANSITION}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned())));
                 }
             }
         }

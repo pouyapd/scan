@@ -3,10 +3,9 @@ name = "scan"
 version = "0.1.0"
 edition = "2021"
 
-[profile.optimized]
-inherits = "release"
-codegen-units = 1
+[profile.release]
 lto = "fat"
+codegen-units = 1
 panic = "abort"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -14,9 +13,11 @@ panic = "abort"
 members = ["scan_core", "scan_fmt_xml"]
 
 [workspace.dependencies]
+anyhow = "1.0.*"
 log = "0.4.20"
 
 [dependencies]
+anyhow = { workspace = true }
 scan_fmt_xml = { version = "0.1.0", path = "scan_fmt_xml" }
 clap = { version = "4.4.14", features = ["derive"] }
 env_logger = "0.11.0"

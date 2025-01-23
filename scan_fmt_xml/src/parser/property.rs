@@ -1,6 +1,8 @@
 use super::{ATTR_EVENT, ATTR_EXPR, ATTR_LOWER_BOUND, ATTR_PARAM, ATTR_UPPER_BOUND};
-use crate::parser::{ParserError, ATTR_ID, ATTR_REFID, ATTR_TYPE, TAG_CONST, TAG_VAR};
-use anyhow::{anyhow, Context};
+use crate::parser::{
+    attrs, ParserError, ATTR_ID, ATTR_REFID, ATTR_TARGET, ATTR_TYPE, TAG_CONST, TAG_VAR,
+};
+use anyhow::{anyhow, bail, Context};
 use boa_ast::scope::Scope;
 use boa_interner::Interner;
 use log::{error, info, trace, warn};
@@ -15,7 +17,7 @@ use scan_core::{Expression, Float, Pmtl, Time, Val};
 use std::{collections::HashMap, io::BufRead, str};
 
 const TAG_PORTS: &str = "ports";
-const TAG_PORT: &str = "port";
+const TAG_PORT: &str = "scxml_event_send";
 const TAG_PROPERTIES: &str = "properties";
 const TAG_PREDICATES: &str = "predicates";
 const TAG_PREDICATE: &str = "predicate";
@@ -23,9 +25,8 @@ const TAG_GUARANTEES: &str = "guarantees";
 const TAG_GUARANTEE: &str = "guarantee";
 const TAG_ASSUMES: &str = "assumes";
 const TAG_ASSUME: &str = "assume";
-const TAG_ORIGIN: &str = "origin";
-const TAG_TARGET: &str = "target";
-const TAG_MESSAGE: &str = "message";
+const TAG_STATE_VAR: &str = "state_var";
+const TAG_EVENT_VAR: &str = "event_var";
 const TAG_EQUAL: &str = "equal";
 const TAG_LESS: &str = "less";
 const TAG_LEQ: &str = "leq";
@@ -43,11 +44,12 @@ const TAG_HISTORICALLY: &str = "historically";
 const TAG_PREVIOUSLY: &str = "previously";
 const TAG_TRUE: &str = "true";
 const TAG_FALSE: &str = "false";
+const ATTR_ORIGIN: &str = "origin";
 
 #[derive(Debug, Clone)]
 enum PropertyTag {
     Ports,
-    Port(String, ParserPort),
+    Port(String, String, String),
     Properties,
     Predicates,
     Predicate(String, Option<Expression<String>>),
@@ -123,143 +125,143 @@ pub(crate) struct ParserPort {
     pub(crate) param: Option<(String, boa_ast::Expression)>,
 }
 
-impl ParserPort {
-    fn parse(tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<(String, Self)> {
-        let mut port_id: Option<String> = None;
-        // let mut r#type: Option<String> = None;
-        for attr in tag
-            .attributes()
-            .collect::<Result<Vec<Attribute>, AttrError>>()?
-        {
-            match str::from_utf8(attr.key.as_ref())? {
-                ATTR_ID => {
-                    port_id = Some(attr.unescape_value()?.into_owned());
-                }
-                ATTR_TYPE => {
-                    // r#type = Some(attr.unescape_value()?.into_owned());
-                }
-                key => {
-                    error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
-                }
-            }
-        }
+// impl ParserPort {
+//     fn parse(tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<(String, Self)> {
+//         let mut port_id: Option<String> = None;
+//         // let mut r#type: Option<String> = None;
+//         for attr in tag
+//             .attributes()
+//             .collect::<Result<Vec<Attribute>, AttrError>>()?
+//         {
+//             match str::from_utf8(attr.key.as_ref())? {
+//                 ATTR_ID => {
+//                     port_id = Some(attr.unescape_value()?.into_owned());
+//                 }
+//                 ATTR_TYPE => {
+//                     // r#type = Some(attr.unescape_value()?.into_owned());
+//                 }
+//                 key => {
+//                     error!("found unknown attribute {key}");
+//                     return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+//                 }
+//             }
+//         }
 
-        let port_id = port_id.ok_or(anyhow!(ParserError::MissingAttr(ATTR_ID.to_string())))?;
-        // let r#type = r#type.ok_or(anyhow!(ParserError::MissingAttr(ATTR_TYPE.to_string())))?;
+//         let port_id = port_id.ok_or(anyhow!(ParserError::MissingAttr(ATTR_ID.to_string())))?;
+//         // let r#type = r#type.ok_or(anyhow!(ParserError::MissingAttr(ATTR_TYPE.to_string())))?;
 
-        Ok((
-            port_id,
-            ParserPort {
-                // r#type,
-                origin: String::new(),
-                target: String::new(),
-                event: String::new(),
-                param: None,
-            },
-        ))
-    }
+//         Ok((
+//             port_id,
+//             ParserPort {
+//                 // r#type,
+//                 origin: String::new(),
+//                 target: String::new(),
+//                 event: String::new(),
+//                 param: None,
+//             },
+//         ))
+//     }
 
-    fn parse_event(
-        &mut self,
-        tag: quick_xml::events::BytesStart<'_>,
-        scope: &Scope,
-        interner: &mut Interner,
-    ) -> anyhow::Result<()> {
-        let mut event: Option<String> = None;
-        let mut param: Option<String> = None;
-        let mut expr: Option<String> = None;
-        for attr in tag
-            .attributes()
-            .collect::<Result<Vec<Attribute>, AttrError>>()?
-        {
-            match str::from_utf8(attr.key.as_ref())? {
-                ATTR_EVENT => {
-                    event = Some(attr.unescape_value()?.into_owned());
-                }
-                ATTR_PARAM => {
-                    param = Some(attr.unescape_value()?.into_owned());
-                }
-                ATTR_EXPR => {
-                    expr = Some(attr.unescape_value()?.into_owned());
-                }
-                key => {
-                    error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
-                }
-            }
-        }
+//     fn parse_event(
+//         &mut self,
+//         tag: quick_xml::events::BytesStart<'_>,
+//         scope: &Scope,
+//         interner: &mut Interner,
+//     ) -> anyhow::Result<()> {
+//         let mut event: Option<String> = None;
+//         let mut param: Option<String> = None;
+//         let mut expr: Option<String> = None;
+//         for attr in tag
+//             .attributes()
+//             .collect::<Result<Vec<Attribute>, AttrError>>()?
+//         {
+//             match str::from_utf8(attr.key.as_ref())? {
+//                 ATTR_EVENT => {
+//                     event = Some(attr.unescape_value()?.into_owned());
+//                 }
+//                 ATTR_PARAM => {
+//                     param = Some(attr.unescape_value()?.into_owned());
+//                 }
+//                 ATTR_EXPR => {
+//                     expr = Some(attr.unescape_value()?.into_owned());
+//                 }
+//                 key => {
+//                     error!("found unknown attribute {key}");
+//                     return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+//                 }
+//             }
+//         }
 
-        let event = event.ok_or(anyhow!(ParserError::MissingAttr(ATTR_EVENT.to_string())))?;
+//         let event = event.ok_or(anyhow!(ParserError::MissingAttr(ATTR_EVENT.to_string())))?;
 
-        self.event = event;
+//         self.event = event;
 
-        if let Some(expression) = expr {
-            if let boa_ast::StatementListItem::Statement(boa_ast::Statement::Expression(
-                expression,
-            )) = boa_parser::Parser::new(boa_parser::Source::from_bytes(&expression))
-                .parse_script(scope, interner)
-                .expect("hope this works")
-                .statements()
-                .first()
-                .expect("hopefully there is a statement")
-                .to_owned()
-            {
-                self.param = Some((param.unwrap(), expression));
-            } else {
-                todo!()
-            }
-        }
+//         if let Some(expression) = expr {
+//             if let boa_ast::StatementListItem::Statement(boa_ast::Statement::Expression(
+//                 expression,
+//             )) = boa_parser::Parser::new(boa_parser::Source::from_bytes(&expression))
+//                 .parse_script(scope, interner)
+//                 .expect("hope this works")
+//                 .statements()
+//                 .first()
+//                 .expect("hopefully there is a statement")
+//                 .to_owned()
+//             {
+//                 self.param = Some((param.unwrap(), expression));
+//             } else {
+//                 todo!()
+//             }
+//         }
 
-        Ok(())
-    }
+//         Ok(())
+//     }
 
-    fn parse_origin(&mut self, tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<()> {
-        let mut origin: Option<String> = None;
-        for attr in tag
-            .attributes()
-            .collect::<Result<Vec<Attribute>, AttrError>>()?
-        {
-            match str::from_utf8(attr.key.as_ref())? {
-                ATTR_REFID => {
-                    origin = Some(attr.unescape_value()?.into_owned());
-                }
-                key => {
-                    error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
-                }
-            }
-        }
+//     fn parse_origin(&mut self, tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<()> {
+//         let mut origin: Option<String> = None;
+//         for attr in tag
+//             .attributes()
+//             .collect::<Result<Vec<Attribute>, AttrError>>()?
+//         {
+//             match str::from_utf8(attr.key.as_ref())? {
+//                 ATTR_REFID => {
+//                     origin = Some(attr.unescape_value()?.into_owned());
+//                 }
+//                 key => {
+//                     error!("found unknown attribute {key}");
+//                     return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+//                 }
+//             }
+//         }
 
-        let origin = origin.ok_or(anyhow!(ParserError::MissingAttr(ATTR_REFID.to_string())))?;
+//         let origin = origin.ok_or(anyhow!(ParserError::MissingAttr(ATTR_REFID.to_string())))?;
 
-        self.origin = origin;
-        Ok(())
-    }
+//         self.origin = origin;
+//         Ok(())
+//     }
 
-    fn parse_target(&mut self, tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<()> {
-        let mut target: Option<String> = None;
-        for attr in tag
-            .attributes()
-            .collect::<Result<Vec<Attribute>, AttrError>>()?
-        {
-            match str::from_utf8(attr.key.as_ref())? {
-                ATTR_REFID => {
-                    target = Some(attr.unescape_value()?.into_owned());
-                }
-                key => {
-                    error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
-                }
-            }
-        }
+//     fn parse_target(&mut self, tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<()> {
+//         let mut target: Option<String> = None;
+//         for attr in tag
+//             .attributes()
+//             .collect::<Result<Vec<Attribute>, AttrError>>()?
+//         {
+//             match str::from_utf8(attr.key.as_ref())? {
+//                 ATTR_REFID => {
+//                     target = Some(attr.unescape_value()?.into_owned());
+//                 }
+//                 key => {
+//                     error!("found unknown attribute {key}");
+//                     return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+//                 }
+//             }
+//         }
 
-        let target = target.ok_or(anyhow!(ParserError::MissingAttr(ATTR_REFID.to_string())))?;
+//         let target = target.ok_or(anyhow!(ParserError::MissingAttr(ATTR_REFID.to_string())))?;
 
-        self.target = target;
-        Ok(())
-    }
-}
+//         self.target = target;
+//         Ok(())
+//     }
+// }
 
 impl From<&PropertyTag> for &'static str {
     fn from(value: &PropertyTag) -> Self {
@@ -272,7 +274,7 @@ impl From<&PropertyTag> for &'static str {
             PropertyTag::Assumes => TAG_ASSUMES,
             PropertyTag::Assume(_, _) => TAG_ASSUME,
             PropertyTag::Ports => TAG_PORTS,
-            PropertyTag::Port(_, _) => TAG_PORT,
+            PropertyTag::Port(_, _, _) => TAG_PORT,
             PropertyTag::Equal(_, _) => TAG_EQUAL,
             PropertyTag::Less(_, _) => TAG_LESS,
             PropertyTag::LessEq(_, _) => TAG_LEQ,
@@ -324,8 +326,10 @@ impl Properties {
         let scope = Scope::new(scope.clone(), true);
         info!("parsing properties");
         loop {
-            let event = reader.read_event_into(&mut buf)?;
-            match event {
+            match reader
+                .read_event_into(&mut buf)
+                .context("failed reading event")?
+            {
                 Event::Start(tag) => {
                     let tag_name = tag.name();
                     let tag_name = str::from_utf8(tag_name.as_ref())?;
@@ -346,8 +350,15 @@ impl Properties {
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, PropertyTag::Ports)) =>
                         {
-                            let (id, port) = ParserPort::parse(tag)?;
-                            stack.push(PropertyTag::Port(id, port));
+                            let attrs = attrs(tag, &[ATTR_EVENT, ATTR_ORIGIN, ATTR_TARGET], &[])
+                                .with_context(|| {
+                                    format!("failed to parse '{}' tag attributes", TAG_PORT)
+                                })?;
+                            stack.push(PropertyTag::Port(
+                                attrs[ATTR_EVENT].clone(),
+                                attrs[ATTR_ORIGIN].clone(),
+                                attrs[ATTR_TARGET].clone(),
+                            ));
                         }
                         TAG_PREDICATES
                             if stack
@@ -466,16 +477,9 @@ impl Properties {
                     }
                 }
                 Event::End(tag) => {
-                    let tag_name = tag.name();
-                    let tag_name = str::from_utf8(tag_name.as_ref())?;
+                    let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
                     if let Some(tag) = stack.pop() {
-                        if <&str>::from(&tag) != tag_name {
-                            error!("unexpected end tag {tag_name}");
-                            return Err(anyhow!(ParserError::UnexpectedEndTag(
-                                tag_name.to_string()
-                            )))
-                            .context(reader.error_position());
-                        } else {
+                        if tag_name == <&str>::from(&tag) {
                             trace!("'{tag_name}' end tag");
                             match tag {
                                 PropertyTag::Properties if stack.is_empty() => {
@@ -486,12 +490,12 @@ impl Properties {
                                         assumes,
                                     });
                                 }
-                                PropertyTag::Port(id, port)
+                                PropertyTag::Port(_event, _origin, _target)
                                     if stack
                                         .last()
                                         .is_some_and(|tag| matches!(*tag, PropertyTag::Ports)) =>
                                 {
-                                    ports.insert(id, port);
+                                    // nothing to do
                                 }
                                 PropertyTag::Predicate(id, expr)
                                     if stack.last().is_some_and(|tag| {
@@ -684,11 +688,13 @@ impl Properties {
                                     unreachable!("All tags should be considered");
                                 }
                             }
+                        } else {
+                            error!(target: "parsing", "unknown or unexpected end tag '{tag_name}'");
+                            bail!("unknown or unexpected end tag '{tag_name}'");
                         }
                     } else {
-                        // WARN TODO FIXME: actually tag missing from stack?
-                        error!("unexpected end tag {tag_name}");
-                        return Err(anyhow!(ParserError::UnexpectedEndTag(tag_name.to_string()),));
+                        error!(target: "parsing", "unknown or unexpected end tag '{tag_name}'");
+                        bail!("unknown or unexpected end tag '{tag_name}'");
                     }
                 }
                 Event::Empty(tag) => {
@@ -696,35 +702,67 @@ impl Properties {
                     let tag_name = str::from_utf8(tag_name.as_ref())?;
                     trace!("'{tag_name}' empty tag");
                     match tag_name {
-                        TAG_ORIGIN
+                        TAG_EVENT_VAR
                             if stack
                                 .last()
-                                .is_some_and(|tag| matches!(*tag, PropertyTag::Port(_, _))) =>
+                                .is_some_and(|tag| matches!(*tag, PropertyTag::Port(_, _, _))) =>
                         {
-                            if let Some(PropertyTag::Port(_, port)) = stack.last_mut() {
-                                port.parse_origin(tag)?;
+                            if let Some(PropertyTag::Port(event, origin, target)) = stack.last() {
+                                let attrs = attrs(tag, &[ATTR_ID], &[]).with_context(|| {
+                                    format!("failed to parse '{}' tag attributes", TAG_EVENT_VAR)
+                                })?;
+                                ports.insert(
+                                    attrs[ATTR_ID].clone(),
+                                    ParserPort {
+                                        origin: origin.clone(),
+                                        target: target.clone(),
+                                        event: event.clone(),
+                                        param: None,
+                                    },
+                                );
                             } else {
                                 unreachable!("A port must be on top of stack");
                             }
                         }
-                        TAG_TARGET
+                        TAG_STATE_VAR
                             if stack
                                 .last()
-                                .is_some_and(|tag| matches!(*tag, PropertyTag::Port(_, _))) =>
+                                .is_some_and(|tag| matches!(*tag, PropertyTag::Port(_, _, _))) =>
                         {
-                            if let Some(PropertyTag::Port(_, port)) = stack.last_mut() {
-                                port.parse_target(tag)?;
-                            } else {
-                                unreachable!("A port must be on top of stack");
-                            }
-                        }
-                        TAG_MESSAGE
-                            if stack
-                                .last()
-                                .is_some_and(|tag| matches!(*tag, PropertyTag::Port(_, _))) =>
-                        {
-                            if let Some(PropertyTag::Port(_, port)) = stack.last_mut() {
-                                port.parse_event(tag, &scope, interner)?;
+                            if let Some(PropertyTag::Port(event, origin, target)) = stack.last_mut()
+                            {
+                                let attrs =
+                                    attrs(tag, &[ATTR_ID, ATTR_PARAM, ATTR_EXPR], &[ATTR_TYPE])
+                                        .with_context(|| {
+                                            format!(
+                                                "failed to parse '{}' tag attributes",
+                                                TAG_STATE_VAR
+                                            )
+                                        })?;
+                                if let boa_ast::StatementListItem::Statement(
+                                    boa_ast::Statement::Expression(expression),
+                                ) = boa_parser::Parser::new(boa_parser::Source::from_bytes(
+                                    &attrs[ATTR_EXPR],
+                                ))
+                                .parse_script(&scope, interner)
+                                .expect("hope this works")
+                                .statements()
+                                .first()
+                                .expect("hopefully there is a statement")
+                                .to_owned()
+                                {
+                                    ports.insert(
+                                        attrs[ATTR_ID].clone(),
+                                        ParserPort {
+                                            origin: origin.clone(),
+                                            target: target.clone(),
+                                            event: event.clone(),
+                                            param: Some((attrs[ATTR_PARAM].clone(), expression)),
+                                        },
+                                    );
+                                } else {
+                                    bail!("failed parsing expression in '{}' attribute", ATTR_EXPR);
+                                }
                             } else {
                                 unreachable!("A port must be on top of stack");
                             }
@@ -794,7 +832,9 @@ impl Properties {
                 }
                 key => {
                     error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow::Error::new(ParserError::UnknownAttrKey(
+                        key.to_owned(),
+                    )));
                 }
             }
         }
@@ -814,7 +854,9 @@ impl Properties {
                 }
                 key => {
                     error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow::Error::new(ParserError::UnknownAttrKey(
+                        key.to_owned(),
+                    )));
                 }
             }
         }
@@ -838,7 +880,9 @@ impl Properties {
                 }
                 key => {
                     error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow::Error::new(ParserError::UnknownAttrKey(
+                        key.to_owned(),
+                    )));
                 }
             }
         }
@@ -869,7 +913,9 @@ impl Properties {
                 }
                 key => {
                     error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow::Error::new(ParserError::UnknownAttrKey(
+                        key.to_owned(),
+                    )));
                 }
             }
         }

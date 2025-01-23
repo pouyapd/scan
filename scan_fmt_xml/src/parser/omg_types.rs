@@ -193,7 +193,7 @@ impl OmgTypes {
                 }
                 key => {
                     error!("found unknown attribute {key}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned()),));
+                    return Err(anyhow!(ParserError::UnknownAttrKey(key.to_owned()),));
                 }
             }
         }
@@ -216,7 +216,9 @@ impl OmgTypes {
                 }
                 key => {
                     error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
+                    return Err(anyhow::Error::new(ParserError::UnknownAttrKey(
+                        key.to_owned(),
+                    )));
                 }
             }
         }

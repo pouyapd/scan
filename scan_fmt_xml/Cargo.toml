@@ -9,7 +9,7 @@ crate-type = ["lib"]   # The crate types to generate.
 
 [dependencies]
 scan_core = { version = "0.1.0", path="../scan_core" }
-anyhow = "1.0.79"
+anyhow = { workspace = true }
 boa_ast = "0.20.0"
 boa_interner = "0.20.0"
 boa_parser = "0.20.0"

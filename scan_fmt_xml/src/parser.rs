@@ -5,54 +5,42 @@ mod omg_types;
 mod property;
 mod vocabulary;
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::str::Utf8Error;
-
-use anyhow::{anyhow, Context};
-use boa_interner::Interner;
-use log::{error, info, trace, warn};
-use quick_xml::events::attributes::{AttrError, Attribute};
-use quick_xml::events::Event;
-use quick_xml::{Error as XmlError, Reader};
-use thiserror::Error;
-
 pub use self::fsm::*;
 pub use self::omg_types::*;
 pub use self::property::*;
 pub use self::vocabulary::*;
-use scan_core::channel_system::*;
+use anyhow::{anyhow, bail, Context};
+use boa_interner::Interner;
+use log::warn;
+use log::{error, info, trace};
+use quick_xml::events::Event;
+use quick_xml::Reader;
+use std::collections::HashMap;
+use std::io::BufRead;
+use std::io::Seek;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ParserError {
-    #[error("reader failed")]
-    Reader(#[from] XmlError),
-    #[error("error from an attribute")]
-    Attr(#[from] AttrError),
-    #[error("unknown key: `{0}`")]
-    UnknownKey(String),
-    #[error("utf8 error")]
-    Utf8(#[from] Utf8Error),
-    #[error("channel system error")]
-    Cs(#[from] CsError),
-    #[error("unexpected end tag: `{0}`")]
+    #[error("unknown or unexpected empty tag `{0}`")]
+    UnexpectedTag(String),
+    #[error("unknown or unexpected start tag `{0}`")]
+    UnexpectedStartTag(String),
+    #[error("unknown or unexpected end tag `{0}`")]
     UnexpectedEndTag(String),
+    #[error("missing required attribute `{0}`")]
+    MissingAttr(String),
+    #[error("unknown or unexpected attribute key `{0}`")]
+    UnknownAttrKey(String),
     #[error("missing `expr` attribute")]
     MissingExpr,
-    #[error("missing attribute `{0}`")]
-    MissingAttr(String),
     #[error("open tags have not been closed")]
     UnclosedTags,
-    #[error("`{0}` has already been declared")]
-    AlreadyDeclared(String),
-    #[error("unknown model of computation: `{0}`")]
-    UnknownMoC(String),
     #[error("error parsing EcmaScript code")]
     EcmaScriptParsing,
     #[error("type annotation missing")]
     NoTypeAnnotation,
-    #[error("provided path is not a file")]
-    NotAFile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,10 +66,41 @@ impl From<ConvinceTag> for &'static str {
     }
 }
 
+fn attrs(
+    tag: quick_xml::events::BytesStart<'_>,
+    keys: &[&str],
+    opt_keys: &[&str],
+) -> anyhow::Result<HashMap<String, String>> {
+    let mut attrs = HashMap::new();
+    for attr in tag.attributes() {
+        let attr = attr?;
+        let key = String::from_utf8(attr.key.into_inner().to_vec())?;
+        if keys.contains(&key.as_str()) || opt_keys.contains(&key.as_str()) {
+            let val = String::from_utf8(attr.value.into_owned())?;
+            attrs.insert(key, val);
+        } else {
+            error!(target: "parsing", "found unknown attribute '{key}'");
+            bail!(ParserError::UnknownAttrKey(key.to_string()));
+        }
+    }
+    for key in keys {
+        if !attrs.contains_key(*key) {
+            error!(target: "parsing", "missing required attribute '{key}'");
+            bail!(ParserError::MissingAttr(key.to_string()));
+        }
+    }
+    Ok(attrs)
+}
+
+fn count_lines<R: BufRead + Seek>(mut reader: Reader<R>) -> usize {
+    let end_pos = reader.buffer_position();
+    reader.get_mut().rewind().unwrap();
+    reader.into_inner().take(end_pos).lines().count()
+}
+
 /// Represents a model specified in the CONVINCE-XML format.
 #[derive(Debug)]
 pub struct Parser {
-    root_folder: PathBuf,
     pub(crate) process_list: HashMap<String, Scxml>,
     pub(crate) types: OmgTypes,
     pub(crate) properties: Properties,
@@ -90,294 +109,251 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn parse_folder(path: &Path) -> anyhow::Result<Parser> {
-        let mut process_list = HashMap::new();
-        let mut properties = Properties::new();
-        let mut interner = Interner::new();
-        let scope = boa_ast::scope::Scope::new_global();
-        if path.is_dir() {
-            for entry in std::fs::read_dir(path)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    // visit_dirs(&path, cb)?;
-                } else if path
-                    .extension()
-                    .is_some_and(|ext| ext.to_str().unwrap() == "scxml")
-                {
-                    info!("creating reader from file {0}", path.display());
-                    let mut reader = Reader::from_file(path)?;
-                    let fsm = Scxml::parse(&mut reader, &mut interner, &scope)?;
-                    process_list.insert(fsm.id.to_owned(), fsm);
-                }
-            }
-            for entry in std::fs::read_dir(path)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    // visit_dirs(&path, cb)?;
-                } else if path
-                    .extension()
-                    .is_some_and(|ext| ext.to_str().unwrap() == "xml")
-                {
-                    info!("creating reader from file {0}", path.display());
-                    let mut reader = Reader::from_file(path)?;
-                    properties = Properties::parse(&mut reader, &scope, &mut interner)?;
-                }
-            }
-        }
-        Ok(Parser {
-            root_folder: path.to_path_buf(),
-            process_list,
-            types: OmgTypes::new(),
-            properties,
-            interner,
-            scope,
-        })
-    }
-
-    /// Builds a [`Parser`] representation by parsing the given main file of a model specification in the CONVINCE-XML format.
+    /// Builds a [`Parser`] representation by parsing the given main file of a model specification in the CONVINCE-XML format,
+    /// or a folder containing the required source files.
     ///
     /// Fails if the parsed content contains syntactic errors.
-    pub fn parse(path: &Path) -> anyhow::Result<Parser> {
-        let mut reader = Reader::from_file(path)?;
-        let root_folder = path.parent().ok_or(ParserError::NotAFile)?.to_path_buf();
-        let mut spec = Parser {
-            root_folder,
+    pub fn parse(path: &Path) -> anyhow::Result<Self> {
+        info!(target: "parsing", "creating parser");
+        let mut parser = Parser {
             process_list: HashMap::new(),
             types: OmgTypes::new(),
             properties: Properties::new(),
             interner: Interner::new(),
             scope: boa_ast::scope::Scope::new_global(),
         };
+        if path.is_dir() {
+            info!(target: "parsing", "parsing directory '{}'", path.display());
+            parser.parse_directory(path)?;
+        } else {
+            info!(target: "parsing", "parsing main model file '{}'", path.display());
+            let mut reader = Reader::from_file(path).with_context(|| {
+                format!("failed to create reader from file '{}'", path.display())
+            })?;
+            let parent = path.parent().ok_or(anyhow!(
+                "failed to take parent directory of '{}'",
+                path.display()
+            ))?;
+            parser.parse_main(&mut reader, parent).with_context(|| {
+                format!(
+                    "failed to parse model specification at line {} in '{}'",
+                    count_lines(reader),
+                    path.display(),
+                )
+            })?;
+        }
+        Ok(parser)
+    }
+
+    fn parse_directory(&mut self, path: &Path) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(path)
+            .with_context(|| format!("failed to read directory '{}'", path.display()))?
+        {
+            let path = entry.context("failed to read directory entry")?.path();
+            if path.is_dir() {
+                self.parse_directory(&path)?;
+            } else {
+                self.parse_file(&path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_file(&mut self, path: &Path) -> anyhow::Result<()> {
+        if path.is_dir() {
+            bail!("path '{}' is a directory", path.display());
+        } else if let Some(ext) = path.extension() {
+            let ext = ext
+                .to_str()
+                .ok_or(anyhow!("failed file extension conversion to string"))?;
+            match ext {
+                "scxml" => {
+                    info!("creating reader from file '{}'", path.display());
+                    let mut reader = Reader::from_file(path).with_context(|| {
+                        format!("failed to create reader from file '{}'", path.display())
+                    })?;
+                    let fsm = Scxml::parse(&mut reader, &mut self.interner, &self.scope)
+                        .with_context(|| {
+                            format!(
+                                "failed to parse fsm at line {} in '{}'",
+                                count_lines(reader),
+                                path.display(),
+                            )
+                        })?;
+                    self.process_list.insert(fsm.id.to_owned(), fsm);
+                }
+                "xml" => {
+                    info!("creating reader from file '{}'", path.display());
+                    let mut reader = Reader::from_file(path).with_context(|| {
+                        format!("failed to create reader from file '{}'", path.display())
+                    })?;
+                    self.properties =
+                        Properties::parse(&mut reader, &self.scope, &mut self.interner)
+                            .with_context(|| {
+                                format!(
+                                    "failed to parse properties at line {} in '{}'",
+                                    count_lines(reader),
+                                    path.display(),
+                                )
+                            })?;
+                }
+                _ => {
+                    warn!(target: "parsing", "unknown file extension '{}'", ext);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_main<R: BufRead>(
+        &mut self,
+        reader: &mut Reader<R>,
+        parent: &Path,
+    ) -> anyhow::Result<()> {
         let mut buf = Vec::new();
         let mut stack = Vec::new();
-        info!(target: "parsing", "begin parsing");
-        info!(target: "parsing", "parsing main model file: {:?}", path.as_os_str());
         loop {
             match reader
                 .read_event_into(&mut buf)
-                .with_context(|| format!("parsing {:?}", path.as_os_str()))
-                .with_context(|| format!("parser position {}", reader.error_position()))?
+                .context("failed reading event")?
             {
                 Event::Start(tag) => {
-                    let tag_name = tag.name();
-                    let tag_name = &*reader.decoder().decode(tag_name.as_ref())?;
-                    trace!(target: "parsing", "open tag: '{tag_name}'");
-                    match tag_name {
+                    let key = &*reader.decoder().decode(tag.name().into_inner())?;
+                    trace!(target: "parsing", "start tag '{key}'");
+                    match key {
                         TAG_SPECIFICATION if stack.is_empty() => {
                             stack.push(ConvinceTag::Specification);
                         }
-                        TAG_MODEL
-                            if stack
-                                .last()
-                                .is_some_and(|tag| *tag == ConvinceTag::Specification) =>
-                        {
+                        TAG_MODEL if stack.last().is_some_and(|e| *e == ConvinceTag::Specification) => {
                             stack.push(ConvinceTag::Model);
                         }
-                        TAG_PROCESS_LIST
-                            if stack.last().is_some_and(|tag| *tag == ConvinceTag::Model) =>
-                        {
+                        TAG_PROCESS_LIST if stack.last().is_some_and(|e| *e == ConvinceTag::Model) => {
                             stack.push(ConvinceTag::ProcessList);
                         }
-                        // Unknown tag: skip till maching end tag
                         _ => {
-                            error!(target: "parsing", "unknown or unexpected tag {tag_name}, skipping");
-                            reader
-                                .read_to_end_into(tag.to_end().into_owned().name(), &mut buf)
-                                .with_context(|| {
-                                    format!("parser position {}", reader.error_position())
-                                })?;
+                            error!(target: "parsing", "unknown or unexpected start tag '{key}'");
+                            bail!(ParserError::UnexpectedStartTag(key.to_string()));
                         }
                     }
                 }
                 Event::End(tag) => {
-                    let tag_name = tag.name();
-                    let tag_name = &*reader.decoder().decode(tag_name.as_ref())?;
-                    if stack.pop().is_some_and(|tag| <&str>::from(tag) == tag_name) {
-                        trace!(target: "parsing", "end tag: '{tag_name}'");
+                    let key = &*reader.decoder().decode(tag.name().into_inner())?;
+                    if stack.pop().is_some_and(|state| Into::<&str>::into(state) == key) {
+                        trace!(target: "parsing", "end tag '{}'", key);
                     } else {
-                        error!(target: "parsing", "unexpected end tag {tag_name}");
-                        return Err(anyhow::Error::new(ParserError::UnexpectedEndTag(
-                            tag_name.to_string(),
-                        )))
-                        .with_context(|| format!("parser position {}", reader.buffer_position()));
+                        error!(target: "parsing", "unknown or unexpected end tag '{key}'");
+                        bail!(ParserError::UnexpectedEndTag(key.to_string()));
                     }
                 }
                 Event::Empty(tag) => {
-                    let tag_name = tag.name();
-                    let tag_name = std::str::from_utf8(tag_name.as_ref())?;
-                    trace!("'{tag_name}' empty tag");
-                    // let tag_name = ConvinceTag::from(tag_name.as_str());
-                    match tag_name {
-                        TAG_PROCESS
-                            if stack
-                                .last()
-                                .is_some_and(|tag| *tag == ConvinceTag::ProcessList) =>
-                        {
-                            spec.parse_process(tag).with_context(|| {
-                                format!("parser position {}", reader.buffer_position())
-                            })?;
+                    let key = &*reader.decoder().decode(tag.name().into_inner())?;
+                    trace!(target: "parsing", "empty tag '{key}'");
+                    match key {
+                        TAG_TYPES if stack.last().is_some_and(|e| *e == ConvinceTag::Specification) => {
+                            let attrs = attrs(
+                                tag,
+                                &[ATTR_PATH],
+                                &[],
+                            )
+                            .context("failed to parse 'types' tag attributes")?;
+                            let mut path = parent.to_owned();
+                            path.extend(&PathBuf::from(attrs.get(ATTR_PATH).unwrap()));
+                            info!(
+                                "creating reader from file '{}'",
+                                path.display()
+                            );
+                            let mut reader = Reader::from_file(path.clone())?;
+                            self.types.parse(&mut reader)
+                                .with_context(|| format!("failed to parse types specification at line {} in '{}'", count_lines(reader), path.display()))?;
                         }
-                        TAG_TYPES
-                            if stack
-                                .last()
-                                .is_some_and(|tag| *tag == ConvinceTag::Specification) =>
-                        {
-                            spec.parse_types(tag).with_context(|| {
-                                format!("parser position {}", reader.buffer_position())
+                        TAG_PROPERTIES if stack.last().is_some_and(|e| *e == ConvinceTag::Specification) => {
+                            let attrs = attrs(tag, &[ATTR_PATH], &[])
+                                .context("failed to parse 'properties' tag attributes")?;
+                            let mut path = parent.to_owned();
+                            path.extend(&PathBuf::from(attrs.get(ATTR_PATH).unwrap()));
+                            info!("creating reader from file '{}'", path.display());
+                            let mut reader = Reader::from_file(&path).with_context(|| {
+                                format!("failed to create reader from file '{}'", path.display())
                             })?;
+                            self.properties =
+                                Properties::parse(&mut reader, &self.scope, &mut self.interner)
+                                    .with_context(|| {
+                                        format!(
+                                            "failed to parse properties at line {} in '{}'",
+                                            count_lines(reader),
+                                            path.display(),
+                                        )
+                                    })?;
                         }
-                        TAG_PROPERTIES
-                            if stack
-                                .last()
-                                .is_some_and(|tag| *tag == ConvinceTag::Specification) =>
-                        {
-                            spec.parse_properties(tag).with_context(|| {
-                                format!("parser position {}", reader.buffer_position())
-                            })?;
+                        TAG_PROCESS if stack.last().is_some_and(|e| *e == ConvinceTag::ProcessList) => {
+                            let attrs = attrs(
+                                tag,
+                                &[ATTR_ID, ATTR_PATH],
+                                &[ATTR_MOC],
+                            )
+                            .context("failed to parse 'process' tag attributes")?;
+                            if let Some(moc) = attrs.get(ATTR_MOC) {
+                                if moc != "fsm" {
+                                    bail!("unknown moc {moc}");
+                                }
+                            }
+                            let process_id = attrs.get(ATTR_ID).unwrap().clone();
+                            if self.process_list.contains_key(&process_id) {
+                                bail!("process '{process_id}' declared multiple times");
+                            }
+                            let mut path = parent.to_owned();
+                            path.extend(&PathBuf::from(attrs.get(ATTR_PATH).unwrap()));
+                            info!(
+                                "creating reader from file '{}' for fsm '{process_id}'",
+                                path.display()
+                            );
+                            let mut reader = Reader::from_file(path.clone())?;
+                            let fsm = Scxml::parse(&mut reader, &mut self.interner, &self.scope)
+                                .with_context(|| format!("failed to parse fsm at line {} in '{}'", count_lines(reader), path.display()))?;
+                            // Add process to list and check that no process was already in the list under the same name
+                            if self.process_list.insert(process_id.clone(), fsm).is_some() {
+                                panic!("process added to list multiple times");
+                            }
                         }
-                        // Unknown tag: skip till maching end tag
                         _ => {
-                            warn!("unknown or unexpected tag {tag_name:?}, skipping");
-                            continue;
+                            error!(target: "parsing", "unknown or unexpected empty tag '{key}'");
+                            bail!(ParserError::UnexpectedTag(key.to_string()));
                         }
                     }
                 }
-                // Ignore text between tags
-                Event::Text(_) => continue,
                 // Ignore comments
-                Event::Comment(_) => continue,
-                Event::CData(_) => {
-                    return Err(anyhow!("CData not supported"))
-                        .with_context(|| format!("parser position {}", reader.buffer_position()));
-                }
+                Event::Comment(_)
                 // Ignore XML declaration
-                Event::Decl(_) => continue,
+                | Event::Decl(_) => continue,
+                // Ignore text between tags
+                Event::Text(t) => {
+                    let text = &*reader.decoder().decode(t.as_ref())?;
+                    if !text.trim().is_empty() {
+                        error!(target: "parsing", "text content not supported");
+                        bail!("text content not supported");
+                    }
+                }
+                Event::CData(_) => {
+                    error!(target: "parsing", "CData not supported");
+                    bail!("CData not supported");
+                }
                 Event::PI(_) => {
-                    return Err(anyhow!("Processing Instructions not supported"))
-                        .with_context(|| format!("parser position {}", reader.buffer_position()));
+                    error!(target: "parsing", "Processing Instructions not supported");
+                    bail!("Processing Instructions not supported");
                 }
                 Event::DocType(_) => {
-                    return Err(anyhow!("DocType not supported"))
-                        .with_context(|| format!("parser position {}", reader.buffer_position()));
+                    error!(target: "parsing", "DocType not supported");
+                    bail!("DocType not supported");
                 }
                 // exits the loop when reaching end of file
                 Event::Eof => {
                     info!(target: "parsing", "parsing completed");
-                    if !stack.is_empty() {
-                        return Err(anyhow!(ParserError::UnclosedTags)).with_context(|| {
-                            format!("parser position {}", reader.buffer_position())
-                        });
-                    }
                     break;
                 }
             }
             // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
             buf.clear();
         }
-        Ok(spec)
-    }
-
-    fn parse_process(&mut self, tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<()> {
-        let mut process_id: Option<String> = None;
-        let mut moc: Option<String> = None;
-        let mut path: Option<String> = None;
-        for attr in tag
-            .attributes()
-            .collect::<Result<Vec<Attribute>, AttrError>>()?
-        {
-            match std::str::from_utf8(attr.key.as_ref())? {
-                ATTR_ID => {
-                    process_id = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                ATTR_MOC => {
-                    moc = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                ATTR_PATH => {
-                    path = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                key => {
-                    error!("found unknown attribute {key}");
-                    return Err(anyhow::Error::new(ParserError::UnknownKey(key.to_owned())));
-                }
-            }
-        }
-        let process_id =
-            process_id.ok_or(anyhow!(ParserError::MissingAttr(ATTR_ID.to_string())))?;
-        let path = path.ok_or(anyhow!(ParserError::MissingAttr(ATTR_PATH.to_string())))?;
-        let mut root_path = self.root_folder.clone();
-        root_path.extend(&PathBuf::from(path));
-        let moc = moc.ok_or(anyhow!(ParserError::MissingAttr(ATTR_MOC.to_string())))?;
-        let fsm = match moc.as_str() {
-            "fsm" => {
-                info!("creating reader from file {0}", root_path.display());
-                let mut reader = Reader::from_file(root_path)?;
-                Scxml::parse(&mut reader, &mut self.interner, &self.scope)?
-            }
-            moc => {
-                return Err(anyhow!(ParserError::UnknownMoC(moc.to_string())));
-            }
-        };
-        // Add process to list and check that no process was already in the list under the same name
-        if self
-            .process_list
-            .insert(process_id.to_owned(), fsm)
-            .is_none()
-        {
-            Ok(())
-        } else {
-            Err(anyhow!(ParserError::AlreadyDeclared(process_id)))
-        }
-    }
-
-    fn parse_types(&mut self, tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<()> {
-        let mut path: Option<String> = None;
-        for attr in tag
-            .attributes()
-            .collect::<Result<Vec<Attribute>, AttrError>>()?
-        {
-            match std::str::from_utf8(attr.key.as_ref())? {
-                ATTR_PATH => {
-                    path = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                key => {
-                    error!("found unknown attribute {key}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned()),));
-                }
-            }
-        }
-        let path = path.ok_or(anyhow!(ParserError::MissingAttr(ATTR_PATH.to_string())))?;
-        let mut root_path = self.root_folder.clone();
-        root_path.extend(&PathBuf::from(path));
-        info!("creating reader from file {0}", root_path.display());
-        let mut reader = Reader::from_file(root_path)?;
-        self.types.parse(&mut reader)?;
-        Ok(())
-    }
-
-    fn parse_properties(&mut self, tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<()> {
-        let mut path: Option<String> = None;
-        for attr in tag
-            .attributes()
-            .collect::<Result<Vec<Attribute>, AttrError>>()?
-        {
-            match std::str::from_utf8(attr.key.as_ref())? {
-                ATTR_PATH => {
-                    path = Some(String::from_utf8(attr.value.into_owned())?);
-                }
-                key => {
-                    error!("found unknown attribute {key}");
-                    return Err(anyhow!(ParserError::UnknownKey(key.to_owned()),));
-                }
-            }
-        }
-        let path = path.ok_or(anyhow!(ParserError::MissingAttr(ATTR_PATH.to_string())))?;
-        let mut root_path = self.root_folder.clone();
-        root_path.extend(&PathBuf::from(path));
-        info!("creating reader from file {0}", root_path.display());
-        let mut reader = Reader::from_file(root_path)?;
-        self.properties = Properties::parse(&mut reader, &self.scope, &mut self.interner)?;
         Ok(())
     }
 }
