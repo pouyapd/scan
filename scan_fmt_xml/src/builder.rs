@@ -382,12 +382,12 @@ impl ModelBuilder {
     }
 
     fn build_fsm(&mut self, scxml: &Scxml, interner: &mut Interner) -> anyhow::Result<()> {
-        trace!("build fsm {}", scxml.id);
+        trace!("build fsm {}", scxml.name);
         // Initialize fsm.
         let pg_builder = self
             .fsm_builders
-            .get(&scxml.id)
-            .unwrap_or_else(|| panic!("builder for {} must already exist", scxml.id));
+            .get(&scxml.name)
+            .unwrap_or_else(|| panic!("builder for {} must already exist", scxml.name));
         let pg_id = pg_builder.pg_id;
         let ext_queue = pg_builder.ext_queue;
         // Initial location of Program Graph.

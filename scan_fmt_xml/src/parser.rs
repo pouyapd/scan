@@ -10,6 +10,9 @@ pub use self::omg_types::*;
 pub use self::property::*;
 pub use self::vocabulary::*;
 use anyhow::{anyhow, bail, Context};
+use boa_ast::scope::Scope;
+use boa_ast::Expression;
+use boa_ast::StatementListItem;
 use boa_interner::Interner;
 use log::warn;
 use log::{error, info, trace};
@@ -23,6 +26,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ParserError {
+    #[error("error parsing tag `{0}`")]
+    Tag(String),
     #[error("unknown or unexpected empty tag `{0}`")]
     UnexpectedTag(String),
     #[error("unknown or unexpected start tag `{0}`")]
@@ -33,12 +38,8 @@ pub enum ParserError {
     MissingAttr(String),
     #[error("unknown or unexpected attribute key `{0}`")]
     UnknownAttrKey(String),
-    #[error("missing `expr` attribute")]
-    MissingExpr,
     #[error("open tags have not been closed")]
     UnclosedTags,
-    #[error("error parsing EcmaScript code")]
-    EcmaScriptParsing,
     #[error("type annotation missing")]
     NoTypeAnnotation,
 }
@@ -76,7 +77,7 @@ fn attrs(
         let attr = attr?;
         let key = String::from_utf8(attr.key.into_inner().to_vec())?;
         if keys.contains(&key.as_str()) || opt_keys.contains(&key.as_str()) {
-            let val = String::from_utf8(attr.value.into_owned())?;
+            let val = attr.unescape_value()?.into_owned();
             attrs.insert(key, val);
         } else {
             error!(target: "parsing", "found unknown attribute '{key}'");
@@ -96,6 +97,26 @@ fn count_lines<R: BufRead + Seek>(mut reader: Reader<R>) -> usize {
     let end_pos = reader.buffer_position();
     reader.get_mut().rewind().unwrap();
     reader.into_inner().take(end_pos).lines().count()
+}
+
+fn ecmascript(code: &str, scope: &Scope, interner: &mut Interner) -> anyhow::Result<Expression> {
+    let script = boa_parser::Parser::new(boa_parser::Source::from_bytes(&code))
+        .parse_script(scope, interner)
+        .map_err(|err| anyhow!(err))
+        .context("ECMAScript parser error")?;
+    if script.statements().len() == 1 {
+        let statement = script
+            .statements()
+            .first()
+            .ok_or_else(|| anyhow!("expression {code} is not a statement"))?
+            .to_owned();
+        match statement {
+            StatementListItem::Statement(boa_ast::Statement::Expression(expr)) => Ok(expr),
+            _ => Err(anyhow!("{statement:?} assignment is not an expression")),
+        }
+    } else {
+        Err(anyhow!("code must be made by a single statement"))
+    }
 }
 
 /// Represents a model specified in the CONVINCE-XML format.
@@ -172,7 +193,7 @@ impl Parser {
                     let mut reader = Reader::from_file(path).with_context(|| {
                         format!("failed to create reader from file '{}'", path.display())
                     })?;
-                    let fsm = Scxml::parse(&mut reader, &mut self.interner, &self.scope)
+                    let fsm = fsm::parse(&mut reader, &mut self.interner, &self.scope)
                         .with_context(|| {
                             format!(
                                 "failed to parse fsm at line {} in '{}'",
@@ -180,7 +201,7 @@ impl Parser {
                                 path.display(),
                             )
                         })?;
-                    self.process_list.insert(fsm.id.to_owned(), fsm);
+                    self.process_list.insert(fsm.name.to_owned(), fsm);
                 }
                 "xml" => {
                     info!("creating reader from file '{}'", path.display());
@@ -218,9 +239,9 @@ impl Parser {
                 .context("failed reading event")?
             {
                 Event::Start(tag) => {
-                    let key = &*reader.decoder().decode(tag.name().into_inner())?;
-                    trace!(target: "parsing", "start tag '{key}'");
-                    match key {
+                    let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
+                    trace!(target: "parsing", "start tag '{tag_name}'");
+                    match tag_name {
                         TAG_SPECIFICATION if stack.is_empty() => {
                             stack.push(ConvinceTag::Specification);
                         }
@@ -231,24 +252,24 @@ impl Parser {
                             stack.push(ConvinceTag::ProcessList);
                         }
                         _ => {
-                            error!(target: "parsing", "unknown or unexpected start tag '{key}'");
-                            bail!(ParserError::UnexpectedStartTag(key.to_string()));
+                            error!(target: "parsing", "unknown or unexpected start tag '{tag_name}'");
+                            bail!(ParserError::UnexpectedStartTag(tag_name.to_string()));
                         }
                     }
                 }
                 Event::End(tag) => {
-                    let key = &*reader.decoder().decode(tag.name().into_inner())?;
-                    if stack.pop().is_some_and(|state| Into::<&str>::into(state) == key) {
-                        trace!(target: "parsing", "end tag '{}'", key);
+                    let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
+                    if stack.pop().is_some_and(|state| Into::<&str>::into(state) == tag_name) {
+                        trace!(target: "parsing", "end tag '{}'", tag_name);
                     } else {
-                        error!(target: "parsing", "unknown or unexpected end tag '{key}'");
-                        bail!(ParserError::UnexpectedEndTag(key.to_string()));
+                        error!(target: "parsing", "unknown or unexpected end tag '{tag_name}'");
+                        bail!(ParserError::UnexpectedEndTag(tag_name.to_string()));
                     }
                 }
                 Event::Empty(tag) => {
-                    let key = &*reader.decoder().decode(tag.name().into_inner())?;
-                    trace!(target: "parsing", "empty tag '{key}'");
-                    match key {
+                    let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
+                    trace!(target: "parsing", "empty tag '{tag_name}'");
+                    match tag_name {
                         TAG_TYPES if stack.last().is_some_and(|e| *e == ConvinceTag::Specification) => {
                             let attrs = attrs(
                                 tag,
@@ -308,7 +329,7 @@ impl Parser {
                                 path.display()
                             );
                             let mut reader = Reader::from_file(path.clone())?;
-                            let fsm = Scxml::parse(&mut reader, &mut self.interner, &self.scope)
+                            let fsm = fsm::parse(&mut reader, &mut self.interner, &self.scope)
                                 .with_context(|| format!("failed to parse fsm at line {} in '{}'", count_lines(reader), path.display()))?;
                             // Add process to list and check that no process was already in the list under the same name
                             if self.process_list.insert(process_id.clone(), fsm).is_some() {
@@ -316,8 +337,8 @@ impl Parser {
                             }
                         }
                         _ => {
-                            error!(target: "parsing", "unknown or unexpected empty tag '{key}'");
-                            bail!(ParserError::UnexpectedTag(key.to_string()));
+                            error!(target: "parsing", "unknown or unexpected empty tag '{tag_name}'");
+                            bail!(ParserError::UnexpectedTag(tag_name.to_string()));
                         }
                     }
                 }
