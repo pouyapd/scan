@@ -187,7 +187,7 @@ impl CsModel {
         use rand::SeedableRng;
 
         let mut current_len = 0;
-        let rng = &mut SmallRng::from_entropy();
+        let rng = &mut SmallRng::from_os_rng();
         if let Some(publisher) = tracer.as_mut() {
             publisher.init();
         }
