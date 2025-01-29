@@ -1707,9 +1707,9 @@ impl ModelBuilder {
                     *upper_bound,
                 ))
             }
-            Pmtl::Previously(formula, lower_bound, upper_bound) => {
+            Pmtl::Once(formula, lower_bound, upper_bound) => {
                 let formula = formula.as_ref();
-                Ok(Pmtl::Previously(
+                Ok(Pmtl::Once(
                     Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
                     *lower_bound,
                     *upper_bound,

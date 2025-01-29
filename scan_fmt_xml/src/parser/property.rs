@@ -672,11 +672,7 @@ impl Properties {
                                         formula.ok_or(anyhow!("missing rhs in implies"))?;
                                     push_pmtl(
                                         &mut stack,
-                                        Pmtl::Previously(
-                                            Box::new(formula),
-                                            lower_bound,
-                                            upper_bound,
-                                        ),
+                                        Pmtl::Once(Box::new(formula), lower_bound, upper_bound),
                                     )?;
                                 }
                                 PropertyTag::Ports

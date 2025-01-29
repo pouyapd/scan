@@ -31,7 +31,7 @@ where
     /// Temporal historical predicate over a formula (with bounds).
     Historically(Box<Pmtl<V>>, Time, Time),
     /// Temporal previously predicate over a formula (with bounds).
-    Previously(Box<Pmtl<V>>, Time, Time),
+    Once(Box<Pmtl<V>>, Time, Time),
     /// Temporal since predicate over a formula (with bounds).
     Since(Box<(Pmtl<V>, Pmtl<V>)>, Time, Time),
 }
@@ -97,7 +97,7 @@ where
                 }
             }
             ArcPmtl::Previously((sub, _), lower_bound, upper_bound) => {
-                if let Pmtl::Previously(self_sub, self_lower_bound, self_upper_bound) = self {
+                if let Pmtl::Once(self_sub, self_lower_bound, self_upper_bound) = self {
                     self_sub.is_same(sub.as_ref())
                         && lower_bound == self_lower_bound
                         && upper_bound == self_upper_bound
@@ -162,7 +162,7 @@ where
             ),
             Pmtl::Not(subformula)
             | Pmtl::Historically(subformula, _, _)
-            | Pmtl::Previously(subformula, _, _) => subformula.as_ref().clone().set_subformulae(),
+            | Pmtl::Once(subformula, _, _) => subformula.as_ref().clone().set_subformulae(),
             Pmtl::Implies(subs) | Pmtl::Since(subs, _, _) => {
                 let mut formulae = subs.0.clone().set_subformulae();
                 formulae.extend(subs.1.clone().set_subformulae());
@@ -226,7 +226,7 @@ fn subformulae<V: Clone + Eq + Hash>(set: HashSet<Pmtl<V>>) -> Vec<ArcPmtl<V>> {
                     upper_bound,
                 )
             }
-            Pmtl::Previously(sub, lower_bound, upper_bound) => {
+            Pmtl::Once(sub, lower_bound, upper_bound) => {
                 let idx = idx_vec.iter().position(|f| sub.is_same(f)).expect("index");
                 ArcPmtl::Previously(
                     (Arc::new(idx_vec[idx].clone()), idx),
@@ -264,7 +264,7 @@ where
         match self {
             Pmtl::True | Pmtl::False | Pmtl::Atom(_) => 0,
             Pmtl::And(subs) | Pmtl::Or(subs) => subs.iter().map(Pmtl::depth).max().unwrap_or(0) + 1,
-            Pmtl::Not(sub) | Pmtl::Historically(sub, _, _) | Pmtl::Previously(sub, _, _) => {
+            Pmtl::Not(sub) | Pmtl::Historically(sub, _, _) | Pmtl::Once(sub, _, _) => {
                 sub.depth() + 1
             }
             Pmtl::Implies(subs) | Pmtl::Since(subs, _, _) => subs.0.depth().max(subs.1.depth()) + 1,
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     fn previously() {
-        let formula = Pmtl::Previously(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
+        let formula = Pmtl::Once(Box::new(Pmtl::Atom(Atom::Predicate(0))), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
         let dummy_event = dummy_event();
         state = state.update(&dummy_event, &[false], 0);
