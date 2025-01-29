@@ -3,6 +3,7 @@
 mod fsm;
 mod omg_types;
 mod property;
+mod rye;
 mod vocabulary;
 
 pub use self::fsm::*;
