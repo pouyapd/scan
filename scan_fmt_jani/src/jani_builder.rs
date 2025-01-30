@@ -851,6 +851,12 @@ impl ModelBuilder {
             let not_ok_loc = builder.new_location(pg)?;
 
             // Add transitions to pg
+            if guard_global_variables.is_empty() && destination_global_variables.is_empty() {
+                for i in 0..destination_locations.len() {
+                    builder.add_transition(pg, start_location.unwrap(), transition_action, destination_locations[i], guard.clone())?;
+                }
+                continue;
+            }
             let a = builder.new_send(pg, ch_init, Expression::Const(Val::Integer(0)))?;
             builder.add_transition(pg, start_location.unwrap(), a, init_loc, None)?;
             if guard_global_variables.is_empty() {

@@ -48,9 +48,13 @@ fn test(path: &Path) {
     let mut steps = 0;
     assert!(model.possible_transitions().count() > 0);
     let mut rng = rand::thread_rng();
+    // let mut trans = 0;
     while let Some((pg_id, action, destination)) = model.possible_transitions().choose(&mut rng) {
+        // trans += 1;
+        // println!("TRS #{trans:05}: {pg_id:?} transition by {action:?} to {destination:?}");
         model.transition(pg_id, action, destination).unwrap();
         steps += 1;
         assert!(steps < MAXSTEP, "step limit reached");
     }
+    // println!("{model:?}");
 }

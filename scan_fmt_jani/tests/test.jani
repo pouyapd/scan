@@ -2,35 +2,11 @@
 	"jani-version": 1,
 	"name": "test.jani",
 	"type": "lts",
-	"constants": [
-		{
-			"name": "c1",
-			"type": "int",
-			"value": 10
-		},
-		{
-			"name": "c2",
-			"type": "bool",
-			"value": true
-		}
-	],
-	"variables": [
-		{
-			"name": "v1",
-			"type": "int",
-			"initial-value": 15
-		},
-		{
-			"name": "v2",
-			"type": "bool",
-			"initial-value": false
-		}
-	],
-	"actions": [ { "name": "a1" }, { "name": "a2" }, { "name": "a3" }, { "name": "a4" }, { "name": "a5" }, { "name": "a" } ],
+	"actions": [ { "name": "a1" }, { "name": "a2" }, { "name": "a3" }, { "name": "a4" }, { "name": "a5" }, { "name": "a6" }],
 	"automata": [
 		{
 			"name": "test",
-			"locations": [{ "name": "l" } , { "name": "o" } , { "name": "c" } ],
+			"locations": [{ "name": "l" } , { "name": "o" }, { "name": "c" }],
 			"variables": [
 				{
 					"name": "b",
@@ -107,22 +83,34 @@
 							"location": "l"
 						}
 					]
+				}
+			]
+		},
+		{
+			"name": "tset",
+			"locations": [{ "name": "l" } , { "name": "o" } , { "name": "c" }, { "name": "x" }],
+			"variables": [
+				{
+					"name": "b",
+					"type": "bool",
+					"initial-value": false
 				},
+				{
+					"name": "i",
+					"type": "int",
+					"initial-value": 10
+				}
+			],
+			"initial-locations": ["l"],
+			"edges": [
 				{
 					"location": "l",
 					"action": "a4",
 					"guard": {
 						"exp": {
-							"op": "∧",
-							"left": {
-								"op": "<",
-								"left": "c1",
-								"right": "v1"
-							},
-							"right": {
-								"op": "¬",
-								"exp": "v2"
-							}
+							"op": ">",
+							"left": "i",
+							"right": 5
 						}
 					},
 					"destinations": [
@@ -130,8 +118,8 @@
 							"location": "o",
 							"assignments": [
 								{
-									"ref": "v1",
-									"value": 5
+									"ref": "b",
+									"value": true
 								}
 							]
 						}
@@ -140,11 +128,15 @@
 				{
 					"location": "o",
 					"action": "a5",
-					"guard": {
-						"exp": {
-							"op": "∧",
-							"left": "c2",
-							"right": "v2"
+					"guard": { 
+						"exp": { 
+							"op": "∨",
+							"left": "b",
+							"right": {
+								"op": ">",
+								"left": 0,
+								"right": "i"
+							}
 						}
 					},
 					"destinations": [
@@ -154,44 +146,35 @@
 								{
 									"ref": "i",
 									"value": 0
+								},
+								{
+									"ref": "b",
+									"value": false
 								}
 							]
 						}
 					]
-				}
-			]
-		},
-		{
-			"name": "tset",
-			"locations": [{ "name": "l" }],
-			"initial-locations": ["l"],
-			"edges": [
+				},
 				{
-					"location": "l",
-					"action": "a",
+					"location": "c",
+					"action": "a6",
 					"guard": {
 						"exp": {
 							"op": "∧",
 							"left": {
 								"op": "¬",
-								"exp": "v2"	
+								"exp": "b"
 							},
 							"right": {
 								"op": "<",
-								"left": "v1",
-								"right": "c1"
+								"left": "i",
+								"right": 5
 							}
 						}
 					},
 					"destinations": [
 						{
-							"location": "l",
-							"assignments": [
-								{
-									"ref": "v2",
-									"value": true
-								}
-							]
+							"location": "x"
 						}
 					]
 				}
