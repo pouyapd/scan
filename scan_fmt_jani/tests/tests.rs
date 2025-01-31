@@ -1,5 +1,5 @@
-use std::path::Path;
 use rand::seq::IteratorRandom;
+use std::path::Path;
 
 const MAXSTEP: usize = 1000;
 

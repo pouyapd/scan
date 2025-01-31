@@ -853,7 +853,13 @@ impl ModelBuilder {
             // Add transitions to pg
             if guard_global_variables.is_empty() && destination_global_variables.is_empty() {
                 for i in 0..destination_locations.len() {
-                    builder.add_transition(pg, start_location.unwrap(), transition_action, destination_locations[i], guard.clone())?;
+                    builder.add_transition(
+                        pg,
+                        start_location.unwrap(),
+                        transition_action,
+                        destination_locations[i],
+                        guard.clone(),
+                    )?;
                 }
                 continue;
             }
