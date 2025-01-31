@@ -1,11 +1,20 @@
+use anyhow::{anyhow, bail};
 use chumsky::{prelude::*, select, Parser};
 use logos::Logos;
-use scan_core::Pmtl;
+use scan_core::{Pmtl, Time};
 
 #[derive(Logos, Debug, PartialEq, Eq, Hash, Clone)]
 #[logos(skip r"[ \t\n]+")]
 #[logos(error = String)]
 pub enum Token {
+    #[token("true")]
+    #[token("True")]
+    True,
+
+    #[token("false")]
+    #[token("False")]
+    False,
+
     #[token("P")]
     #[token("once")]
     Once,
@@ -63,6 +72,12 @@ fn parser() -> impl Parser<Token, Pmtl<String>, Error = Simple<Token>> {
         Token::Integer(n) => n as u32,
     };
 
+    let bounds = just(Token::BracketOpen)
+        .ignore_then(integer.or_else(|_| Ok(Time::MIN)))
+        .then_ignore(just(Token::Colon))
+        .then(integer.or_else(|_| Ok(Time::MAX)))
+        .then_ignore(just(Token::BracketClose));
+
     recursive(|p| {
         let atom = {
             let parenthesized = p
@@ -71,6 +86,8 @@ fn parser() -> impl Parser<Token, Pmtl<String>, Error = Simple<Token>> {
 
             let predicate = select! {
                 Token::Predicate(pred) => Pmtl::Atom(pred),
+                Token::True => Pmtl::True,
+                Token::False => Pmtl::False,
             };
 
             parenthesized.or(predicate)
@@ -83,20 +100,14 @@ fn parser() -> impl Parser<Token, Pmtl<String>, Error = Simple<Token>> {
             .then(atom)
             .foldr(|op, rhs| match op {
                 Token::Not => Pmtl::Not(Box::new(rhs)),
-                Token::Once => Pmtl::Once(Box::new(rhs), 0, u32::MAX),
-                Token::Historically => Pmtl::Historically(Box::new(rhs), 0, u32::MAX),
+                Token::Once => Pmtl::Once(Box::new(rhs), Time::MIN, Time::MAX),
+                Token::Historically => Pmtl::Historically(Box::new(rhs), Time::MIN, Time::MAX),
                 _ => unreachable!(),
             });
 
         let temp_unary = just(Token::Once)
             .or(just(Token::Historically))
-            .then(
-                just(Token::BracketOpen)
-                    .ignore_then(integer)
-                    .then_ignore(just(Token::Colon))
-                    .then(integer)
-                    .then_ignore(just(Token::BracketClose)),
-            )
+            .then(bounds.clone())
             .repeated()
             .then(unary)
             .foldr(|(op, (l, u)), rhs| match op {
@@ -119,45 +130,37 @@ fn parser() -> impl Parser<Token, Pmtl<String>, Error = Simple<Token>> {
                 Token::And => Pmtl::And(vec![lhs, rhs]),
                 Token::Or => Pmtl::Or(vec![lhs, rhs]),
                 Token::Implies => Pmtl::Implies(Box::new((lhs, rhs))),
-                Token::Since => Pmtl::Since(Box::new((lhs, rhs)), 0, u32::MAX),
+                Token::Since => Pmtl::Since(Box::new((lhs, rhs)), Time::MIN, Time::MAX),
                 _ => unreachable!(),
             });
 
         binary
             .clone()
-            .then(
-                just(Token::Since)
-                    .then_ignore(just(Token::BracketOpen))
-                    .then(integer)
-                    .then_ignore(just(Token::Colon))
-                    .then(integer)
-                    .then_ignore(just(Token::BracketClose))
-                    .then(binary)
-                    .repeated(),
-            )
-            .foldl(|lhs, (((_op, l), u), rhs)| Pmtl::Since(Box::new((lhs, rhs)), l, u))
+            .then(just(Token::Since).then(bounds).then(binary).repeated())
+            .foldl(|lhs, ((_op, (l, u)), rhs)| Pmtl::Since(Box::new((lhs, rhs)), l, u))
     })
     .then_ignore(end())
 }
 
-pub fn parse_rye(input: &str) -> Result<Pmtl<String>, Vec<chumsky::error::Simple<Token>>> {
+pub fn parse(input: &str) -> anyhow::Result<Pmtl<String>> {
     //creates a lexer instance from the input
     let lexer = Token::lexer(input);
 
     //splits the input into tokens, using the lexer
     let mut tokens = vec![];
-    for (token, span) in lexer.spanned() {
+    for (token, _span) in lexer.spanned() {
         match token {
             Ok(token) => tokens.push(token),
             Err(e) => {
-                panic!("lexer error at {:?}: {}", span, e);
-                // return;
+                bail!(e);
             }
         }
     }
 
     //parses the tokens to construct an AST
-    parser().parse(tokens)
+    parser()
+        .parse(tokens)
+        .map_err(|_err| anyhow!("failed parsing Rye expression"))
 }
 
 #[cfg(test)]
@@ -166,7 +169,7 @@ mod test {
 
     #[test]
     fn not() {
-        let not = parse_rye("not { var > 10 }").expect("parsed formula");
+        let not = parse("not { var > 10 }").expect("parse formula");
         assert!(matches!(not, Pmtl::Not(_)));
         if let Pmtl::Not(atom) = not {
             assert!(matches!(*atom, Pmtl::Atom(_)));
@@ -182,7 +185,7 @@ mod test {
 
     #[test]
     fn bounded_once() {
-        let once = parse_rye("P[0:1] { var > 10 }").expect("parsed formula");
+        let once = parse("P[0:1] { var > 10 }").expect("parse formula");
         assert!(matches!(once, Pmtl::Once(_, 0, 1)));
         if let Pmtl::Once(atom, 0, 1) = once {
             assert!(matches!(*atom, Pmtl::Atom(_)));
@@ -195,10 +198,66 @@ mod test {
     }
 
     #[test]
+    fn low_bounded_once() {
+        let once = parse("P[1:] { var > 10 }").expect("parse formula");
+        assert!(matches!(once, Pmtl::Once(_, 1, Time::MAX)));
+        if let Pmtl::Once(atom, 1, Time::MAX) = once {
+            assert!(matches!(*atom, Pmtl::Atom(_)));
+            if let Pmtl::Atom(pred) = *atom {
+                assert_eq!(pred, "var > 10".to_string());
+            } else {
+                unreachable!();
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_historically() {
+        let once = parse("H[0:1] { var > 10 }").expect("parse formula");
+        assert!(matches!(once, Pmtl::Historically(_, 0, 1)));
+        if let Pmtl::Historically(atom, 0, 1) = once {
+            assert!(matches!(*atom, Pmtl::Atom(_)));
+            if let Pmtl::Atom(pred) = *atom {
+                assert_eq!(pred, "var > 10".to_string());
+            } else {
+                unreachable!();
+            }
+        }
+    }
+
+    #[test]
+    fn up_bounded_historically() {
+        let once = parse("H[:1] { var > 10 }").expect("parse formula");
+        assert!(matches!(once, Pmtl::Historically(_, Time::MIN, 1)));
+        if let Pmtl::Historically(atom, Time::MIN, 1) = once {
+            assert!(matches!(*atom, Pmtl::Atom(_)));
+            if let Pmtl::Atom(pred) = *atom {
+                assert_eq!(pred, "var > 10".to_string());
+            } else {
+                unreachable!();
+            }
+        }
+    }
+
+    #[test]
     fn unbounded_once() {
-        let once = parse_rye("P { var > 10 }").expect("parsed formula");
-        assert!(matches!(once, Pmtl::Once(_, 0, u32::MAX)));
-        if let Pmtl::Once(atom, 0, u32::MAX) = once {
+        let once = parse("P { var > 10 }").expect("parse formula");
+        assert!(matches!(once, Pmtl::Once(_, Time::MIN, Time::MAX)));
+        if let Pmtl::Once(atom, Time::MIN, Time::MAX) = once {
+            assert!(matches!(*atom, Pmtl::Atom(_)));
+            if let Pmtl::Atom(pred) = *atom {
+                assert_eq!(pred, "var > 10".to_string());
+            } else {
+                unreachable!();
+            }
+        }
+    }
+
+    #[test]
+    fn unbounded_historically() {
+        let once = parse("H { var > 10 }").expect("parse formula");
+        assert!(matches!(once, Pmtl::Historically(_, Time::MIN, Time::MAX)));
+        if let Pmtl::Historically(atom, Time::MIN, Time::MAX) = once {
             assert!(matches!(*atom, Pmtl::Atom(_)));
             if let Pmtl::Atom(pred) = *atom {
                 assert_eq!(pred, "var > 10".to_string());
@@ -210,7 +269,7 @@ mod test {
 
     #[test]
     fn historically_once() {
-        let historically = parse_rye("H[0:1] P[2:3] { var > 10 }").expect("parsed formula");
+        let historically = parse("H[0:1] P[2:3] { var > 10 }").expect("parse formula");
         assert!(matches!(historically, Pmtl::Historically(_, 0, 1)));
         if let Pmtl::Historically(once, 0, 1) = historically {
             assert!(matches!(*once, Pmtl::Once(_, 2, 3)));
@@ -220,9 +279,20 @@ mod test {
     }
 
     #[test]
+    fn once_historically() {
+        let once = parse("P[2:3] H[0:1] { var > 10 }").expect("parse formula");
+        assert!(matches!(once, Pmtl::Once(_, 2, 3)));
+        if let Pmtl::Once(historically, 2, 3) = once {
+            assert!(matches!(*historically, Pmtl::Historically(_, 0, 1)));
+        } else {
+            unreachable!();
+        }
+    }
+
+    #[test]
     fn since() {
         let since =
-            parse_rye("not { var > 10 } since[2:10] { other_var == 1 }").expect("parsed formula");
+            parse("not { var > 10 } since[2:10] { other_var == 1 }").expect("parse formula");
         assert!(matches!(since, Pmtl::Since(_, 2, 10)));
         if let Pmtl::Since(args, _, _) = since {
             let (lhs, rhs) = *args;

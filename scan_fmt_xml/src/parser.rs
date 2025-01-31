@@ -127,7 +127,6 @@ pub struct Parser {
     pub(crate) types: OmgTypes,
     pub(crate) properties: Properties,
     pub(crate) interner: Interner,
-    pub(crate) scope: boa_ast::scope::Scope,
 }
 
 impl Parser {
@@ -142,7 +141,6 @@ impl Parser {
             types: OmgTypes::new(),
             properties: Properties::new(),
             interner: Interner::new(),
-            scope: boa_ast::scope::Scope::new_global(),
         };
         if path.is_dir() {
             info!(target: "parsing", "parsing directory '{}'", path.display());
@@ -194,14 +192,13 @@ impl Parser {
                     let mut reader = Reader::from_file(path).with_context(|| {
                         format!("failed to create reader from file '{}'", path.display())
                     })?;
-                    let fsm = fsm::parse(&mut reader, &mut self.interner, &self.scope)
-                        .with_context(|| {
-                            format!(
-                                "failed to parse fsm at line {} in '{}'",
-                                count_lines(reader),
-                                path.display(),
-                            )
-                        })?;
+                    let fsm = fsm::parse(&mut reader, &mut self.interner).with_context(|| {
+                        format!(
+                            "failed to parse fsm at line {} in '{}'",
+                            count_lines(reader),
+                            path.display(),
+                        )
+                    })?;
                     self.process_list.insert(fsm.name.to_owned(), fsm);
                 }
                 "xml" => {
@@ -209,15 +206,15 @@ impl Parser {
                     let mut reader = Reader::from_file(path).with_context(|| {
                         format!("failed to create reader from file '{}'", path.display())
                     })?;
-                    self.properties =
-                        Properties::parse(&mut reader, &self.scope, &mut self.interner)
-                            .with_context(|| {
-                                format!(
-                                    "failed to parse properties at line {} in '{}'",
-                                    count_lines(reader),
-                                    path.display(),
-                                )
-                            })?;
+                    self.properties
+                        .parse(&mut reader, &mut self.interner)
+                        .with_context(|| {
+                            format!(
+                                "failed to parse properties at line {} in '{}'",
+                                count_lines(reader),
+                                path.display(),
+                            )
+                        })?;
                 }
                 _ => {
                     warn!(target: "parsing", "unknown file extension '{}'", ext);
@@ -242,21 +239,22 @@ impl Parser {
                 Event::Start(tag) => {
                     let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
                     trace!(target: "parsing", "start tag '{tag_name}'");
-                    match tag_name {
+                    let new_tag = match tag_name {
                         TAG_SPECIFICATION if stack.is_empty() => {
-                            stack.push(ConvinceTag::Specification);
+                            ConvinceTag::Specification
                         }
                         TAG_MODEL if stack.last().is_some_and(|e| *e == ConvinceTag::Specification) => {
-                            stack.push(ConvinceTag::Model);
+                            ConvinceTag::Model
                         }
                         TAG_PROCESS_LIST if stack.last().is_some_and(|e| *e == ConvinceTag::Model) => {
-                            stack.push(ConvinceTag::ProcessList);
+                            ConvinceTag::ProcessList
                         }
                         _ => {
                             error!(target: "parsing", "unknown or unexpected start tag '{tag_name}'");
                             bail!(ParserError::UnexpectedStartTag(tag_name.to_string()));
                         }
-                    }
+                    };
+                    stack.push(new_tag);
                 }
                 Event::End(tag) => {
                     let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
@@ -297,8 +295,7 @@ impl Parser {
                             let mut reader = Reader::from_file(&path).with_context(|| {
                                 format!("failed to create reader from file '{}'", path.display())
                             })?;
-                            self.properties =
-                                Properties::parse(&mut reader, &self.scope, &mut self.interner)
+                            self.properties.parse(&mut reader, &mut self.interner)
                                     .with_context(|| {
                                         format!(
                                             "failed to parse properties at line {} in '{}'",
@@ -330,7 +327,7 @@ impl Parser {
                                 path.display()
                             );
                             let mut reader = Reader::from_file(path.clone())?;
-                            let fsm = fsm::parse(&mut reader, &mut self.interner, &self.scope)
+                            let fsm = fsm::parse(&mut reader, &mut self.interner)
                                 .with_context(|| format!("failed to parse fsm at line {} in '{}'", count_lines(reader), path.display()))?;
                             // Add process to list and check that no process was already in the list under the same name
                             if self.process_list.insert(process_id.clone(), fsm).is_some() {
@@ -347,7 +344,6 @@ impl Parser {
                 Event::Comment(_)
                 // Ignore XML declaration
                 | Event::Decl(_) => continue,
-                // Ignore text between tags
                 Event::Text(t) => {
                     let text = &*reader.decoder().decode(t.as_ref())?;
                     if !text.trim().is_empty() {
@@ -376,6 +372,10 @@ impl Parser {
             // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
             buf.clear();
         }
-        Ok(())
+        if let Some(tag) = stack.pop() {
+            Err(anyhow!("unclosed tag {}", Into::<&str>::into(tag)))
+        } else {
+            Ok(())
+        }
     }
 }

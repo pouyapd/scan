@@ -531,12 +531,12 @@ impl<V> FnExpression<V> {
     }
 }
 
-impl<V: Clone + Copy + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
+impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
     fn from(value: Expression<V>) -> Self {
         FnExpression(match value {
             Expression::Const(val) => Box::new(move |_| val.clone()),
             Expression::Var(var, _t) => Box::new(move |vars| {
-                vars(var)
+                vars(var.clone())
                 // let val = vars(var);
                 // if t == val.r#type() {
                 //     val

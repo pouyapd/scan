@@ -17,9 +17,8 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct ScxmlModel {
     pub model: CsModel,
-    pub predicates: Vec<String>,
-    pub guarantees: Vec<Pmtl<Atom>>,
-    pub assumes: Vec<Pmtl<Atom>>,
+    pub guarantees: HashMap<String, Pmtl<usize>>,
+    pub assumes: HashMap<String, Pmtl<usize>>,
     pub fsm_names: HashMap<PgId, String>,
     pub fsm_indexes: HashMap<usize, String>,
     pub parameters: HashMap<Channel, (PgId, PgId, usize, String)>,
@@ -45,10 +44,10 @@ struct EventBuilder {
 }
 
 #[derive(Debug, Clone)]
-enum EcmaObj {
-    PrimitiveData(CsExpression, String),
+enum EcmaObj<V: Clone> {
+    PrimitiveData(Expression<V>, String),
     // Associates property name with content, which can be another object.
-    Properties(HashMap<String, EcmaObj>),
+    Properties(HashMap<String, EcmaObj<V>>),
 }
 
 /// Builder turning a [`Parser`] into a [`ChannelSystem`].
@@ -85,11 +84,10 @@ pub struct ModelBuilder {
     // that is needed
     parameters: HashMap<(PgId, PgId, usize, String), Channel>,
     // Properties
-    guarantees: HashMap<String, Pmtl<String>>,
-    assumes: HashMap<String, Pmtl<String>>,
-    predicates: HashMap<String, Expression<Channel>>,
-    atoms: HashMap<String, Atom>,
-    ports: HashMap<String, (Channel, Val)>,
+    guarantees: HashMap<String, Pmtl<usize>>,
+    assumes: HashMap<String, Pmtl<usize>>,
+    predicates: Vec<Expression<Atom>>,
+    ports: HashMap<String, (Atom, Val)>,
     // extra data
     int_queues: HashSet<Channel>,
 }
@@ -113,9 +111,8 @@ impl ModelBuilder {
             parameters: HashMap::new(),
             guarantees: HashMap::new(),
             assumes: HashMap::new(),
-            predicates: HashMap::new(),
+            predicates: Vec::new(),
             ports: HashMap::new(),
-            atoms: HashMap::new(),
             int_queues: HashSet::new(),
         };
 
@@ -129,6 +126,7 @@ impl ModelBuilder {
             model_builder.build_fsm(fsm, &mut parser.interner)?;
         }
 
+        model_builder.build_ports(&parser)?;
         model_builder.build_properties(&parser)?;
 
         let model = model_builder.build_model();
@@ -413,7 +411,7 @@ impl ModelBuilder {
             vars.insert(data.id.to_owned(), (var, data.omg_type.to_owned()));
             // Initialize variable with `expr`, if any, by adding it as effect of `initialize` action.
             if let Some(ref expr) = data.expression {
-                let expr = self.expression(expr, interner, &vars, None, &HashMap::new())?;
+                let expr = self.expression(expr, interner, &vars, &None, &HashMap::new())?;
                 // Initialization has at least an effect, so we need to perform it.
                 // Create action if there was none.
                 let initialize = *initialize.get_or_insert_with(|| {
@@ -763,7 +761,7 @@ impl ModelBuilder {
                 let cond: Option<CsExpression> = transition
                     .cond
                     .as_ref()
-                    .map(|cond| self.expression(cond, interner, &vars, exec_origin, &exec_params))
+                    .map(|cond| self.expression(cond, interner, &vars, &exec_origin, &exec_params))
                     .transpose()?;
 
                 // Location corresponding to checking if the transition is active.
@@ -938,7 +936,7 @@ impl ModelBuilder {
                         }
                         Target::Expr(targetexpr) => {
                             target_expr =
-                                Some(self.expression(targetexpr, interner, vars, origin, params)?);
+                                Some(self.expression(targetexpr, interner, vars, &origin, params)?);
                             targets = self.events[event_idx].receivers.iter().cloned().collect();
                         }
                     }
@@ -1023,7 +1021,7 @@ impl ModelBuilder {
             }
             Executable::Assign { location, expr } => {
                 // Add a transition that perform the assignment via the effect of the `assign` action.
-                let expr = self.expression(expr, interner, vars, origin, params)?;
+                let expr = self.expression(expr, interner, vars, &origin, params)?;
                 let (var, _scan_type) = vars.get(location).ok_or(anyhow!("undefined variable"))?;
                 let assign = self.cs.new_action(pg_id).expect("PG exists");
                 self.cs.add_effect(pg_id, assign, *var, expr)?;
@@ -1037,7 +1035,7 @@ impl ModelBuilder {
                 let mut curr_loc = loc;
                 for (cond, execs) in r#elif {
                     let mut next_loc = self.cs.new_location(pg_id).unwrap();
-                    let cond = self.expression(cond, interner, vars, origin, params)?;
+                    let cond = self.expression(cond, interner, vars, &origin, params)?;
                     self.cs.add_autonomous_transition(
                         pg_id,
                         curr_loc,
@@ -1098,7 +1096,7 @@ impl ModelBuilder {
             .ok_or(anyhow!("undefined type"))?
             .1;
         // Build expression from ECMAScript expression.
-        let expr = self.expression(&param.expr, interner, vars, origin, params)?;
+        let expr = self.expression(&param.expr, interner, vars, &origin, params)?;
         // Retreive or create channel for parameter passing.
         let param_chn = *self
             .parameters
@@ -1114,26 +1112,26 @@ impl ModelBuilder {
     }
 
     // WARN: vars and params have the same type so they could be easily swapped by mistake when calling the function.
-    fn expression(
+    fn expression<V: Clone>(
         &mut self,
         expr: &boa_ast::Expression,
         interner: &Interner,
-        vars: &HashMap<String, (Var, String)>,
-        origin: Option<Var>,
-        params: &HashMap<String, (Var, String)>,
-    ) -> anyhow::Result<CsExpression> {
+        vars: &HashMap<String, (V, String)>,
+        origin: &Option<V>,
+        params: &HashMap<String, (V, String)>,
+    ) -> anyhow::Result<Expression<V>> {
         let expr = match expr {
             boa_ast::Expression::This => todo!(),
             boa_ast::Expression::Identifier(ident) => {
                 let ident = ident.to_interned_string(interner);
                 self.enums
                     .get(&ident)
-                    .map(|i| CsExpression::from(*i))
+                    .map(|i| Expression::from(*i))
                     .or_else(|| {
                         vars.get(&ident).and_then(|(var, t)| {
                             self.types
                                 .get(t)
-                                .map(|(_, t)| CsExpression::Var(*var, t.to_owned()))
+                                .map(|(_, t)| Expression::Var(var.clone(), t.to_owned()))
                             // .ok_or(anyhow!("missing type {t}"))
                         })
                     })
@@ -1143,10 +1141,10 @@ impl ModelBuilder {
                 use boa_ast::expression::literal::Literal;
                 match lit {
                     Literal::String(_) => todo!(),
-                    Literal::Num(f) => CsExpression::from(*f),
-                    Literal::Int(i) => CsExpression::from(*i),
+                    Literal::Num(f) => Expression::from(*f),
+                    Literal::Int(i) => Expression::from(*i),
                     Literal::BigInt(_) => todo!(),
-                    Literal::Bool(b) => CsExpression::from(*b),
+                    Literal::Bool(b) => Expression::from(*b),
                     Literal::Null => todo!(),
                     Literal::Undefined => todo!(),
                 }
@@ -1192,22 +1190,22 @@ impl ModelBuilder {
                         ArithmeticOp::Div => todo!(),
                         ArithmeticOp::Mul => lhs * rhs,
                         ArithmeticOp::Exp => todo!(),
-                        ArithmeticOp::Mod => CsExpression::Mod(Box::new((lhs, rhs))),
+                        ArithmeticOp::Mod => Expression::Mod(Box::new((lhs, rhs))),
                     },
                     BinaryOp::Relational(rel_bin) => match rel_bin {
-                        RelationalOp::Equal => CsExpression::Equal(Box::new((lhs, rhs))),
-                        RelationalOp::NotEqual => !(CsExpression::Equal(Box::new((lhs, rhs)))),
-                        RelationalOp::GreaterThan => CsExpression::Greater(Box::new((lhs, rhs))),
+                        RelationalOp::Equal => Expression::Equal(Box::new((lhs, rhs))),
+                        RelationalOp::NotEqual => !(Expression::Equal(Box::new((lhs, rhs)))),
+                        RelationalOp::GreaterThan => Expression::Greater(Box::new((lhs, rhs))),
                         RelationalOp::GreaterThanOrEqual => {
-                            CsExpression::GreaterEq(Box::new((lhs, rhs)))
+                            Expression::GreaterEq(Box::new((lhs, rhs)))
                         }
-                        RelationalOp::LessThan => CsExpression::Less(Box::new((lhs, rhs))),
-                        RelationalOp::LessThanOrEqual => CsExpression::LessEq(Box::new((lhs, rhs))),
+                        RelationalOp::LessThan => Expression::Less(Box::new((lhs, rhs))),
+                        RelationalOp::LessThanOrEqual => Expression::LessEq(Box::new((lhs, rhs))),
                         _ => return Err(anyhow!("unimplemented operator")),
                     },
                     BinaryOp::Logical(op) => match op {
-                        LogicalOp::And => CsExpression::and(vec![lhs, rhs]),
-                        LogicalOp::Or => CsExpression::or(vec![lhs, rhs]),
+                        LogicalOp::And => Expression::and(vec![lhs, rhs]),
+                        LogicalOp::Or => Expression::or(vec![lhs, rhs]),
                         _ => return Err(anyhow!("unimplemented operator")),
                     },
                     BinaryOp::Comma => todo!(),
@@ -1312,14 +1310,14 @@ impl ModelBuilder {
         Ok(expr)
     }
 
-    fn expression_prop_access(
+    fn expression_prop_access<V: Clone>(
         &mut self,
         expr: &boa_ast::Expression,
         interner: &Interner,
-        vars: &HashMap<String, (Var, String)>,
-        origin: Option<Var>,
-        params: &HashMap<String, (Var, String)>,
-    ) -> anyhow::Result<EcmaObj> {
+        vars: &HashMap<String, (V, String)>,
+        origin: &Option<V>,
+        params: &HashMap<String, (V, String)>,
+    ) -> anyhow::Result<EcmaObj<V>> {
         match expr {
             boa_ast::Expression::This => todo!(),
             boa_ast::Expression::Identifier(ident) => {
@@ -1330,8 +1328,10 @@ impl ModelBuilder {
                             (
                                 String::from("origin"),
                                 EcmaObj::PrimitiveData(
-                                    CsExpression::Var(
-                                        origin.ok_or(anyhow!("missing origin of _event"))?,
+                                    Expression::Var(
+                                        origin
+                                            .clone()
+                                            .ok_or(anyhow!("missing origin of _event"))?,
                                         Type::Integer,
                                     ),
                                     String::from("int32"),
@@ -1344,8 +1344,8 @@ impl ModelBuilder {
                                         (
                                             n.to_owned(),
                                             EcmaObj::PrimitiveData(
-                                                CsExpression::Var(
-                                                    *v,
+                                                Expression::Var(
+                                                    v.clone(),
                                                     self.types
                                                         .get(t)
                                                         .map(|(_, t)| t.to_owned())
@@ -1366,8 +1366,8 @@ impl ModelBuilder {
                             (
                                 n.to_owned(),
                                 EcmaObj::PrimitiveData(
-                                    CsExpression::Var(
-                                        *v,
+                                    Expression::Var(
+                                        v.clone(),
                                         self.types
                                             .get(t)
                                             .map(|(_, t)| t.to_owned())
@@ -1385,7 +1385,7 @@ impl ModelBuilder {
                             .to_owned();
                         let (_, t) = self.types.get(&type_name).expect("var type");
                         Ok(EcmaObj::PrimitiveData(
-                            CsExpression::Var(var, t.to_owned()),
+                            Expression::Var(var, t.to_owned()),
                             type_name,
                         ))
                     }
@@ -1430,7 +1430,7 @@ impl ModelBuilder {
                                                     .get(ident)
                                                     .ok_or(anyhow!("field {} not found", ident))?;
                                                 Ok(EcmaObj::PrimitiveData(
-                                                    CsExpression::component(expr, index),
+                                                    Expression::component(expr, index),
                                                     field_type_name.to_owned(),
                                                 ))
                                             }
@@ -1454,7 +1454,7 @@ impl ModelBuilder {
         }
     }
 
-    fn build_properties(&mut self, parser: &Parser) -> anyhow::Result<()> {
+    fn build_ports(&mut self, parser: &Parser) -> anyhow::Result<()> {
         for (port_id, port) in parser.properties.ports.iter() {
             let origin_builder = self
                 .fsm_builders
@@ -1476,152 +1476,80 @@ impl ModelBuilder {
                     .parameters
                     .get(&(origin, target, event_id, param.to_owned()))
                     .ok_or(anyhow!("param {param} not found"))?;
-                self.ports.insert(port_id.to_owned(), (channel, init));
+                self.ports
+                    .insert(port_id.to_owned(), (Atom::State(channel), init));
             } else {
                 let channel = target_builder.ext_queue;
-                self.atoms.insert(
+                self.ports.insert(
                     port_id.to_owned(),
-                    Atom::Event(Event {
-                        pg_id: origin,
-                        channel,
-                        event_type: EventType::Send(Val::Tuple(vec![
-                            Val::Integer(event_id as Integer),
-                            Val::Integer(u16::from(origin) as Integer),
-                        ])),
-                    }),
+                    (
+                        Atom::Event(Event {
+                            pg_id: origin,
+                            channel,
+                            event_type: EventType::Send(Val::Tuple(vec![
+                                Val::Integer(event_id as Integer),
+                                Val::Integer(u16::from(origin) as Integer),
+                            ])),
+                        }),
+                        Val::Boolean(false),
+                    ),
                 );
             }
-        }
-        for (predicate_id, predicate) in parser.properties.predicates.iter() {
-            let predicate = self.build_predicate(predicate)?;
-            self.predicates.insert(predicate_id.to_owned(), predicate);
-        }
-        for (property_id, property) in parser.properties.guarantees.iter() {
-            self.guarantees
-                .insert(property_id.to_owned(), property.to_owned());
-        }
-        for (property_id, property) in parser.properties.assumes.iter() {
-            self.assumes
-                .insert(property_id.to_owned(), property.to_owned());
         }
         Ok(())
     }
 
-    fn build_predicate(
-        &self,
-        predicate: &Expression<String>,
-    ) -> anyhow::Result<Expression<Channel>> {
-        match predicate {
-            Expression::Const(val) => Ok(Expression::Const(val.to_owned())),
-            // WARN: The variable type is wrong, it cannot be used!
-            Expression::Var(port, _wrong_type_do_not_use) => self
-                .ports
-                .get(port)
-                .cloned()
-                .map(|(port, val)| Expression::Var(port, val.r#type()))
-                .or_else(|| self.predicates.get(port).map(|pred| pred.to_owned()))
-                .ok_or(anyhow!("missing port {port}")),
-            Expression::Tuple(_) => todo!(),
-            Expression::Component(_, _) => todo!(),
-            Expression::And(exprs) => exprs
-                .iter()
-                .map(|expr| self.build_predicate(expr))
-                .collect::<Result<_, _>>()
-                .map(Expression::and),
-            Expression::Or(exprs) => exprs
-                .iter()
-                .map(|expr| self.build_predicate(expr))
-                .collect::<Result<_, _>>()
-                .map(Expression::or),
-            Expression::Implies(exprs) => Ok(Expression::Implies(Box::new((
-                self.build_predicate(&exprs.0)?,
-                self.build_predicate(&exprs.1)?,
-            )))),
-            Expression::Not(expr) => self.build_predicate(expr).map(|expr| !expr),
-            Expression::Opposite(expr) => self.build_predicate(expr).map(|expr| -expr),
-            Expression::Sum(exprs) => exprs.iter().map(|expr| self.build_predicate(expr)).sum(),
-            Expression::Mult(exprs) => exprs
-                .iter()
-                .map(|expr| self.build_predicate(expr))
-                .product(),
-            Expression::Equal(exprs) => Ok(Expression::Equal(Box::new((
-                self.build_predicate(&exprs.0)?,
-                self.build_predicate(&exprs.1)?,
-            )))),
-            Expression::Greater(exprs) => Ok(Expression::Greater(Box::new((
-                self.build_predicate(&exprs.0)?,
-                self.build_predicate(&exprs.1)?,
-            )))),
-            Expression::GreaterEq(exprs) => Ok(Expression::GreaterEq(Box::new((
-                self.build_predicate(&exprs.0)?,
-                self.build_predicate(&exprs.1)?,
-            )))),
-            Expression::Less(exprs) => Ok(Expression::Less(Box::new((
-                self.build_predicate(&exprs.0)?,
-                self.build_predicate(&exprs.1)?,
-            )))),
-            Expression::LessEq(exprs) => Ok(Expression::LessEq(Box::new((
-                self.build_predicate(&exprs.0)?,
-                self.build_predicate(&exprs.1)?,
-            )))),
-            Expression::Append(exprs) => Ok(Expression::Append(Box::new((
-                self.build_predicate(&exprs.0)?,
-                self.build_predicate(&exprs.1)?,
-            )))),
-            Expression::Truncate(expr) => Ok(Expression::Truncate(Box::new(
-                self.build_predicate(expr.as_ref())?,
-            ))),
-            Expression::Len(expr) => Ok(Expression::Len(Box::new(
-                self.build_predicate(expr.as_ref())?,
-            ))),
-            Expression::Mod(exprs) => Ok(Expression::Mod(Box::new((
-                self.build_predicate(&exprs.0)?,
-                self.build_predicate(&exprs.1)?,
-            )))),
+    fn build_properties(&mut self, parser: &Parser) -> anyhow::Result<()> {
+        for predicate in parser.properties.predicates.iter() {
+            let predicate = self.expression(
+                predicate,
+                &parser.interner,
+                &self
+                    .ports
+                    .iter()
+                    .map(|(name, (atom, _val))| {
+                        (
+                            name.clone(),
+                            (
+                                atom.clone(),
+                                parser.properties.ports.get(name).unwrap().r#type.clone(),
+                            ),
+                        )
+                    })
+                    .collect(),
+                &None,
+                &HashMap::new(),
+            )?;
+            self.predicates.push(predicate);
         }
+        self.guarantees = parser.properties.guarantees.clone();
+        self.assumes = parser.properties.assumes.clone();
+        Ok(())
     }
 
     fn build_model(self) -> ScxmlModel {
         let mut model = CsModelBuilder::new(self.cs.build());
-        let mut pred_names: HashMap<String, usize> = HashMap::new();
-        let mut predicates = Vec::new();
-        for (_port_name, (channel, init)) in self.ports {
+        for (_port_name, (atom, init)) in self.ports {
             // TODO FIXME handle error.
-            model.add_port(channel, init);
+            if let Atom::State(channel) = atom {
+                model.add_port(channel, init);
+            }
         }
-        for (pred_name, pred_expr) in self.predicates {
+        for pred_expr in self.predicates {
             // TODO FIXME handle error.
-            let id = model.add_predicate(pred_expr);
-            pred_names.insert(pred_name.to_owned(), id);
-            assert_eq!(id, predicates.len());
-            predicates.push(pred_name);
+            let _id = model.add_predicate(pred_expr);
         }
-        let assumes = self
-            .assumes
-            .values()
-            .map(|prop| {
-                Self::build_pmtl_property(&self.atoms, prop, &pred_names)
-                    .expect("hopefully a property")
-            })
-            .collect::<Vec<_>>();
-        assumes.iter().cloned().for_each(|prop| {
-            model.add_assume(prop);
-        });
-        let guarantees = self
-            .guarantees
-            .values()
-            .map(|prop| {
-                Self::build_pmtl_property(&self.atoms, prop, &pred_names)
-                    .expect("hopefully a property")
-            })
-            .collect::<Vec<_>>();
-        guarantees.iter().cloned().for_each(|prop| {
-            model.add_guarantee(prop);
-        });
+        for guarantee in self.guarantees.values() {
+            model.add_guarantee(guarantee.clone());
+        }
+        for assume in self.assumes.values() {
+            model.add_assume(assume.clone());
+        }
+
         ScxmlModel {
             model: model.build(),
-            guarantees,
-            assumes,
+            guarantees: self.guarantees,
+            assumes: self.assumes,
             fsm_names: self.fsm_names,
             parameters: self
                 .parameters
@@ -1644,77 +1572,6 @@ impl ModelBuilder {
                 .into_iter()
                 .map(|(name, b)| (u16::from(b.pg_id) as usize, name))
                 .collect(),
-            predicates,
-        }
-    }
-
-    fn build_pmtl_property(
-        atoms: &HashMap<String, Atom>,
-        property: &Pmtl<String>,
-        predicates: &HashMap<String, usize>,
-    ) -> anyhow::Result<Pmtl<Atom>> {
-        match property {
-            Pmtl::True => Ok(Pmtl::True),
-            Pmtl::False => Ok(Pmtl::False),
-            // FIXME TODO handle error
-            Pmtl::Atom(pred) => {
-                if let Some(atom) = atoms.get(pred.as_str()) {
-                    Ok(Pmtl::Atom(atom.to_owned()))
-                } else {
-                    Ok(Pmtl::Atom(Atom::Predicate(
-                        *predicates.get(pred.as_str()).unwrap(),
-                    )))
-                }
-            }
-            Pmtl::And(formulae) => Ok(Pmtl::And(
-                formulae
-                    .iter()
-                    .map(|f| Self::build_pmtl_property(atoms, f, predicates))
-                    .collect::<Result<_, _>>()?,
-            )),
-            Pmtl::Or(formulae) => Ok(Pmtl::Or(
-                formulae
-                    .iter()
-                    .map(|f| Self::build_pmtl_property(atoms, f, predicates))
-                    .collect::<Result<_, _>>()?,
-            )),
-            Pmtl::Not(formula) => Ok(Pmtl::Not(Box::new(Self::build_pmtl_property(
-                atoms, formula, predicates,
-            )?))),
-            Pmtl::Implies(formulae) => {
-                let (ref lhs, ref rhs) = **formulae;
-                Ok(Pmtl::Implies(Box::new((
-                    Self::build_pmtl_property(atoms, lhs, predicates)?,
-                    Self::build_pmtl_property(atoms, rhs, predicates)?,
-                ))))
-            }
-            Pmtl::Since(formulae, lower_bound, upper_bound) => {
-                let (ref lhs, ref rhs) = **formulae;
-                Ok(Pmtl::Since(
-                    Box::new((
-                        Self::build_pmtl_property(atoms, lhs, predicates)?,
-                        Self::build_pmtl_property(atoms, rhs, predicates)?,
-                    )),
-                    *lower_bound,
-                    *upper_bound,
-                ))
-            }
-            Pmtl::Historically(formula, lower_bound, upper_bound) => {
-                let formula = formula.as_ref();
-                Ok(Pmtl::Historically(
-                    Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
-                    *lower_bound,
-                    *upper_bound,
-                ))
-            }
-            Pmtl::Once(formula, lower_bound, upper_bound) => {
-                let formula = formula.as_ref();
-                Ok(Pmtl::Once(
-                    Box::new(Self::build_pmtl_property(atoms, formula, predicates)?),
-                    *lower_bound,
-                    *upper_bound,
-                ))
-            }
         }
     }
 }

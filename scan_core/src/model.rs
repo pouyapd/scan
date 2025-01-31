@@ -9,21 +9,19 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Atom {
     /// A predicate.
-    Predicate(usize),
+    State(Channel),
     /// An event.
     Event(Event),
 }
-
-type FnMdExpression = FnExpression<Channel>;
 
 /// A builder type for [`CsModel`].
 #[derive(Debug)]
 pub struct CsModelBuilder {
     cs: ChannelSystem,
-    vals: HashMap<Channel, Val>,
-    predicates: Vec<FnMdExpression>,
-    assumes: Vec<Pmtl<Atom>>,
-    guarantees: Vec<Pmtl<Atom>>,
+    ports: HashMap<Channel, Val>,
+    predicates: Vec<FnExpression<Atom>>,
+    assumes: Vec<Pmtl<usize>>,
+    guarantees: Vec<Pmtl<usize>>,
 }
 
 impl CsModelBuilder {
@@ -32,7 +30,7 @@ impl CsModelBuilder {
         // TODO: Check predicates are Boolean expressions and that conversion does not fail
         Self {
             cs: initial_state,
-            vals: HashMap::new(),
+            ports: HashMap::new(),
             predicates: Vec::new(),
             assumes: Vec::new(),
             guarantees: Vec::new(),
@@ -40,10 +38,10 @@ impl CsModelBuilder {
     }
 
     /// Adds a new port to the [`CsModelBuilder`],
-    /// which is given by a [`Channel`] and a default [`Val`] value.
+    /// which is given by an [`Channel`] and a default [`Val`] value.
     pub fn add_port(&mut self, channel: Channel, default: Val) {
         // TODO FIXME: error handling and type checking.
-        if let std::collections::hash_map::Entry::Vacant(e) = self.vals.entry(channel) {
+        if let std::collections::hash_map::Entry::Vacant(e) = self.ports.entry(channel) {
             e.insert(default);
         } else {
             panic!("entry is already taken");
@@ -52,20 +50,23 @@ impl CsModelBuilder {
 
     /// Adds a new predicate to the [`CsModelBuilder`],
     /// which is an expression over the CS's channels.
-    pub fn add_predicate(&mut self, predicate: Expression<Channel>) -> usize {
-        let predicate = FnExpression::<Channel>::from(predicate);
-        let _ = predicate.eval(&|port| self.vals.get(&port).unwrap().clone());
+    pub fn add_predicate(&mut self, predicate: Expression<Atom>) -> usize {
+        let predicate = FnExpression::<Atom>::from(predicate);
+        let _ = predicate.eval(&|port| match port {
+            Atom::State(channel) => self.ports.get(&channel).unwrap().clone(),
+            Atom::Event(_event) => Val::Boolean(false),
+        });
         self.predicates.push(predicate);
         self.predicates.len() - 1
     }
 
     /// Adds an assume [`Pmtl`] formula to the [`CsModelBuilder`].
-    pub fn add_assume(&mut self, assume: Pmtl<Atom>) {
+    pub fn add_assume(&mut self, assume: Pmtl<usize>) {
         self.assumes.push(assume);
     }
 
     /// Adds an guarantee [`Pmtl`] formula to the [`CsModelBuilder`].
-    pub fn add_guarantee(&mut self, guarantee: Pmtl<Atom>) {
+    pub fn add_guarantee(&mut self, guarantee: Pmtl<usize>) {
         self.guarantees.push(guarantee);
     }
 
@@ -76,7 +77,7 @@ impl CsModelBuilder {
     pub fn build(self) -> CsModel {
         CsModel {
             cs: self.cs,
-            vals: self.vals,
+            ports: self.ports,
             predicates: Arc::new(self.predicates),
             oracle: PmtlOracle::new(&self.assumes, &self.guarantees),
         }
@@ -90,8 +91,8 @@ impl CsModelBuilder {
 #[derive(Debug, Clone)]
 pub struct CsModel {
     cs: ChannelSystem,
-    vals: HashMap<Channel, Val>,
-    predicates: Arc<Vec<FnMdExpression>>,
+    ports: HashMap<Channel, Val>,
+    predicates: Arc<Vec<FnExpression<Atom>>>,
     oracle: PmtlOracle,
 }
 
@@ -102,11 +103,14 @@ impl CsModel {
         &self.cs
     }
 
-    fn labels(&self) -> Vec<bool> {
+    fn labels(&self, last_event: &Event) -> Vec<bool> {
         self.predicates
             .iter()
             .map(|prop| {
-                if let Val::Boolean(b) = prop.eval(&|port| self.vals.get(&port).unwrap().clone()) {
+                if let Val::Boolean(b) = prop.eval(&|port| match port {
+                    Atom::State(channel) => self.ports.get(&channel).unwrap().clone(),
+                    Atom::Event(event) => Val::Boolean(*last_event == event),
+                }) {
                     Some(b)
                 } else {
                     None
@@ -194,15 +198,15 @@ impl CsModel {
         trace!("new run starting");
         while let Some(event) = self.cs.montecarlo_execution(rng, duration) {
             if let EventType::Send(ref val) = event.event_type {
-                self.vals.insert(event.channel, val.clone());
+                self.ports.insert(event.channel, val.clone());
             }
             current_len += 1;
-            let state = self.labels();
+            let state = self.labels(&event);
             let time = self.time();
             if let Some(tracer) = tracer.as_mut() {
                 tracer.trace(&event, time, &state);
             }
-            self.oracle = self.oracle.update(&event, &state, time);
+            self.oracle = self.oracle.update(&state, time);
             match self.oracle.output() {
                 Some(true) => {
                     if current_len >= length {

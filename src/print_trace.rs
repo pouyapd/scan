@@ -19,7 +19,7 @@ pub struct PrintTrace {
     index: Arc<AtomicU32>,
     path: PathBuf,
     writer: Option<csv::Writer<flate2::write::GzEncoder<File>>>,
-    predicates: Arc<Vec<String>>,
+    // predicates: Arc<Vec<String>>,
     fsm_names: Arc<HashMap<PgId, String>>,
     fsm_indexes: Arc<HashMap<usize, String>>,
     parameters: Arc<HashMap<Channel, (PgId, PgId, usize, String)>>,
@@ -44,7 +44,7 @@ impl PrintTrace {
             index: Arc::new(AtomicU32::new(0)),
             path: PathBuf::new(),
             writer: None,
-            predicates: Arc::new(model.predicates.to_owned()),
+            // predicates: Arc::new(model.predicates.to_owned()),
             fsm_names: Arc::new(model.fsm_names.to_owned()),
             fsm_indexes: Arc::new(model.fsm_indexes.to_owned()),
             parameters: Arc::new(model.parameters.to_owned()),
@@ -61,7 +61,7 @@ impl Clone for PrintTrace {
             index: self.index.clone(),
             path: PathBuf::new(),
             writer: None,
-            predicates: self.predicates.clone(),
+            // predicates: self.predicates.clone(),
             fsm_names: self.fsm_names.clone(),
             fsm_indexes: self.fsm_indexes.clone(),
             parameters: self.parameters.clone(),
@@ -86,9 +86,8 @@ impl Tracer<Event> for PrintTrace {
         let mut writer = csv::WriterBuilder::new().from_writer(enc);
         writer
             .write_record(
-                Self::HEADER
-                    .into_iter()
-                    .chain(self.predicates.iter().map(String::as_str)),
+                Self::HEADER,
+                // .chain(self.predicates.iter().map(String::as_str)),
             )
             .expect("write header");
         self.writer = Some(writer);

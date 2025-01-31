@@ -61,7 +61,6 @@ impl Data {
         tag: events::BytesStart<'_>,
         // ident: Option<String>,
         omg_type: Option<String>,
-        scope: &Scope,
         interner: &mut Interner,
     ) -> anyhow::Result<Data> {
         let attrs = attrs(tag, &[ATTR_ID], &[ATTR_EXPR, ATTR_TYPE])?;
@@ -77,7 +76,7 @@ impl Data {
             .ok_or(anyhow!(ParserError::NoTypeAnnotation))?;
         let expression = attrs
             .get(ATTR_EXPR)
-            .map(|expression| ecmascript(expression, scope, interner))
+            .map(|expression| ecmascript(expression, &Scope::new_global(), interner))
             .transpose()?;
         Ok(Data {
             id,
@@ -134,15 +133,11 @@ pub struct Transition {
 }
 
 impl Transition {
-    fn parse(
-        tag: events::BytesStart<'_>,
-        scope: &Scope,
-        interner: &mut Interner,
-    ) -> anyhow::Result<Transition> {
+    fn parse(tag: events::BytesStart<'_>, interner: &mut Interner) -> anyhow::Result<Transition> {
         let attrs = attrs(tag, &[ATTR_TARGET], &[ATTR_EVENT, ATTR_COND])?;
         let cond = attrs
             .get(ATTR_COND)
-            .map(|expression| ecmascript(expression, scope, interner))
+            .map(|expression| ecmascript(expression, &Scope::new_global(), interner))
             .transpose()?;
         Ok(Transition {
             event: attrs.get(ATTR_EVENT).cloned(),
@@ -190,12 +185,11 @@ impl Executable {
 
     fn parse_assign(
         tag: events::BytesStart<'_>,
-        scope: &Scope,
         interner: &mut Interner,
     ) -> anyhow::Result<Executable> {
         let attrs = attrs(tag, &[ATTR_LOCATION, ATTR_EXPR], &[])?;
         let location = attrs[ATTR_LOCATION].clone();
-        let expr = ecmascript(attrs[ATTR_EXPR].as_str(), scope, interner)?;
+        let expr = ecmascript(attrs[ATTR_EXPR].as_str(), &Scope::new_global(), interner)?;
         Ok(Executable::Assign { location, expr })
     }
 
@@ -233,11 +227,7 @@ pub struct Send {
 }
 
 impl Send {
-    fn parse(
-        tag: events::BytesStart<'_>,
-        scope: &Scope,
-        interner: &mut Interner,
-    ) -> anyhow::Result<Send> {
+    fn parse(tag: events::BytesStart<'_>, interner: &mut Interner) -> anyhow::Result<Send> {
         let attrs = attrs(
             tag,
             &[ATTR_EVENT],
@@ -246,7 +236,7 @@ impl Send {
         let target = if let Some(target) = attrs.get(ATTR_TARGET) {
             Some(Target::Id(target.to_string()))
         } else if let Some(targetexpr) = attrs.get(ATTR_TARGETEXPR) {
-            let targetexpr = ecmascript(targetexpr.as_str(), scope, interner)?;
+            let targetexpr = ecmascript(targetexpr.as_str(), &Scope::new_global(), interner)?;
             Some(Target::Expr(targetexpr))
         } else {
             None
@@ -278,11 +268,10 @@ pub struct If {
 impl If {
     fn parse(
         tag: events::BytesStart<'_>,
-        scope: &Scope,
         interner: &mut Interner,
     ) -> anyhow::Result<boa_ast::Expression> {
         let attrs = attrs(tag, &[ATTR_COND], &[])?;
-        ecmascript(attrs[ATTR_COND].as_str(), scope, interner)
+        ecmascript(attrs[ATTR_COND].as_str(), &Scope::new_global(), interner)
     }
 }
 
@@ -296,9 +285,7 @@ pub struct Param {
 impl Param {
     fn parse(
         tag: events::BytesStart<'_>,
-        // ident: String,
         omg_type: Option<String>,
-        scope: &Scope,
         interner: &mut Interner,
     ) -> anyhow::Result<Param> {
         let attrs = attrs(tag, &[ATTR_NAME], &[ATTR_TYPE, ATTR_LOCATION, ATTR_EXPR])?;
@@ -313,7 +300,7 @@ impl Param {
             .or_else(|| attrs.get(ATTR_EXPR))
             .ok_or_else(|| anyhow!("missing expression or location attribute"))?
             .as_str();
-        let expr = ecmascript(expr, scope, interner)?;
+        let expr = ecmascript(expr, &Scope::new_global(), interner)?;
         // Full parameter with either location or expression as argument
         Ok(Param {
             name,
@@ -351,11 +338,9 @@ impl Scxml {
 pub(super) fn parse<R: BufRead>(
     reader: &mut Reader<R>,
     interner: &mut Interner,
-    scope: &Scope,
 ) -> anyhow::Result<Scxml> {
     let mut buf = Vec::new();
     let mut stack: Vec<ScxmlTag> = Vec::new();
-    let scope = Scope::new(scope.clone(), true);
     // let mut type_annotation: Option<(String, String)> = None;
     let mut type_annotation: Option<String> = None;
     info!("parsing fsm");
@@ -370,61 +355,7 @@ pub(super) fn parse<R: BufRead>(
                     .decode(tag.name().into_inner())?
                     .into_owned();
                 trace!(target: "parsing", "start tag '{tag_name}'");
-                let tag_obj = match tag_name.as_str() {
-                    TAG_SCXML if stack.is_empty() => Scxml::parse(tag).map(ScxmlTag::Scxml),
-                    TAG_DATAMODEL
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::Scxml(_))) =>
-                    {
-                        Ok(ScxmlTag::Datamodel(Vec::new()))
-                    }
-                    TAG_STATE
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::Scxml(_))) =>
-                    {
-                        State::parse(tag).map(ScxmlTag::State)
-                    }
-                    TAG_TRANSITION
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
-                    {
-                        Transition::parse(tag, &scope, interner).map(ScxmlTag::Transition)
-                    }
-                    TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
-                        Send::parse(tag, &scope, interner).map(ScxmlTag::Send)
-                    }
-                    TAG_IF if stack.iter().rev().any(|tag| tag.is_executable()) => {
-                        If::parse(tag, &scope, interner)
-                            .map(|cond| If {
-                                elif: vec![(cond, Vec::new())],
-                                r#else: Vec::new(),
-                                else_flag: false,
-                            })
-                            .map(ScxmlTag::If)
-                    }
-                    TAG_ONENTRY
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
-                    {
-                        Ok(ScxmlTag::OnEntry(Vec::new()))
-                    }
-                    TAG_ONEXIT
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
-                    {
-                        Ok(ScxmlTag::OnExit(Vec::new()))
-                    }
-                    _ => {
-                        error!(target: "parsing", "unknown or unexpected start tag '{tag_name}'");
-                        bail!(ParserError::UnexpectedStartTag(tag_name.to_string()));
-                    }
-                }
-                .with_context(|| ParserError::Tag(tag_name.to_string()))?;
+                let tag_obj = parse_start_tag(tag_name, &stack, tag, interner)?;
                 stack.push(tag_obj);
             }
             Event::End(tag) => {
@@ -517,7 +448,7 @@ pub(super) fn parse<R: BufRead>(
                             .last()
                             .is_some_and(|tag| matches!(*tag, ScxmlTag::Datamodel(_))) =>
                     {
-                        let data = Data::parse(tag, type_annotation.take(), &scope, interner)
+                        let data = Data::parse(tag, type_annotation.take(), interner)
                             .with_context(|| ParserError::Tag(tag_name))?;
                         Data::push(data, &mut stack)?;
                     }
@@ -535,7 +466,7 @@ pub(super) fn parse<R: BufRead>(
                             .last()
                             .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
                     {
-                        let transition = Transition::parse(tag, &scope, interner)
+                        let transition = Transition::parse(tag, interner)
                             .with_context(|| ParserError::Tag(tag_name))?;
                         transition.push(&mut stack)?;
                     }
@@ -546,12 +477,12 @@ pub(super) fn parse<R: BufRead>(
                         raise.push(&mut stack)?;
                     }
                     TAG_SEND if stack.last().is_some_and(|tag| tag.is_executable()) => {
-                        let send = Send::parse(tag, &scope, interner)
+                        let send = Send::parse(tag, interner)
                             .with_context(|| ParserError::Tag(tag_name))?;
                         Executable::Send(send).push(&mut stack)?;
                     }
                     TAG_ASSIGN if stack.last().is_some_and(|tag| tag.is_executable()) => {
-                        let assign = Executable::parse_assign(tag, &scope, interner)
+                        let assign = Executable::parse_assign(tag, interner)
                             .with_context(|| ParserError::Tag(tag_name))?;
                         assign.push(&mut stack)?;
                     }
@@ -564,7 +495,7 @@ pub(super) fn parse<R: BufRead>(
                         //     .take()
                         //     .ok_or(anyhow::Error::from(ParserError::NoTypeAnnotation))
                         //     .with_context(|| reader.buffer_position())?;
-                        let param = Param::parse(tag, type_annotation.take(), &scope, interner)
+                        let param = Param::parse(tag, type_annotation.take(), interner)
                             .with_context(|| ParserError::Tag(tag_name))?;
                         if let ScxmlTag::Send(send) =
                             stack.last_mut().expect("param must be inside other tag")
@@ -595,7 +526,7 @@ pub(super) fn parse<R: BufRead>(
                             .is_some_and(|tag| matches!(tag, ScxmlTag::If(_))) =>
                     {
                         if let Some(ScxmlTag::If(r#if)) = stack.last_mut() {
-                            let cond = If::parse(tag, &scope, interner)
+                            let cond = If::parse(tag, interner)
                                 .with_context(|| ParserError::Tag(tag_name))?;
                             r#if.elif.push((cond, Vec::new()));
                         } else {
@@ -646,6 +577,67 @@ pub(super) fn parse<R: BufRead>(
         // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
         buf.clear();
     }
+}
+
+fn parse_start_tag(
+    tag_name: String,
+    stack: &[ScxmlTag],
+    tag: events::BytesStart<'_>,
+    interner: &mut Interner,
+) -> Result<ScxmlTag, anyhow::Error> {
+    match tag_name.as_str() {
+        TAG_SCXML if stack.is_empty() => Scxml::parse(tag).map(ScxmlTag::Scxml),
+        TAG_DATAMODEL
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::Scxml(_))) =>
+        {
+            Ok(ScxmlTag::Datamodel(Vec::new()))
+        }
+        TAG_STATE
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::Scxml(_))) =>
+        {
+            State::parse(tag).map(ScxmlTag::State)
+        }
+        TAG_TRANSITION
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
+        {
+            Transition::parse(tag, interner).map(ScxmlTag::Transition)
+        }
+        TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
+            Send::parse(tag, interner).map(ScxmlTag::Send)
+        }
+        TAG_IF if stack.iter().rev().any(|tag| tag.is_executable()) => If::parse(tag, interner)
+            .map(|cond| If {
+                elif: vec![(cond, Vec::new())],
+                r#else: Vec::new(),
+                else_flag: false,
+            })
+            .map(ScxmlTag::If),
+        TAG_ONENTRY
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
+        {
+            Ok(ScxmlTag::OnEntry(Vec::new()))
+        }
+        TAG_ONEXIT
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
+        {
+            Ok(ScxmlTag::OnExit(Vec::new()))
+        }
+        _ => {
+            error!(target: "parsing", "unknown or unexpected start tag '{tag_name}'");
+            bail!(ParserError::UnexpectedStartTag(tag_name.to_string()));
+        }
+    }
+    .with_context(|| ParserError::Tag(tag_name.to_string()))
 }
 
 fn parse_comment(comment: String) -> anyhow::Result<Option<String>> {
