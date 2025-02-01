@@ -81,13 +81,13 @@ fn attrs(
             let val = attr.unescape_value()?.into_owned();
             attrs.insert(key, val);
         } else {
-            error!(target: "parsing", "found unknown attribute '{key}'");
+            error!(target: "parser", "found unknown attribute '{key}'");
             bail!(ParserError::UnknownAttrKey(key.to_string()));
         }
     }
     for key in keys {
         if !attrs.contains_key(*key) {
-            error!(target: "parsing", "missing required attribute '{key}'");
+            error!(target: "parser", "missing required attribute '{key}'");
             bail!(ParserError::MissingAttr(key.to_string()));
         }
     }
@@ -135,7 +135,7 @@ impl Parser {
     ///
     /// Fails if the parsed content contains syntactic errors.
     pub fn parse(path: &Path) -> anyhow::Result<Self> {
-        info!(target: "parsing", "creating parser");
+        info!(target: "parser", "creating parser");
         let mut parser = Parser {
             process_list: HashMap::new(),
             types: OmgTypes::new(),
@@ -143,10 +143,10 @@ impl Parser {
             interner: Interner::new(),
         };
         if path.is_dir() {
-            info!(target: "parsing", "parsing directory '{}'", path.display());
+            info!(target: "parser", "parsing directory '{}'", path.display());
             parser.parse_directory(path)?;
         } else {
-            info!(target: "parsing", "parsing main model file '{}'", path.display());
+            info!(target: "parser", "parsing main model file '{}'", path.display());
             let mut reader = Reader::from_file(path).with_context(|| {
                 format!("failed to create reader from file '{}'", path.display())
             })?;
@@ -217,7 +217,7 @@ impl Parser {
                         })?;
                 }
                 _ => {
-                    warn!(target: "parsing", "unknown file extension '{}'", ext);
+                    warn!(target: "parser", "unknown file extension '{}'", ext);
                 }
             }
         }
@@ -238,7 +238,7 @@ impl Parser {
             {
                 Event::Start(tag) => {
                     let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
-                    trace!(target: "parsing", "start tag '{tag_name}'");
+                    trace!(target: "parser", "start tag '{tag_name}'");
                     let new_tag = match tag_name {
                         TAG_SPECIFICATION if stack.is_empty() => {
                             ConvinceTag::Specification
@@ -250,7 +250,7 @@ impl Parser {
                             ConvinceTag::ProcessList
                         }
                         _ => {
-                            error!(target: "parsing", "unknown or unexpected start tag '{tag_name}'");
+                            error!(target: "parser", "unknown or unexpected start tag '{tag_name}'");
                             bail!(ParserError::UnexpectedStartTag(tag_name.to_string()));
                         }
                     };
@@ -259,15 +259,15 @@ impl Parser {
                 Event::End(tag) => {
                     let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
                     if stack.pop().is_some_and(|state| Into::<&str>::into(state) == tag_name) {
-                        trace!(target: "parsing", "end tag '{}'", tag_name);
+                        trace!(target: "parser", "end tag '{}'", tag_name);
                     } else {
-                        error!(target: "parsing", "unknown or unexpected end tag '{tag_name}'");
+                        error!(target: "parser", "unknown or unexpected end tag '{tag_name}'");
                         bail!(ParserError::UnexpectedEndTag(tag_name.to_string()));
                     }
                 }
                 Event::Empty(tag) => {
                     let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
-                    trace!(target: "parsing", "empty tag '{tag_name}'");
+                    trace!(target: "parser", "empty tag '{tag_name}'");
                     match tag_name {
                         TAG_TYPES if stack.last().is_some_and(|e| *e == ConvinceTag::Specification) => {
                             let attrs = attrs(
@@ -291,7 +291,7 @@ impl Parser {
                                 .context("failed to parse 'properties' tag attributes")?;
                             let mut path = parent.to_owned();
                             path.extend(&PathBuf::from(attrs.get(ATTR_PATH).unwrap()));
-                            info!("creating reader from file '{}'", path.display());
+                            info!(target: "parser", "creating reader from file '{}'", path.display());
                             let mut reader = Reader::from_file(&path).with_context(|| {
                                 format!("failed to create reader from file '{}'", path.display())
                             })?;
@@ -322,7 +322,7 @@ impl Parser {
                             }
                             let mut path = parent.to_owned();
                             path.extend(&PathBuf::from(attrs.get(ATTR_PATH).unwrap()));
-                            info!(
+                            info!(target: "parser",
                                 "creating reader from file '{}' for fsm '{process_id}'",
                                 path.display()
                             );
@@ -335,7 +335,7 @@ impl Parser {
                             }
                         }
                         _ => {
-                            error!(target: "parsing", "unknown or unexpected empty tag '{tag_name}'");
+                            error!(target: "parser", "unknown or unexpected empty tag '{tag_name}'");
                             bail!(ParserError::UnexpectedTag(tag_name.to_string()));
                         }
                     }
@@ -347,25 +347,25 @@ impl Parser {
                 Event::Text(t) => {
                     let text = &*reader.decoder().decode(t.as_ref())?;
                     if !text.trim().is_empty() {
-                        error!(target: "parsing", "text content not supported");
+                        error!(target: "parser", "text content not supported");
                         bail!("text content not supported");
                     }
                 }
                 Event::CData(_) => {
-                    error!(target: "parsing", "CData not supported");
+                    error!(target: "parser", "CData not supported");
                     bail!("CData not supported");
                 }
                 Event::PI(_) => {
-                    error!(target: "parsing", "Processing Instructions not supported");
+                    error!(target: "parser", "Processing Instructions not supported");
                     bail!("Processing Instructions not supported");
                 }
                 Event::DocType(_) => {
-                    error!(target: "parsing", "DocType not supported");
+                    error!(target: "parser", "DocType not supported");
                     bail!("DocType not supported");
                 }
                 // exits the loop when reaching end of file
                 Event::Eof => {
-                    info!(target: "parsing", "parsing completed");
+                    info!(target: "parser", "parsing completed");
                     break;
                 }
             }

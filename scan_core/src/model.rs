@@ -21,7 +21,7 @@ pub struct CsModelBuilder {
     ports: HashMap<Channel, Val>,
     predicates: Vec<FnExpression<Atom>>,
     assumes: Vec<Pmtl<usize>>,
-    guarantees: Vec<Pmtl<usize>>,
+    guarantees: Vec<(String, Pmtl<usize>)>,
 }
 
 impl CsModelBuilder {
@@ -66,8 +66,8 @@ impl CsModelBuilder {
     }
 
     /// Adds an guarantee [`Pmtl`] formula to the [`CsModelBuilder`].
-    pub fn add_guarantee(&mut self, guarantee: Pmtl<usize>) {
-        self.guarantees.push(guarantee);
+    pub fn add_guarantee(&mut self, name: String, guarantee: Pmtl<usize>) {
+        self.guarantees.push((name, guarantee));
     }
 
     /// Creates a new [`CsModel`] with the given underlying [`ChannelSystem`] and set of predicates.
@@ -75,13 +75,32 @@ impl CsModelBuilder {
     /// Predicates have to be passed all at once,
     /// as it is not possible to add any further ones after the [`CsModel`] has been initialized.
     pub fn build(self) -> CsModel {
+        let mut run_state = RunStatus::default();
+        let guarantees = self
+            .guarantees
+            .iter()
+            .map(|(_, g)| g)
+            .cloned()
+            .collect::<Vec<_>>();
+        run_state.guarantees = self.guarantees.into_iter().map(|(s, _)| (s, 0)).collect();
+
         CsModel {
             cs: self.cs,
             ports: self.ports,
             predicates: Arc::new(self.predicates),
-            oracle: PmtlOracle::new(&self.assumes, &self.guarantees),
+            oracle: PmtlOracle::new(&self.assumes, &guarantees),
+            run_status: Arc::new(Mutex::new(run_state)),
         }
     }
+}
+
+/// Represents the state of the current verification run.
+#[derive(Debug, Clone, Default)]
+pub struct RunStatus {
+    pub successes: u32,
+    pub failures: u32,
+    pub running: bool,
+    pub guarantees: Vec<(String, u32)>,
 }
 
 /// Transition system model based on a [`ChannelSystem`].
@@ -94,6 +113,7 @@ pub struct CsModel {
     ports: HashMap<Channel, Val>,
     predicates: Arc<Vec<FnExpression<Atom>>>,
     oracle: PmtlOracle,
+    run_status: Arc<Mutex<RunStatus>>,
 }
 
 impl CsModel {
@@ -101,6 +121,11 @@ impl CsModel {
     #[inline(always)]
     pub fn channel_system(&self) -> &ChannelSystem {
         &self.cs
+    }
+
+    /// Gets an `Arc<Mutex<_>>` handle to the state of the current run.
+    pub fn run_status(&self) -> Arc<Mutex<RunStatus>> {
+        self.run_status.clone()
     }
 
     fn labels(&self, last_event: &Event) -> Vec<bool> {
@@ -136,42 +161,52 @@ impl CsModel {
         length: usize,
         duration: Time,
         tracer: Option<P>,
-        state: Arc<Mutex<(u32, u32, bool)>>,
     ) where
         P: Tracer<Event> + Clone + Send + Sync,
     {
         info!("verification starting");
+        {
+            let run_state = &mut *self.run_status.lock().expect("lock state");
+            run_state.successes = 0;
+            run_state.failures = 0;
+            run_state.running = true;
+            run_state.guarantees.iter_mut().for_each(|(_, n)| *n = 0);
+            // Drop handles!
+        }
         // WARN FIXME TODO: Implement algorithm for 2.4 Distributed sample generation in Budde et al.
         (0..usize::MAX)
             .into_par_iter()
             .take_any_while(|_| {
                 // .take_while(|_| {
-                let result =
-                    self.clone()
-                        .experiment(tracer.clone(), length, duration, state.clone());
-                let (s, f, running) = &mut *state.lock().expect("lock state");
-                if *running {
-                    if let Some(result) = result {
+                let result = self.clone().experiment(tracer.clone(), length, duration);
+                let run_status = &mut *self.run_status.lock().expect("lock state");
+                if run_status.running {
+                    if let (Some(result), guarantee) = result {
                         if result {
-                            *s += 1;
+                            run_status.successes += 1;
                             // If all guarantees are satisfied, the execution is successful
-                            info!("runs: {s} successes");
+                            info!("runs: {} successes", run_status.successes);
                         } else {
-                            *f += 1;
+                            run_status.failures += 1;
+                            run_status.guarantees[guarantee.unwrap()].1 += 1;
                             // If guarantee is violated, we have found a counter-example!
-                            info!("runs: {f} failures");
+                            info!("runs: {} failures", run_status.failures);
                         }
-                        let n = *s + *f;
+                        let n = run_status.successes + run_status.failures;
                         // Avoid division by 0
-                        let avg = if n == 0 { 0.5f64 } else { *s as f64 / n as f64 };
+                        let avg = if n == 0 {
+                            0.5f64
+                        } else {
+                            run_status.successes as f64 / n as f64
+                        };
                         if crate::adaptive_bound(avg, confidence, precision) <= n as f64 {
                             info!("adaptive bound satisfied");
-                            *running = false;
+                            run_status.running = false;
                         }
                     }
                 }
-                info!("returning {running} to iter");
-                *running
+                info!("returning {} to iter", run_status.running);
+                run_status.running
             })
             .count();
         info!("verification terminating");
@@ -180,10 +215,9 @@ impl CsModel {
     fn experiment<P>(
         mut self,
         mut tracer: Option<P>,
-        length: usize,
+        max_length: usize,
         duration: Time,
-        run_state: Arc<Mutex<(u32, u32, bool)>>,
-    ) -> Option<bool>
+    ) -> (Option<bool>, Option<usize>)
     where
         P: Tracer<Event>,
     {
@@ -207,42 +241,36 @@ impl CsModel {
                 tracer.trace(&event, time, &state);
             }
             self.oracle = self.oracle.update(&state, time);
-            match self.oracle.output() {
-                Some(true) => {
-                    if current_len >= length {
-                        trace!("run exceeds maximum lenght");
-                        if let Some(tracer) = tracer {
-                            tracer.finalize(None);
-                        }
-                        return None;
-                    }
+            if let Some(i) = self.oracle.output_assumes() {
+                trace!("run undetermined");
+                if let Some(publisher) = tracer {
+                    publisher.finalize(None);
                 }
-                Some(false) => {
-                    trace!("run fails");
-                    if let Some(tracer) = tracer {
-                        tracer.finalize(Some(false));
-                    }
-                    return Some(false);
+                return (None, Some(i));
+            } else if let Some(i) = self.oracle.output_guarantees() {
+                trace!("run fails");
+                if let Some(tracer) = tracer {
+                    tracer.finalize(Some(false));
                 }
-                None => {
-                    trace!("run undetermined");
-                    if let Some(publisher) = tracer {
-                        publisher.finalize(None);
-                    }
-                    return None;
-                }
-            }
-            if !run_state.lock().expect("lock state").2 {
+                return (Some(false), Some(i));
+            } else if current_len >= max_length {
+                trace!("run exceeds maximum lenght");
                 if let Some(tracer) = tracer {
                     tracer.finalize(None);
                 }
-                return None;
+                return (None, None);
+            } else if !self.run_status.lock().expect("lock state").running {
+                trace!("run stopped");
+                if let Some(tracer) = tracer {
+                    tracer.finalize(None);
+                }
+                return (None, None);
             }
         }
         trace!("run succeeds");
         if let Some(tracer) = tracer {
             tracer.finalize(Some(true));
         }
-        Some(true)
+        (Some(true), None)
     }
 }

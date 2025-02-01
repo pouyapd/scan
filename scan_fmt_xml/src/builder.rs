@@ -17,8 +17,6 @@ use std::{
 #[derive(Debug, Clone)]
 pub struct ScxmlModel {
     pub model: CsModel,
-    pub guarantees: HashMap<String, Pmtl<usize>>,
-    pub assumes: HashMap<String, Pmtl<usize>>,
     pub fsm_names: HashMap<PgId, String>,
     pub fsm_indexes: HashMap<usize, String>,
     pub parameters: HashMap<Channel, (PgId, PgId, usize, String)>,
@@ -84,8 +82,8 @@ pub struct ModelBuilder {
     // that is needed
     parameters: HashMap<(PgId, PgId, usize, String), Channel>,
     // Properties
-    guarantees: HashMap<String, Pmtl<usize>>,
-    assumes: HashMap<String, Pmtl<usize>>,
+    guarantees: Vec<(String, Pmtl<usize>)>,
+    assumes: Vec<(String, Pmtl<usize>)>,
     predicates: Vec<Expression<Atom>>,
     ports: HashMap<String, (Atom, Val)>,
     // extra data
@@ -109,19 +107,18 @@ impl ModelBuilder {
             events: Vec::new(),
             event_indexes: HashMap::new(),
             parameters: HashMap::new(),
-            guarantees: HashMap::new(),
-            assumes: HashMap::new(),
+            guarantees: Vec::new(),
+            assumes: Vec::new(),
             predicates: Vec::new(),
             ports: HashMap::new(),
             int_queues: HashSet::new(),
         };
 
-        info!("Building types");
         model_builder.build_types(&parser.types)?;
 
         model_builder.prebuild_processes(&mut parser)?;
 
-        info!("Visit process list");
+        info!(target: "build", "Visit process list");
         for (_id, fsm) in parser.process_list.iter() {
             model_builder.build_fsm(fsm, &mut parser.interner)?;
         }
@@ -135,6 +132,7 @@ impl ModelBuilder {
     }
 
     fn build_types(&mut self, omg_types: &OmgTypes) -> anyhow::Result<()> {
+        info!(target: "build", "Building types");
         for (name, omg_type) in omg_types.types.iter() {
             let scan_type = match omg_type {
                 OmgType::Boolean => Type::Boolean,
@@ -380,7 +378,7 @@ impl ModelBuilder {
     }
 
     fn build_fsm(&mut self, scxml: &Scxml, interner: &mut Interner) -> anyhow::Result<()> {
-        trace!("build fsm {}", scxml.name);
+        trace!(target: "build", "build fsm {}", scxml.name);
         // Initialize fsm.
         let pg_builder = self
             .fsm_builders
@@ -562,7 +560,7 @@ impl ModelBuilder {
 
         // Consider each of the fsm's states
         for (state_id, state) in scxml.states.iter() {
-            trace!("build state {}", state_id);
+            trace!(target: "build", "build state {}", state_id);
             // Each state is modeled by multiple locations connected by transitions
             // A starting location is used as a point-of-entry to the execution of the state.
             let start_loc = *states
@@ -725,6 +723,7 @@ impl ModelBuilder {
             // Consider each of the state's transitions.
             for transition in state.transitions.iter() {
                 trace!(
+                    target: "build",
                     "build {} transition to {}",
                     transition
                         .event
@@ -1539,17 +1538,15 @@ impl ModelBuilder {
             // TODO FIXME handle error.
             let _id = model.add_predicate(pred_expr);
         }
-        for guarantee in self.guarantees.values() {
-            model.add_guarantee(guarantee.clone());
+        for (name, guarantee) in self.guarantees.into_iter() {
+            model.add_guarantee(name, guarantee);
         }
-        for assume in self.assumes.values() {
+        for (_name, assume) in self.assumes.into_iter() {
             model.add_assume(assume.clone());
         }
 
         ScxmlModel {
             model: model.build(),
-            guarantees: self.guarantees,
-            assumes: self.assumes,
             fsm_names: self.fsm_names,
             parameters: self
                 .parameters

@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context};
 use boa_ast::scope::Scope;
 use boa_ast::Expression as BoaExpression;
 use boa_interner::Interner;
-use log::{error, info, trace, warn};
+use log::{error, info, trace};
 use quick_xml::events::Event;
 use quick_xml::{events, Reader};
 use scan_core::Time;
@@ -343,7 +343,7 @@ pub(super) fn parse<R: BufRead>(
     let mut stack: Vec<ScxmlTag> = Vec::new();
     // let mut type_annotation: Option<(String, String)> = None;
     let mut type_annotation: Option<String> = None;
-    info!("parsing fsm");
+    info!(target: "parser", "parsing fsm");
     loop {
         match reader
             .read_event_into(&mut buf)
@@ -354,7 +354,7 @@ pub(super) fn parse<R: BufRead>(
                     .decoder()
                     .decode(tag.name().into_inner())?
                     .into_owned();
-                trace!(target: "parsing", "start tag '{tag_name}'");
+                trace!(target: "parser", "start tag '{tag_name}'");
                 let tag_obj = parse_start_tag(tag_name, &stack, tag, interner)?;
                 stack.push(tag_obj);
             }
@@ -363,10 +363,10 @@ pub(super) fn parse<R: BufRead>(
                 // if let Some(tag) = stack.pop().is_some_and(|tag| <&str>::from(tag) == tag_name) {
                 if let Some(tag) = stack.pop() {
                     if <&str>::from(&tag) != tag_name {
-                        error!(target: "parsing", "unknown or unexpected end tag '{tag_name}'");
+                        error!(target: "parser", "unknown or unexpected end tag '{tag_name}'");
                         bail!(ParserError::UnexpectedEndTag(tag_name.to_string()));
                     } else {
-                        trace!(target: "parsing", "end tag '{}'", tag_name);
+                        trace!(target: "parser", "end tag '{}'", tag_name);
                         match tag {
                             ScxmlTag::Scxml(fsm) if stack.is_empty() => {
                                 return Ok(fsm);
@@ -432,8 +432,8 @@ pub(super) fn parse<R: BufRead>(
                     }
                 } else {
                     // WARN TODO FIXME: actually tag missing from stack?
-                    error!("unexpected end tag {tag_name}");
-                    return Err(anyhow!(ParserError::UnexpectedEndTag(tag_name.to_string())));
+                    error!(target: "parser", "unexpected end tag {tag_name}");
+                    bail!(ParserError::UnexpectedEndTag(tag_name.to_string()));
                 }
             }
             Event::Empty(tag) => {
@@ -441,104 +441,7 @@ pub(super) fn parse<R: BufRead>(
                     .decoder()
                     .decode(tag.name().into_inner())?
                     .into_owned();
-                trace!("'{tag_name}' empty tag");
-                match tag_name.as_str() {
-                    TAG_DATA
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::Datamodel(_))) =>
-                    {
-                        let data = Data::parse(tag, type_annotation.take(), interner)
-                            .with_context(|| ParserError::Tag(tag_name))?;
-                        Data::push(data, &mut stack)?;
-                    }
-                    TAG_STATE
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::Scxml(_))) =>
-                    {
-                        let state =
-                            State::parse(tag).with_context(|| ParserError::Tag(tag_name))?;
-                        state.push(&mut stack)?;
-                    }
-                    TAG_TRANSITION
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
-                    {
-                        let transition = Transition::parse(tag, interner)
-                            .with_context(|| ParserError::Tag(tag_name))?;
-                        transition.push(&mut stack)?;
-                    }
-                    // we `rev()` the iterator only because we expect the relevant tag to be towards the end of the stack
-                    TAG_RAISE if stack.last().is_some_and(|tag| tag.is_executable()) => {
-                        let raise = Executable::parse_raise(tag)
-                            .with_context(|| ParserError::Tag(tag_name))?;
-                        raise.push(&mut stack)?;
-                    }
-                    TAG_SEND if stack.last().is_some_and(|tag| tag.is_executable()) => {
-                        let send = Send::parse(tag, interner)
-                            .with_context(|| ParserError::Tag(tag_name))?;
-                        Executable::Send(send).push(&mut stack)?;
-                    }
-                    TAG_ASSIGN if stack.last().is_some_and(|tag| tag.is_executable()) => {
-                        let assign = Executable::parse_assign(tag, interner)
-                            .with_context(|| ParserError::Tag(tag_name))?;
-                        assign.push(&mut stack)?;
-                    }
-                    TAG_PARAM
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(*tag, ScxmlTag::Send(_))) =>
-                    {
-                        // let (ident, omg_type) = type_annotation
-                        //     .take()
-                        //     .ok_or(anyhow::Error::from(ParserError::NoTypeAnnotation))
-                        //     .with_context(|| reader.buffer_position())?;
-                        let param = Param::parse(tag, type_annotation.take(), interner)
-                            .with_context(|| ParserError::Tag(tag_name))?;
-                        if let ScxmlTag::Send(send) =
-                            stack.last_mut().expect("param must be inside other tag")
-                        {
-                            send.params.push(param);
-                        } else {
-                            unreachable!("param must be inside a send tag");
-                        }
-                    }
-                    TAG_ELSE
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(tag, ScxmlTag::If(_))) =>
-                    {
-                        if let Some(ScxmlTag::If(r#if)) = stack.last_mut() {
-                            if r#if.else_flag {
-                                bail!("multiple `else` inside `if` tag");
-                            } else {
-                                r#if.else_flag = true;
-                            }
-                        } else {
-                            unreachable!()
-                        }
-                    }
-                    TAG_ELIF
-                        if stack
-                            .last()
-                            .is_some_and(|tag| matches!(tag, ScxmlTag::If(_))) =>
-                    {
-                        if let Some(ScxmlTag::If(r#if)) = stack.last_mut() {
-                            let cond = If::parse(tag, interner)
-                                .with_context(|| ParserError::Tag(tag_name))?;
-                            r#if.elif.push((cond, Vec::new()));
-                        } else {
-                            unreachable!()
-                        }
-                    }
-                    // Unknown tag: skip till maching end tag
-                    _ => {
-                        warn!("unknown or unexpected tag {tag_name:?}, skipping");
-                        continue;
-                    }
-                }
+                parse_empty_tag(tag_name, &mut stack, tag, &mut type_annotation, interner)?;
             }
             // Ignore text between tags
             Event::Text(_) => continue,
@@ -569,7 +472,7 @@ pub(super) fn parse<R: BufRead>(
             }
             // exits the loop when reaching end of file
             Event::Eof => {
-                error!("parsing completed with unclosed tags");
+                error!(target: "parser", "parsing completed with unclosed tags");
                 return Err(anyhow!(ParserError::UnclosedTags))
                     .with_context(|| reader.buffer_position());
             }
@@ -577,6 +480,108 @@ pub(super) fn parse<R: BufRead>(
         // if we don't keep a borrow elsewhere, we can clear the buffer to keep memory usage low
         buf.clear();
     }
+}
+
+fn parse_empty_tag(
+    tag_name: String,
+    stack: &mut [ScxmlTag],
+    tag: events::BytesStart<'_>,
+    type_annotation: &mut Option<String>,
+    interner: &mut Interner,
+) -> Result<(), anyhow::Error> {
+    trace!(target: "parser", "'{tag_name}' empty tag");
+    match tag_name.as_str() {
+        TAG_DATA
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::Datamodel(_))) =>
+        {
+            let data = Data::parse(tag, type_annotation.take(), interner)
+                .with_context(|| ParserError::Tag(tag_name))?;
+            Data::push(data, stack)?;
+        }
+        TAG_STATE
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::Scxml(_))) =>
+        {
+            let state = State::parse(tag).with_context(|| ParserError::Tag(tag_name))?;
+            state.push(stack)?;
+        }
+        TAG_TRANSITION
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
+        {
+            let transition =
+                Transition::parse(tag, interner).with_context(|| ParserError::Tag(tag_name))?;
+            transition.push(stack)?;
+        }
+        // we `rev()` the iterator only because we expect the relevant tag to be towards the end of the stack
+        TAG_RAISE if stack.last().is_some_and(|tag| tag.is_executable()) => {
+            let raise = Executable::parse_raise(tag).with_context(|| ParserError::Tag(tag_name))?;
+            raise.push(stack)?;
+        }
+        TAG_SEND if stack.last().is_some_and(|tag| tag.is_executable()) => {
+            let send = Send::parse(tag, interner).with_context(|| ParserError::Tag(tag_name))?;
+            Executable::Send(send).push(stack)?;
+        }
+        TAG_ASSIGN if stack.last().is_some_and(|tag| tag.is_executable()) => {
+            let assign = Executable::parse_assign(tag, interner)
+                .with_context(|| ParserError::Tag(tag_name))?;
+            assign.push(stack)?;
+        }
+        TAG_PARAM
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(*tag, ScxmlTag::Send(_))) =>
+        {
+            // let (ident, omg_type) = type_annotation
+            //     .take()
+            //     .ok_or(anyhow::Error::from(ParserError::NoTypeAnnotation))
+            //     .with_context(|| reader.buffer_position())?;
+            let param = Param::parse(tag, type_annotation.take(), interner)
+                .with_context(|| ParserError::Tag(tag_name))?;
+            if let ScxmlTag::Send(send) = stack.last_mut().expect("param must be inside other tag")
+            {
+                send.params.push(param);
+            } else {
+                unreachable!("param must be inside a send tag");
+            }
+        }
+        TAG_ELSE
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(tag, ScxmlTag::If(_))) =>
+        {
+            if let Some(ScxmlTag::If(r#if)) = stack.last_mut() {
+                if r#if.else_flag {
+                    bail!("multiple `else` inside `if` tag");
+                } else {
+                    r#if.else_flag = true;
+                }
+            } else {
+                unreachable!()
+            }
+        }
+        TAG_ELIF
+            if stack
+                .last()
+                .is_some_and(|tag| matches!(tag, ScxmlTag::If(_))) =>
+        {
+            if let Some(ScxmlTag::If(r#if)) = stack.last_mut() {
+                let cond = If::parse(tag, interner).with_context(|| ParserError::Tag(tag_name))?;
+                r#if.elif.push((cond, Vec::new()));
+            } else {
+                unreachable!()
+            }
+        }
+        _ => {
+            error!(target: "parser", "unknown or unexpected empty tag '{tag_name}'");
+            bail!(ParserError::UnexpectedTag(tag_name.to_string()));
+        }
+    };
+    Ok(())
 }
 
 fn parse_start_tag(
@@ -633,7 +638,7 @@ fn parse_start_tag(
             Ok(ScxmlTag::OnExit(Vec::new()))
         }
         _ => {
-            error!(target: "parsing", "unknown or unexpected start tag '{tag_name}'");
+            error!(target: "parser", "unknown or unexpected start tag '{tag_name}'");
             bail!(ParserError::UnexpectedStartTag(tag_name.to_string()));
         }
     }
@@ -644,12 +649,12 @@ fn parse_comment(comment: String) -> anyhow::Result<Option<String>> {
     let mut iter = comment.split_whitespace();
     let keyword = iter.next().ok_or(anyhow!("no keyword"))?;
     if keyword == "TYPE" {
-        trace!("parsing TYPE magic comment");
+        trace!(target: "parser", "parsing TYPE magic comment");
         let body = iter.next().ok_or(anyhow!("no body"))?;
         let (ident, omg_type) = body
             .split_once(':')
             .ok_or(anyhow!("badly formatted type declaration"))?;
-        trace!("found ident: {ident}, type: {omg_type}");
+        trace!(target: "parser", "found ident: {ident}, type: {omg_type}");
         // Ok(Some((ident.to_string(), omg_type.to_string())))
         Ok(Some(omg_type.to_string()))
     } else {

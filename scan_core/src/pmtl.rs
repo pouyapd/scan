@@ -296,7 +296,7 @@ impl PmtlOracle {
                 subformulae
                     .iter()
                     .position(|f| g.is_same(f))
-                    .expect("find assume")
+                    .expect("find guarantee")
             })
             .collect();
 
@@ -316,11 +316,20 @@ impl PmtlOracle {
         self.outputs[formula].contains(self.time)
     }
 
-    pub(crate) fn output(&self) -> Option<bool> {
+    pub(crate) fn output_assumes(&self) -> Option<usize> {
         self.assumes
             .iter()
-            .all(|a| self.formula_output(*a))
-            .then_some(self.guarantees.iter().all(|g| self.formula_output(*g)))
+            .enumerate()
+            .find(|(_, f)| !self.formula_output(**f))
+            .map(|(i, _)| i)
+    }
+
+    pub(crate) fn output_guarantees(&self) -> Option<usize> {
+        self.guarantees
+            .iter()
+            .enumerate()
+            .find(|(_, f)| !self.formula_output(**f))
+            .map(|(i, _)| i)
     }
 
     pub(crate) fn update(self, state: &[bool], time: Time) -> Self {
@@ -601,17 +610,17 @@ mod tests {
         let formula = Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(1))), 0, Time::MAX);
         let mut state = PmtlOracle::new(&[], &[formula]);
         state = state.update(&[false, true], 0);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[false, true], 1);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[true, true], 2);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, true], 3);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 4);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[false, false], 5);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
     }
 
     #[test]
@@ -619,17 +628,17 @@ mod tests {
         let formula = Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(1))), 0, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
         state = state.update(&[false, true], 0);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[false, true], 1);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[true, true], 2);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 3);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 4);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 5);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
     }
 
     #[test]
@@ -637,17 +646,17 @@ mod tests {
         let formula = Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(1))), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
         state = state.update(&[false, true], 0);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[false, true], 1);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[true, true], 2);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 3);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 4);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 5);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
     }
 
     #[test]
@@ -655,19 +664,19 @@ mod tests {
         let formula = Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(1))), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
         state = state.update(&[false, true], 0);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[false, true], 1);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[false, true], 2);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[true, true], 2);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[true, false], 3);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 4);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true, false], 5);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
     }
 
     #[test]
@@ -675,19 +684,19 @@ mod tests {
         let formula = Pmtl::Historically(Box::new(Pmtl::Atom(0)), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
         state = state.update(&[false], 0);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[false], 0);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true], 1);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[true], 2);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[true], 3);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[false], 3);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true], 4);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
     }
 
     #[test]
@@ -695,18 +704,18 @@ mod tests {
         let formula = Pmtl::Once(Box::new(Pmtl::Atom(0)), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
         state = state.update(&[false], 0);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[false], 0);
-        assert!(!state.output().unwrap());
+        assert!(state.output_guarantees().is_some());
         state = state.update(&[true], 1);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[false], 2);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[false], 3);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[false], 3);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
         state = state.update(&[true], 4);
-        assert!(state.output().unwrap());
+        assert!(state.output_guarantees().is_none());
     }
 }

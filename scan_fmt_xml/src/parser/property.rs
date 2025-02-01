@@ -53,8 +53,8 @@ impl From<&PropertyTag> for &'static str {
 pub struct Properties {
     pub(crate) ports: HashMap<String, ParserPort>,
     pub(crate) predicates: Vec<boa_ast::Expression>,
-    pub(crate) guarantees: HashMap<String, Pmtl<usize>>,
-    pub(crate) assumes: HashMap<String, Pmtl<usize>>,
+    pub(crate) guarantees: Vec<(String, Pmtl<usize>)>,
+    pub(crate) assumes: Vec<(String, Pmtl<usize>)>,
 }
 
 impl Properties {
@@ -62,8 +62,8 @@ impl Properties {
         Properties {
             ports: HashMap::new(),
             predicates: Vec::new(),
-            guarantees: HashMap::new(),
-            assumes: HashMap::new(),
+            guarantees: Vec::new(),
+            assumes: Vec::new(),
         }
     }
 
@@ -125,7 +125,7 @@ impl Properties {
                             stack.push(PropertyTag::Assumes);
                         }
                         _ => {
-                            error!(target: "parsing", "unknown or unexpected start tag '{tag_name}'");
+                            error!(target: "parser", "unknown or unexpected start tag '{tag_name}'");
                             bail!(ParserError::UnexpectedStartTag(tag_name.to_string()));
                         }
                     }
@@ -133,9 +133,9 @@ impl Properties {
                 Event::End(tag) => {
                     let tag_name = &*reader.decoder().decode(tag.name().into_inner())?;
                     if stack.pop().is_some_and(|state| Into::<&str>::into(&state) == tag_name) {
-                        trace!(target: "parsing", "end tag '{}'", tag_name);
+                        trace!(target: "parser", "end tag '{}'", tag_name);
                     } else {
-                        error!(target: "parsing", "unknown or unexpected end tag '{tag_name}'");
+                        error!(target: "parser", "unknown or unexpected end tag '{tag_name}'");
                         bail!(ParserError::UnexpectedEndTag(tag_name.to_string()));
                     }
                 }
@@ -224,22 +224,17 @@ impl Properties {
                             let property =
                                 parse_predicates(formula, &mut self.predicates, interner)
                                     .context("failed to parse predicates in Rye expression")?;
+                            if self.assumes.iter().any(|(i, _)| i == &id) || self.guarantees.iter().any(|(i, _)| i == &id) {
+                                bail!("property defined multiple times");
+                            }
                             match stack.last() {
-                                Some(PropertyTag::Guarantees) => {
-                                    if self.assumes.contains_key(&id) || self.guarantees.insert(id, property).is_some() {
-                                        bail!("property defined multiple times");
-                                    }
-                                }
-                                Some(PropertyTag::Assumes) => {
-                                    if self.guarantees.contains_key(&id) || self.assumes.insert(id, property).is_some() {
-                                        bail!("property defined multiple times");
-                                    }
-                                }
+                                Some(PropertyTag::Guarantees) => self.guarantees.push((id, property)),
+                                Some(PropertyTag::Assumes) => self.assumes.push((id, property)),
                                 _ => bail!("'{TAG_PROPERTY}' tag found outside '{TAG_GUARANTEES}' or '{TAG_ASSUMES}'"),
                             }
                         }
                         _ => {
-                            error!(target: "parsing", "unknown or unexpected empty tag '{tag_name}'");
+                            error!(target: "parser", "unknown or unexpected empty tag '{tag_name}'");
                             bail!(ParserError::UnexpectedTag(tag_name.to_string()));
                         }
                     }
@@ -251,25 +246,25 @@ impl Properties {
                 Event::Text(t) => {
                     let text = &*reader.decoder().decode(t.as_ref())?;
                     if !text.trim().is_empty() {
-                        error!(target: "parsing", "text content not supported");
+                        error!(target: "parser", "text content not supported");
                         bail!("text content not supported");
                     }
                 }
                 Event::CData(_) => {
-                    error!(target: "parsing", "CData not supported");
+                    error!(target: "parser", "CData not supported");
                     bail!("CData not supported");
                 }
                 Event::PI(_) => {
-                    error!(target: "parsing", "Processing Instructions not supported");
+                    error!(target: "parser", "Processing Instructions not supported");
                     bail!("Processing Instructions not supported");
                 }
                 Event::DocType(_) => {
-                    error!(target: "parsing", "DocType not supported");
+                    error!(target: "parser", "DocType not supported");
                     bail!("DocType not supported");
                 }
                 // exits the loop when reaching end of file
                 Event::Eof => {
-                    info!(target: "parsing", "parsing completed");
+                    info!(target: "parser", "parsing completed");
                     break;
                 }
             }
