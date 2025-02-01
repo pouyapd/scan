@@ -65,7 +65,7 @@ impl CsModelBuilder {
         self.assumes.push(assume);
     }
 
-    /// Adds an guarantee [`Pmtl`] formula to the [`CsModelBuilder`].
+    /// Adds a guarantee [`Pmtl`] formula to the [`CsModelBuilder`].
     pub fn add_guarantee(&mut self, name: String, guarantee: Pmtl<usize>) {
         self.guarantees.push((name, guarantee));
     }
