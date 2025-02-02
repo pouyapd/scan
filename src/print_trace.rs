@@ -9,7 +9,7 @@ use std::{
 use scan_fmt_xml::{
     scan_core::{
         channel_system::{self, Channel, Event, PgId},
-        Time, Tracer, Val,
+        Time, Tracer, Type, Val,
     },
     ScxmlModel,
 };
@@ -19,13 +19,13 @@ pub struct PrintTrace {
     index: Arc<AtomicU32>,
     path: PathBuf,
     writer: Option<csv::Writer<flate2::write::GzEncoder<File>>>,
-    // predicates: Arc<Vec<String>>,
     fsm_names: Arc<HashMap<PgId, String>>,
     fsm_indexes: Arc<HashMap<usize, String>>,
     parameters: Arc<HashMap<Channel, (PgId, PgId, usize, String)>>,
     int_queues: Arc<HashSet<Channel>>,
     ext_queues: Arc<HashMap<Channel, PgId>>,
     events: Arc<HashMap<usize, String>>,
+    ports: Arc<Vec<(String, Type)>>,
 }
 
 impl PrintTrace {
@@ -44,13 +44,13 @@ impl PrintTrace {
             index: Arc::new(AtomicU32::new(0)),
             path: PathBuf::new(),
             writer: None,
-            // predicates: Arc::new(model.predicates.to_owned()),
-            fsm_names: Arc::new(model.fsm_names.to_owned()),
-            fsm_indexes: Arc::new(model.fsm_indexes.to_owned()),
-            parameters: Arc::new(model.parameters.to_owned()),
-            int_queues: Arc::new(model.int_queues.to_owned()),
-            ext_queues: Arc::new(model.ext_queues.to_owned()),
-            events: Arc::new(model.events.to_owned()),
+            fsm_names: Arc::new(model.fsm_names.clone()),
+            fsm_indexes: Arc::new(model.fsm_indexes.clone()),
+            parameters: Arc::new(model.parameters.clone()),
+            int_queues: Arc::new(model.int_queues.clone()),
+            ext_queues: Arc::new(model.ext_queues.clone()),
+            events: Arc::new(model.events.clone()),
+            ports: Arc::new(model.ports.clone()),
         }
     }
 }
@@ -61,13 +61,13 @@ impl Clone for PrintTrace {
             index: self.index.clone(),
             path: PathBuf::new(),
             writer: None,
-            // predicates: self.predicates.clone(),
             fsm_names: self.fsm_names.clone(),
             fsm_indexes: self.fsm_indexes.clone(),
             parameters: self.parameters.clone(),
             int_queues: self.int_queues.clone(),
             ext_queues: self.ext_queues.clone(),
             events: self.events.clone(),
+            ports: self.ports.clone(),
         }
     }
 }
@@ -77,8 +77,8 @@ impl Tracer<Event> for PrintTrace {
         let idx = self
             .index
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.path =
-            PathBuf::from_str(format!("traces/.temp/{idx:04}.csv.gz").as_str()).expect("file path");
+        self.path = PathBuf::from_str(format!("./traces/.temp/{idx:04}.csv.gz").as_str())
+            .expect("file path");
         let file = File::create_new(&self.path).expect("create file");
         let enc = flate2::GzBuilder::new()
             .filename(format!("{idx:04}.csv"))
@@ -86,14 +86,16 @@ impl Tracer<Event> for PrintTrace {
         let mut writer = csv::WriterBuilder::new().from_writer(enc);
         writer
             .write_record(
-                Self::HEADER,
-                // .chain(self.predicates.iter().map(String::as_str)),
+                Self::HEADER
+                    .into_iter()
+                    .map(String::from)
+                    .chain(self.ports.iter().map(|(name, t)| format!("{name}: {t:?}"))),
             )
             .expect("write header");
         self.writer = Some(writer);
     }
 
-    fn trace(&mut self, event: &Event, time: Time, state: &[bool]) {
+    fn trace<I: IntoIterator<Item = Val>>(&mut self, event: &Event, time: Time, ports: I) {
         let mut fields = Vec::new();
         let time = time.to_string();
         let mut action = String::new();
@@ -218,11 +220,7 @@ impl Tracer<Event> for PrintTrace {
                         param_value,
                     ]
                     .into_iter()
-                    .chain(
-                        state
-                            .iter()
-                            .map(|b| String::from(if *b { "T" } else { "F" })),
-                    ),
+                    .chain(ports.into_iter().map(|v| format_val(&v))),
                 )
                 .expect("write record");
         } else {
@@ -230,7 +228,7 @@ impl Tracer<Event> for PrintTrace {
         }
     }
 
-    fn finalize(self, success: Option<bool>) {
+    fn finalize(self, success: Option<bool>, violation: Option<String>) {
         if let Some(mut writer) = self.writer {
             writer.flush().expect("flush csv content");
             writer
@@ -242,12 +240,36 @@ impl Tracer<Event> for PrintTrace {
 
         let folder = match success {
             Some(true) => "./traces/success/",
-            Some(false) => "./traces/failure/",
+            Some(false) => {
+                &("./traces/failure/".to_owned() + violation.unwrap_or_default().as_str())
+            }
             None => "./traces/undetermined/",
         };
 
         let mut new_path = PathBuf::from_str(folder).expect("create folder");
+        if !std::fs::exists(new_path.clone()).expect("check folder") {
+            std::fs::create_dir_all(new_path.clone()).expect("create missing folder");
+        }
         new_path.push(self.path.file_name().expect("file name"));
         std::fs::rename(&self.path, new_path).expect("renaming");
+    }
+}
+
+fn format_val(val: &Val) -> String {
+    match val {
+        Val::Boolean(true) => "true".to_string(),
+        Val::Boolean(false) => "false".to_string(),
+        Val::Integer(i) => i.to_string(),
+        Val::Float(ordered_float) => ordered_float.to_string(),
+        Val::Tuple(vec) => {
+            vec.iter()
+                .fold("(".to_string(), |acc, v| acc + format_val(v).as_str())
+                + ")"
+        }
+        Val::List(_, vec) => {
+            vec.iter()
+                .fold("[".to_string(), |acc, v| acc + format_val(v).as_str())
+                + "]"
+        }
     }
 }

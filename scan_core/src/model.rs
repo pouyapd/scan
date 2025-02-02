@@ -2,7 +2,7 @@ use crate::channel_system::{Channel, ChannelSystem, Event, EventType};
 use crate::{Expression, FnExpression, Pmtl, PmtlOracle, Time, Tracer, Val};
 use log::{info, trace};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{btree_map, BTreeMap};
 use std::sync::{Arc, Mutex};
 
 /// An atomic variable for [`Pmtl`] formulae.
@@ -18,7 +18,7 @@ pub enum Atom {
 #[derive(Debug)]
 pub struct CsModelBuilder {
     cs: ChannelSystem,
-    ports: HashMap<Channel, Val>,
+    ports: BTreeMap<Channel, Val>,
     predicates: Vec<FnExpression<Atom>>,
     assumes: Vec<Pmtl<usize>>,
     guarantees: Vec<(String, Pmtl<usize>)>,
@@ -30,7 +30,7 @@ impl CsModelBuilder {
         // TODO: Check predicates are Boolean expressions and that conversion does not fail
         Self {
             cs: initial_state,
-            ports: HashMap::new(),
+            ports: BTreeMap::new(),
             predicates: Vec::new(),
             assumes: Vec::new(),
             guarantees: Vec::new(),
@@ -41,7 +41,7 @@ impl CsModelBuilder {
     /// which is given by an [`Channel`] and a default [`Val`] value.
     pub fn add_port(&mut self, channel: Channel, default: Val) {
         // TODO FIXME: error handling and type checking.
-        if let std::collections::hash_map::Entry::Vacant(e) = self.ports.entry(channel) {
+        if let btree_map::Entry::Vacant(e) = self.ports.entry(channel) {
             e.insert(default);
         } else {
             panic!("entry is already taken");
@@ -110,7 +110,7 @@ pub struct RunStatus {
 #[derive(Debug, Clone)]
 pub struct CsModel {
     cs: ChannelSystem,
-    ports: HashMap<Channel, Val>,
+    ports: BTreeMap<Channel, Val>,
     predicates: Arc<Vec<FnExpression<Atom>>>,
     oracle: PmtlOracle,
     run_status: Arc<Mutex<RunStatus>>,
@@ -231,45 +231,49 @@ impl CsModel {
         }
         trace!("new run starting");
         while let Some(event) = self.cs.montecarlo_execution(rng, duration) {
-            if let EventType::Send(ref val) = event.event_type {
-                self.ports.insert(event.channel, val.clone());
+            // We only need to keep track of events that are associated to the ports
+            if let btree_map::Entry::Occupied(mut e) = self.ports.entry(event.channel) {
+                if let EventType::Send(ref val) = event.event_type {
+                    e.insert(val.clone());
+                }
             }
             current_len += 1;
             let state = self.labels(&event);
             let time = self.time();
             if let Some(tracer) = tracer.as_mut() {
-                tracer.trace(&event, time, &state);
+                tracer.trace(&event, time, self.ports.values().cloned());
             }
             self.oracle = self.oracle.update(&state, time);
             if let Some(i) = self.oracle.output_assumes() {
                 trace!("run undetermined");
                 if let Some(publisher) = tracer {
-                    publisher.finalize(None);
+                    publisher.finalize(None, None);
                 }
                 return (None, Some(i));
             } else if let Some(i) = self.oracle.output_guarantees() {
                 trace!("run fails");
                 if let Some(tracer) = tracer {
-                    tracer.finalize(Some(false));
+                    let violation = self.run_status.lock().unwrap().guarantees[i].0.clone();
+                    tracer.finalize(Some(false), Some(violation));
                 }
                 return (Some(false), Some(i));
             } else if current_len >= max_length {
                 trace!("run exceeds maximum lenght");
                 if let Some(tracer) = tracer {
-                    tracer.finalize(None);
+                    tracer.finalize(None, None);
                 }
                 return (None, None);
             } else if !self.run_status.lock().expect("lock state").running {
                 trace!("run stopped");
                 if let Some(tracer) = tracer {
-                    tracer.finalize(None);
+                    tracer.finalize(None, None);
                 }
                 return (None, None);
             }
         }
         trace!("run succeeds");
         if let Some(tracer) = tracer {
-            tracer.finalize(Some(true));
+            tracer.finalize(Some(true), None);
         }
         (Some(true), None)
     }

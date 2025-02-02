@@ -23,6 +23,7 @@ pub struct ScxmlModel {
     pub int_queues: HashSet<Channel>,
     pub ext_queues: HashMap<Channel, PgId>,
     pub events: HashMap<usize, String>,
+    pub ports: Vec<(String, Type)>,
     // TODO: ...other stuff needed to backtrack scxml's ids
 }
 
@@ -1528,10 +1529,12 @@ impl ModelBuilder {
 
     fn build_model(self) -> ScxmlModel {
         let mut model = CsModelBuilder::new(self.cs.build());
-        for (_port_name, (atom, init)) in self.ports {
+        let mut ports = Vec::new();
+        for (port_name, (atom, init)) in self.ports {
             // TODO FIXME handle error.
             if let Atom::State(channel) = atom {
-                model.add_port(channel, init);
+                model.add_port(channel, init.clone());
+                ports.push((port_name, init.r#type()));
             }
         }
         for pred_expr in self.predicates {
@@ -1569,6 +1572,7 @@ impl ModelBuilder {
                 .into_iter()
                 .map(|(name, b)| (u16::from(b.pg_id) as usize, name))
                 .collect(),
+            ports,
         }
     }
 }

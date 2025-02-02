@@ -42,20 +42,16 @@ impl Cli {
             .map_or("model".to_string(), |s| format!("'{s}'"));
         let confidence = self.confidence;
         let precision = self.precision;
-        let run_status = scxml_model.model.run_status();
-        let bar_state = run_status.clone();
-        let bar_model_name = model_name.clone();
-        let bar = std::thread::spawn(move || {
-            print_progress_bar(bar_model_name, confidence, precision, bar_state)
-        });
         if self.trace {
             std::fs::remove_dir_all("./traces").ok();
             std::fs::create_dir("./traces").expect("create traces dir");
             std::fs::create_dir("./traces/.temp").expect("create traces dir");
-            std::fs::create_dir("./traces/success").expect("create success dir");
-            std::fs::create_dir("./traces/failure").expect("create failure dir");
-            std::fs::create_dir("./traces/undetermined").expect("create undetermined dir");
         }
+        let bar_state = scxml_model.model.run_status().clone();
+        let bar_model_name = model_name.clone();
+        let bar = std::thread::spawn(move || {
+            print_progress_bar(bar_model_name, confidence, precision, bar_state)
+        });
         scxml_model.model.par_adaptive(
             confidence,
             precision,
@@ -199,7 +195,7 @@ fn print_progress_bar(
             println!("Completed {runs} runs with {successes} successes, {failures} failures)",);
             for (name, f) in guarantees.iter() {
                 println!(
-                    "{name:>0$} success rate: {2:.1$}",
+                    "{name:>0$} success rate: {2:.1$} ({f} fails)",
                     name_len,
                     mag,
                     ((runs - *f as u64) as f64) / (runs as f64)
