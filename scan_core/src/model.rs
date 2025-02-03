@@ -162,7 +162,7 @@ impl CsModel {
         duration: Time,
         tracer: Option<P>,
     ) where
-        P: Tracer<Event> + Clone + Send + Sync,
+        P: Tracer<Event>,
     {
         info!("verification starting");
         {

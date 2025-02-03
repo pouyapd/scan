@@ -4,10 +4,18 @@ use std::{
 };
 
 use crate::PrintTrace;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use scan_fmt_xml::scan_core::*;
+use scan_fmt_xml::scan_core::{adaptive_bound, okamoto_bound, CsModelBuilder, RunStatus};
 
+/// Supported model specification formats
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum Format {
+    /// SCXML format
+    Scxml,
+    /// Jani format
+    Jani,
+}
 /// A statistical model checker for large concurrent systems
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -15,6 +23,9 @@ pub struct Cli {
     /// Path of model's main XML file
     #[arg(value_hint = clap::ValueHint::DirPath, default_value = ".")]
     model: PathBuf,
+    /// Model specification format to use
+    #[arg(value_enum, short, long, default_value = "scxml")]
+    format: Format,
     /// Confidence
     #[arg(short, long, default_value = "0.95")]
     confidence: f64,
@@ -26,7 +37,7 @@ pub struct Cli {
     length: usize,
     /// Max duration of execution (in model-time)
     #[arg(short, long, default_value = "10000")]
-    duration: Time,
+    duration: u32,
     /// Saves execution traces in gz-compressed csv format
     #[arg(long = "save-traces", default_value = "false")]
     trace: bool,
@@ -37,6 +48,13 @@ pub struct Cli {
 
 impl Cli {
     pub fn run(&self) -> anyhow::Result<()> {
+        match self.format {
+            Format::Scxml => self.run_scxml(),
+            Format::Jani => self.run_jani(),
+        }
+    }
+
+    pub fn run_scxml(&self) -> anyhow::Result<()> {
         let scxml_model = scan_fmt_xml::load(&self.model)?;
         let model_name = self
             .model
@@ -64,6 +82,31 @@ impl Cli {
             self.duration,
             self.trace.then_some(PrintTrace::new(&scxml_model)),
         );
+        bar.join().expect("terminate bar process");
+
+        Ok(())
+    }
+
+    pub fn run_jani(&self) -> anyhow::Result<()> {
+        use scan_fmt_jani::*;
+
+        let jani_model = Parser::parse(self.model.as_path())?;
+        let model = ModelBuilder::build(jani_model)?;
+        let model = CsModelBuilder::new(model).build();
+        let model_name = self
+            .model
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map_or("model".to_string(), |s| format!("'{s}'"));
+        let confidence = self.confidence;
+        let precision = self.precision;
+        let bar_state = Arc::clone(&model.run_status());
+        let bar_model_name = model_name.clone();
+        let ascii = self.ascii;
+        let bar = std::thread::spawn(move || {
+            print_progress_bar(bar_model_name, confidence, precision, bar_state, ascii)
+        });
+        model.par_adaptive::<PrintTrace>(confidence, precision, self.length, self.duration, None);
         bar.join().expect("terminate bar process");
 
         Ok(())

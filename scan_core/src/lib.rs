@@ -23,7 +23,7 @@ pub type Time = u32;
 
 /// Trait that handles streaming of traces,
 /// e.g., to print them to file.
-pub trait Tracer<A> {
+pub trait Tracer<A>: Clone + Send + Sync {
     /// Initialize new streaming.
     ///
     /// This method needs to be called once, before calls to [`Self::trace`].
