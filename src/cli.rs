@@ -13,17 +13,18 @@ use scan_fmt_xml::scan_core::{adaptive_bound, okamoto_bound, CsModelBuilder, Run
 enum Format {
     /// SCXML format
     Scxml,
-    /// Jani format
+    /// JANI format
     Jani,
 }
+
 /// A statistical model checker for large concurrent systems
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(version, about, long_about = None)]
 pub struct Cli {
     /// Path of model's main XML file
     #[arg(value_hint = clap::ValueHint::DirPath, default_value = ".")]
     model: PathBuf,
-    /// Model specification format to use
+    /// Format used to specify the model
     #[arg(value_enum, short, long, default_value = "scxml")]
     format: Format,
     /// Confidence
@@ -42,7 +43,7 @@ pub struct Cli {
     #[arg(long = "save-traces", default_value = "false")]
     trace: bool,
     /// ASCII compatible output
-    #[arg(long = "ascii", default_value = "false")]
+    #[arg(long, default_value = "false")]
     ascii: bool,
 }
 
@@ -121,9 +122,9 @@ fn print_progress_bar(
     ascii: bool,
 ) {
     const ARROW: &str = "⎯→ ";
-    const ASCII_ARROW: &str = "=> ";
+    const ASCII_ARROW: &str = "-> ";
     const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
-    const ASCII_BAR: &str = "#= ";
+    const ASCII_BAR: &str = "#  ";
     const ASCII_SPINNER: &str = "|/-\\";
     let run_status = bar_state.lock().expect("lock state").clone();
 
