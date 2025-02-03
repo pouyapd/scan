@@ -30,10 +30,10 @@ pub trait Tracer<A> {
     fn init(&mut self);
 
     /// Stream a new state of the trace.
-    fn trace(&mut self, action: &A, time: Time, state: &[bool]);
+    fn trace<I: IntoIterator<Item = Val>>(&mut self, action: &A, time: Time, ports: I);
 
     /// Finalize and close streaming.
     ///
     /// This method needs to be called at the end of the execution.
-    fn finalize(self, success: Option<bool>);
+    fn finalize(self, success: Option<bool>, violation: Option<String>);
 }

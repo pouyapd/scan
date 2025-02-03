@@ -1,11 +1,9 @@
 use clap::Parser;
+use env_logger::Env;
 use scan::Cli;
 
-fn main() {
-    env_logger::init();
+fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_env(Env::default().default_filter_or("off")).init();
     let cli = Cli::parse();
-    let result = cli.run();
-    if let Err(err) = result {
-        println!("ERROR: {err}");
-    }
+    cli.run()
 }

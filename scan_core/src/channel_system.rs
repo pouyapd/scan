@@ -122,7 +122,7 @@ impl From<PgId> for u16 {
 ///
 /// These cannot be directly created or manipulated,
 /// but have to be generated and/or provided by a [`ChannelSystemBuilder`] or [`ChannelSystem`].
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Channel(u16);
 
 /// An indexing object for locations in a CS.
