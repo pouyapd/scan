@@ -13,7 +13,6 @@ log = { workspace = true }
 rand = { version = "0.8.*", features = ["small_rng"] }
 rayon = "1.10.0"
 ordered-float = "4.2.2"
-hashbrown = "0.15.0"
 smallvec = "1.13.2"
 
 [dev-dependencies]
