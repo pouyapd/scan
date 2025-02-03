@@ -15,6 +15,6 @@ boa_interner = "0.20.0"
 boa_parser = "0.20.0"
 log = { workspace = true }
 quick-xml = "0.37.2"
-thiserror = "2.0.11"
+thiserror = { workspace = true }
 logos = "0.15.0"
 chumsky = "0.9.3"

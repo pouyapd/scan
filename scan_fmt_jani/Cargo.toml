@@ -13,6 +13,6 @@ cfgrammar = "0.13"
 lrlex = "0.13"
 lrpar = "0.13"
 scan_core = { path="../scan_core" }
-rand = "0.8"
-thiserror = "1.0.56"
-ordered-float = "4.2.2"
+rand = { workspace = true }
+thiserror = { workspace = true }
+ordered-float = { workspace = true }

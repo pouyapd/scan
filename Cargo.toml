@@ -15,6 +15,9 @@ members = ["scan_core", "scan_fmt_xml", "scan_fmt_jani"]
 [workspace.dependencies]
 anyhow = "1.0.95"
 log = "0.4.25"
+ordered-float = "4.6.0"
+rand = { version = "0.9.0", features = ["small_rng"] }
+thiserror = "2.0.11"
 
 [dependencies]
 anyhow = { workspace = true }

@@ -10,9 +10,9 @@ crate-type = ["lib"]   # The crate types to generate.
 [dependencies]
 thiserror = "2.0.11"
 log = { workspace = true }
-rand = { version = "0.9.*", features = ["small_rng"] }
+rand = { workspace = true }
 rayon = "1.10.0"
-ordered-float = "4.6.0"
+ordered-float = { workspace = true }
 smallvec = "1.13.2"
 
 [dev-dependencies]
