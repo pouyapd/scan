@@ -69,7 +69,7 @@ fn elif() -> anyhow::Result<()> {
 }
 
 fn test(path: &Path) -> anyhow::Result<()> {
-    let mut model = scan_fmt_xml::load(path)?.model.channel_system().to_owned();
+    let mut model = scan_fmt_xml::load(path)?.0.channel_system().to_owned();
     let mut steps = 0;
     assert!(model.possible_transitions().count() > 0);
     while let Some((pg_id, act, loc)) = model

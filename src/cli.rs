@@ -1,12 +1,11 @@
+use clap::{Parser, ValueEnum};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use scan_fmt_xml::scan_core::{adaptive_bound, okamoto_bound, CsModelBuilder, RunStatus};
+use scan_fmt_xml::TracePrinter;
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-
-use crate::PrintTrace;
-use clap::{Parser, ValueEnum};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use scan_fmt_xml::scan_core::{adaptive_bound, okamoto_bound, CsModelBuilder, RunStatus};
 
 /// Supported model specification formats
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -23,7 +22,7 @@ enum Format {
 pub struct Cli {
     /// Path of model's main XML file
     #[arg(value_hint = clap::ValueHint::DirPath, default_value = ".")]
-    model: PathBuf,
+    path: PathBuf,
     /// Format used to specify the model
     #[arg(value_enum, short, long, default_value = "scxml")]
     format: Format,
@@ -40,8 +39,8 @@ pub struct Cli {
     #[arg(short, long, default_value = "10000")]
     duration: u32,
     /// Saves execution traces in gz-compressed csv format
-    #[arg(long = "save-traces", default_value = "false")]
-    trace: bool,
+    #[arg(long = "traces", default_value = "false")]
+    traces: bool,
     /// ASCII compatible output
     #[arg(long, default_value = "false")]
     ascii: bool,
@@ -56,32 +55,27 @@ impl Cli {
     }
 
     pub fn run_scxml(&self) -> anyhow::Result<()> {
-        let scxml_model = scan_fmt_xml::load(&self.model)?;
+        let (cs_model, scxml_model) = scan_fmt_xml::load(&self.path)?;
+        let scxml_model = Arc::new(scxml_model);
         let model_name = self
-            .model
+            .path
             .file_stem()
             .and_then(|s| s.to_str())
             .map_or("model".to_string(), |s| format!("'{s}'"));
         let confidence = self.confidence;
         let precision = self.precision;
-        // TODO: move this in Trace logic
-        if self.trace {
-            std::fs::remove_dir_all("./traces").ok();
-            std::fs::create_dir("./traces").expect("create traces dir");
-            std::fs::create_dir("./traces/.temp").expect("create traces dir");
-        }
-        let bar_state = Arc::clone(&scxml_model.model.run_status());
+        let bar_state = Arc::clone(&cs_model.run_status());
         let bar_model_name = model_name.clone();
         let ascii = self.ascii;
         let bar = std::thread::spawn(move || {
             print_progress_bar(bar_model_name, confidence, precision, bar_state, ascii)
         });
-        scxml_model.model.par_adaptive(
+        cs_model.par_adaptive(
             confidence,
             precision,
             self.length,
             self.duration,
-            self.trace.then_some(PrintTrace::new(&scxml_model)),
+            self.traces.then_some(TracePrinter::new(scxml_model)),
         );
         bar.join().expect("terminate bar process");
 
@@ -91,11 +85,11 @@ impl Cli {
     pub fn run_jani(&self) -> anyhow::Result<()> {
         use scan_fmt_jani::*;
 
-        let jani_model = Parser::parse(self.model.as_path())?;
+        let jani_model = Parser::parse(self.path.as_path())?;
         let model = ModelBuilder::build(jani_model)?;
         let model = CsModelBuilder::new(model).build();
         let model_name = self
-            .model
+            .path
             .file_stem()
             .and_then(|s| s.to_str())
             .map_or("model".to_string(), |s| format!("'{s}'"));
@@ -107,7 +101,7 @@ impl Cli {
         let bar = std::thread::spawn(move || {
             print_progress_bar(bar_model_name, confidence, precision, bar_state, ascii)
         });
-        model.par_adaptive::<PrintTrace>(confidence, precision, self.length, self.duration, None);
+        model.par_adaptive::<TracePrinter>(confidence, precision, self.length, self.duration, None);
         bar.join().expect("terminate bar process");
 
         Ok(())
@@ -121,10 +115,10 @@ fn print_progress_bar(
     bar_state: Arc<Mutex<RunStatus>>,
     ascii: bool,
 ) {
-    const ARROW: &str = "⎯→ ";
-    const ASCII_ARROW: &str = "-> ";
+    const ARROW: &str = "█🭬 ";
+    const ASCII_ARROW: &str = "=>-";
     const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
-    const ASCII_BAR: &str = "#  ";
+    const ASCII_BAR: &str = "#--";
     const ASCII_SPINNER: &str = "|/-\\";
     let run_status = bar_state.lock().expect("lock state").clone();
 
@@ -221,6 +215,7 @@ fn print_progress_bar(
                     if *guarantee > 0 {
                         bar.set_message(format!("({guarantee} failed)"));
                     }
+                    bar.tick();
                 }
 
                 // Overall property bar
@@ -231,6 +226,7 @@ fn print_progress_bar(
                 if overall > 0 {
                     overall_bar.set_message(format!("({overall} failed)"));
                 }
+                overall_bar.tick();
             }
         } else {
             bars.set_move_cursor(false);

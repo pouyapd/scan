@@ -21,6 +21,13 @@ pub use smc::*;
 /// The type that represents time.
 pub type Time = u32;
 
+#[derive(Debug, Clone, Copy)]
+pub enum RunOutcome {
+    Incomplete,
+    Success,
+    Fail(usize),
+}
+
 /// Trait that handles streaming of traces,
 /// e.g., to print them to file.
 pub trait Tracer<A>: Clone + Send + Sync {
@@ -35,5 +42,5 @@ pub trait Tracer<A>: Clone + Send + Sync {
     /// Finalize and close streaming.
     ///
     /// This method needs to be called at the end of the execution.
-    fn finalize(self, success: Option<bool>, violation: Option<String>);
+    fn finalize(self, outcome: RunOutcome);
 }

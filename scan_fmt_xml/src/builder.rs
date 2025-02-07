@@ -16,14 +16,15 @@ use std::{
 
 #[derive(Debug, Clone)]
 pub struct ScxmlModel {
-    pub model: CsModel,
     pub fsm_names: HashMap<PgId, String>,
     pub fsm_indexes: HashMap<usize, String>,
     pub parameters: HashMap<Channel, (PgId, PgId, usize, String)>,
     pub int_queues: HashSet<Channel>,
     pub ext_queues: HashMap<Channel, PgId>,
-    pub events: HashMap<usize, String>,
+    pub events: Vec<String>,
     pub ports: Vec<(String, Type)>,
+    pub assumes: Vec<String>,
+    pub guarantees: Vec<String>,
     // TODO: ...other stuff needed to backtrack scxml's ids
 }
 
@@ -97,7 +98,7 @@ impl ModelBuilder {
     /// Can fail if the model specification contains semantic errors
     /// (particularly type mismatches)
     /// or references to non-existing items.
-    pub fn build(mut parser: Parser) -> anyhow::Result<ScxmlModel> {
+    pub fn build(mut parser: Parser) -> anyhow::Result<(CsModel, ScxmlModel)> {
         let mut model_builder = ModelBuilder {
             cs: ChannelSystemBuilder::new(),
             types: HashMap::new(),
@@ -1527,7 +1528,7 @@ impl ModelBuilder {
         Ok(())
     }
 
-    fn build_model(self) -> ScxmlModel {
+    fn build_model(self) -> (CsModel, ScxmlModel) {
         let mut model = CsModelBuilder::new(self.cs.build());
         let mut ports = Vec::new();
         for (port_name, (atom, init)) in self.ports {
@@ -1541,38 +1542,52 @@ impl ModelBuilder {
             // TODO FIXME handle error.
             let _id = model.add_predicate(pred_expr);
         }
+        let mut guarantees = Vec::new();
         for (name, guarantee) in self.guarantees.into_iter() {
+            guarantees.push(name.clone());
             model.add_guarantee(name, guarantee);
         }
-        for (_name, assume) in self.assumes.into_iter() {
+        let mut assumes = Vec::new();
+        for (name, assume) in self.assumes.into_iter() {
+            assumes.push(name.clone());
             model.add_assume(assume.clone());
         }
+        let mut events = Vec::from_iter(self.event_indexes);
+        events.sort_unstable_by_key(|(_, idx)| *idx);
+        let events = events
+            .into_iter()
+            .enumerate()
+            .map(|(enum_i, (name, idx))| {
+                assert_eq!(enum_i, idx);
+                name
+            })
+            .collect();
 
-        ScxmlModel {
-            model: model.build(),
-            fsm_names: self.fsm_names,
-            parameters: self
-                .parameters
-                .into_iter()
-                .map(|((src, trg, event, name), chn)| (chn, (src, trg, event, name)))
-                .collect(),
-            ext_queues: self
-                .fsm_builders
-                .values()
-                .map(|b| (b.ext_queue, b.pg_id))
-                .collect(),
-            int_queues: self.int_queues,
-            events: self
-                .event_indexes
-                .into_iter()
-                .map(|(name, idx)| (idx, name))
-                .collect(),
-            fsm_indexes: self
-                .fsm_builders
-                .into_iter()
-                .map(|(name, b)| (u16::from(b.pg_id) as usize, name))
-                .collect(),
-            ports,
-        }
+        (
+            model.build(),
+            ScxmlModel {
+                fsm_names: self.fsm_names,
+                parameters: self
+                    .parameters
+                    .into_iter()
+                    .map(|((src, trg, event, name), chn)| (chn, (src, trg, event, name)))
+                    .collect(),
+                ext_queues: self
+                    .fsm_builders
+                    .values()
+                    .map(|b| (b.ext_queue, b.pg_id))
+                    .collect(),
+                int_queues: self.int_queues,
+                events,
+                fsm_indexes: self
+                    .fsm_builders
+                    .into_iter()
+                    .map(|(name, b)| (u16::from(b.pg_id) as usize, name))
+                    .collect(),
+                ports,
+                assumes,
+                guarantees,
+            },
+        )
     }
 }

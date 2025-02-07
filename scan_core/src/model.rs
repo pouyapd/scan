@@ -1,5 +1,7 @@
 use crate::channel_system::{Channel, ChannelSystem, Event, EventType};
-use crate::{Expression, FnExpression, Pmtl, PmtlOracle, Time, Tracer, Val};
+use crate::{
+    adaptive_bound, Expression, FnExpression, Pmtl, PmtlOracle, RunOutcome, Time, Tracer, Val,
+};
 use log::{info, trace};
 use rayon::prelude::*;
 use std::collections::{btree_map, BTreeMap};
@@ -178,34 +180,44 @@ impl CsModel {
             .into_par_iter()
             .take_any_while(|_| {
                 // .take_while(|_| {
-                let result = self.clone().experiment(tracer.clone(), length, duration);
+                let mut tracer = tracer.clone();
+                if let Some(tracer) = tracer.as_mut() {
+                    tracer.init();
+                }
+                let result = self.clone().experiment(&mut tracer, length, duration);
                 let run_status = &mut *self.run_status.lock().expect("lock state");
                 if run_status.running {
-                    if let (Some(result), guarantee) = result {
-                        if result {
+                    if let Some(tracer) = tracer {
+                        tracer.finalize(result);
+                    }
+                    match result {
+                        RunOutcome::Success => {
                             run_status.successes += 1;
                             // If all guarantees are satisfied, the execution is successful
                             info!("runs: {} successes", run_status.successes);
-                        } else {
+                        }
+                        RunOutcome::Fail(guarantee) => {
                             run_status.failures += 1;
-                            run_status.guarantees[guarantee.unwrap()].1 += 1;
+                            run_status.guarantees[guarantee].1 += 1;
                             // If guarantee is violated, we have found a counter-example!
                             info!("runs: {} failures", run_status.failures);
                         }
-                        let n = run_status.successes + run_status.failures;
-                        // Avoid division by 0
-                        let avg = if n == 0 {
-                            0.5f64
-                        } else {
-                            run_status.successes as f64 / n as f64
-                        };
-                        if crate::adaptive_bound(avg, confidence, precision) <= n as f64 {
-                            info!("adaptive bound satisfied");
-                            run_status.running = false;
-                        }
+                        RunOutcome::Incomplete => return true,
                     }
+                    let runs = run_status.successes + run_status.failures;
+                    // Avoid division by 0
+                    let avg = if runs == 0 {
+                        0.5f64
+                    } else {
+                        run_status.successes as f64 / runs as f64
+                    };
+                    if adaptive_bound(avg, confidence, precision) <= runs as f64 {
+                        info!("adaptive bound satisfied");
+                        run_status.running = false;
+                    }
+                } else if let Some(tracer) = tracer {
+                    tracer.finalize(RunOutcome::Incomplete);
                 }
-                info!("returning {} to iter", run_status.running);
                 run_status.running
             })
             .count();
@@ -214,10 +226,10 @@ impl CsModel {
 
     fn experiment<P>(
         mut self,
-        mut tracer: Option<P>,
+        tracer: &mut Option<P>,
         max_length: usize,
         duration: Time,
-    ) -> (Option<bool>, Option<usize>)
+    ) -> RunOutcome
     where
         P: Tracer<Event>,
     {
@@ -226,9 +238,6 @@ impl CsModel {
 
         let mut current_len = 0;
         let rng = &mut SmallRng::from_os_rng();
-        if let Some(publisher) = tracer.as_mut() {
-            publisher.init();
-        }
         trace!("new run starting");
         while let Some(event) = self.cs.montecarlo_execution(rng, duration) {
             // We only need to keep track of events that are associated to the ports
@@ -244,37 +253,21 @@ impl CsModel {
                 tracer.trace(&event, time, self.ports.values().cloned());
             }
             self.oracle = self.oracle.update(&state, time);
-            if let Some(i) = self.oracle.output_assumes() {
+            if self.oracle.output_assumes().is_some() {
                 trace!("run undetermined");
-                if let Some(publisher) = tracer {
-                    publisher.finalize(None, None);
-                }
-                return (None, Some(i));
+                return RunOutcome::Incomplete;
             } else if let Some(i) = self.oracle.output_guarantees() {
                 trace!("run fails");
-                if let Some(tracer) = tracer {
-                    let violation = self.run_status.lock().unwrap().guarantees[i].0.clone();
-                    tracer.finalize(Some(false), Some(violation));
-                }
-                return (Some(false), Some(i));
+                return RunOutcome::Fail(i);
             } else if current_len >= max_length {
                 trace!("run exceeds maximum lenght");
-                if let Some(tracer) = tracer {
-                    tracer.finalize(None, None);
-                }
-                return (None, None);
+                return RunOutcome::Incomplete;
             } else if !self.run_status.lock().expect("lock state").running {
                 trace!("run stopped");
-                if let Some(tracer) = tracer {
-                    tracer.finalize(None, None);
-                }
-                return (None, None);
+                return RunOutcome::Incomplete;
             }
         }
         trace!("run succeeds");
-        if let Some(tracer) = tracer {
-            tracer.finalize(Some(true), None);
-        }
-        (Some(true), None)
+        RunOutcome::Success
     }
 }
