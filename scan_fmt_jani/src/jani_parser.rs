@@ -209,4 +209,5 @@ pub enum ASTNode {
     ASTRewardAccumulation { accumulate: Vec<String> },
 
     ASTComment { comment: String },
+    ASTEmpty,
 }

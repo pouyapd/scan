@@ -71,17 +71,33 @@ ModelEntry -> Result<ASTNode, ParsingError>:
     { 
         Ok(ASTNode::ASTModelFeatures{ features: $4? }) 
     }
+    | 'features' ':' '[' ']' 
+    { 
+        Ok(ASTNode::ASTModelFeatures{ features: vec![ASTNode::ASTEmpty] }) 
+    }
     | 'actions' ':' '[' Actions ']' 
     { 
         Ok(ASTNode::ASTModelActions{ actions: $4? }) 
+    }
+    | 'actions' ':' '[' ']' 
+    { 
+        Ok(ASTNode::ASTModelActions{ actions: vec![ASTNode::ASTEmpty] }) 
     }
     | 'constants' ':' '[' ConstantDeclarations ']' 
     { 
         Ok(ASTNode::ASTModelConstants{ constants: $4? }) 
     }
+    | 'constants' ':' '[' ']' 
+    { 
+        Ok(ASTNode::ASTModelConstants{ constants: vec![ASTNode::ASTEmpty] }) 
+    }
     | 'variables' ':' '[' VariableDeclarations ']' 
     { 
         Ok(ASTNode::ASTModelVariables{ variables: $4? }) 
+    }
+    | 'variables' ':' '[' ']' 
+    { 
+        Ok(ASTNode::ASTModelVariables{ variables: vec![ASTNode::ASTEmpty] }) 
     }
     | 'restrict-initial' ':' '{' RestrictInitial '}' 
     { 
@@ -99,6 +115,10 @@ ModelEntry -> Result<ASTNode, ParsingError>:
     | 'properties' ':' '[' Properties ']' 
     { 
         Ok(ASTNode::ASTModelProperties{ properties: $4? }) 
+    }
+    | 'properties' ':' '[' ']' 
+    { 
+        Ok(ASTNode::ASTModelProperties{ properties: vec![ASTNode::ASTEmpty] }) 
     }
     | 'automata' ':' '[' Automata ']' 
     { 
@@ -546,6 +566,10 @@ AutomatonEntry -> Result<ASTNode, ParsingError>:
     {
         Ok(ASTNode::ASTAutomatonVariables{ variables: $4? }) 
     }
+    | 'variables' ':' '[' ']'
+    {
+        Ok(ASTNode::ASTAutomatonVariables{ variables: vec![ASTNode::ASTEmpty] }) 
+    }
     | 'restrict-initial' ':' '{' RestrictInitial '}' 
     { 
         let properties = $4?;
@@ -643,6 +667,10 @@ AutomatonLocationEntry -> Result<ASTNode, ParsingError>:
     | 'transient-values' ':' '[' AutomatonLocationTransientValues ']'
     {   
         Ok(ASTNode::ASTAutomatonLocationTransientValues{ transient_values: $4? })
+    }
+    | 'transient-values' ':' '[' ']'
+    {   
+        Ok(ASTNode::ASTAutomatonLocationTransientValues{ transient_values: vec![ASTNode::ASTEmpty] })
     }
     | 'comment' ':' 'STRING'
     {
@@ -946,6 +974,10 @@ AutomatonEdgeDestinationEntry -> Result<ASTNode, ParsingError>:
     {
         Ok(ASTNode::ASTAutomatonEdgeDestinationAssignments{ assignments: $4? })
     }
+    | 'assignments' ':' '[' ']'
+    {
+        Ok(ASTNode::ASTAutomatonEdgeDestinationAssignments{ assignments: vec![ASTNode::ASTEmpty] })
+    }
     | 'comment' ':' 'STRING'
     {
         let v = $3.map_err(|_| ParsingError::InvalidSyntaxError)?;
@@ -1065,6 +1097,10 @@ CompositionEntry -> Result<ASTNode, ParsingError>:
     { 
         Ok(ASTNode::ASTCompositionSyncs{ syncs: $4? }) 
     }
+    | 'syncs' ':' '[' ']' 
+    { 
+        Ok(ASTNode::ASTCompositionSyncs{ syncs: vec![ASTNode::ASTEmpty] }) 
+    }
     | 'comment' ':' 'STRING' 
     {
         let v = $3.map_err(|_| ParsingError::InvalidSyntaxError)?;
@@ -1125,6 +1161,10 @@ CompositionElementEntry -> Result<ASTNode, ParsingError>:
     | 'input-enable' ':' '[' CompositionElementInputEnable ']' 
     { 
         Ok(ASTNode::ASTCompositionElementInputEnable{ input_enable: $4? }) 
+    }
+    | 'input-enable' ':' '[' ']' 
+    { 
+        Ok(ASTNode::ASTCompositionElementInputEnable{ input_enable: vec![ASTNode::ASTEmpty] }) 
     }
     | 'comment' ':' 'STRING'
     {
@@ -1636,6 +1676,10 @@ PropertyExpressionBinaryOperationEntry -> Result<ASTNode, ParsingError>:
     {
         Ok(ASTNode::ASTExpressionRewardBounds{ reward_bounds: $4? })
     }
+    | 'reward-bounds' ':' '[' ']'
+    {
+        Ok(ASTNode::ASTExpressionRewardBounds{ reward_bounds: vec![ASTNode::ASTEmpty] })
+    }
     ; 
 
 ExpressionRewardBounds -> Result<Vec<ASTNode>, ParsingError>:
@@ -1769,6 +1813,10 @@ PropertyExpressionUnaryOperationEntry -> Result<ASTNode, ParsingError>:
     | 'reward-instants' ':' '[' ExpressionRewardInstants ']'
     {
         Ok(ASTNode::ASTExpressionRewardInstants{ reward_instants: $4? })
+    }
+    | 'reward-instants' ':' '[' ']'
+    {
+        Ok(ASTNode::ASTExpressionRewardInstants{ reward_instants: vec![ASTNode::ASTEmpty] })
     }
     ; 
 
@@ -2463,6 +2511,7 @@ fn check_automaton_edge(vec: &Vec<ASTNode>) -> Result<(), ParsingError> {
     let mut location_count = 0;
     let mut action_count = 0;
     let mut rate_count = 0;
+    let mut guard_count = 0;
     let mut destinations_count = 0;
     let mut comment_count = 0;
 
@@ -2487,10 +2536,10 @@ fn check_automaton_edge(vec: &Vec<ASTNode>) -> Result<(), ParsingError> {
                 rate_count += 1;
             }
             ASTNode::ASTAutomatonEdgeGuard{..} => {
-                if rate_count > 0 {
+                if guard_count > 0 {
                     return Err(ParsingError::DuplicateFieldsError);
                 }
-                rate_count += 1;
+                guard_count += 1;
             }
             ASTNode::ASTAutomatonEdgeDestinations{..} => {
                 if destinations_count > 0 {
