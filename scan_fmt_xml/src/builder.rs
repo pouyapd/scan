@@ -1544,8 +1544,8 @@ impl ModelBuilder {
         }
         let mut guarantees = Vec::new();
         for (name, guarantee) in self.guarantees.into_iter() {
-            guarantees.push(name.clone());
-            model.add_guarantee(name, guarantee);
+            guarantees.push(name);
+            model.add_guarantee(guarantee);
         }
         let mut assumes = Vec::new();
         for (name, assume) in self.assumes.into_iter() {

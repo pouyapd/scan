@@ -65,18 +65,27 @@ impl Cli {
         let confidence = self.confidence;
         let precision = self.precision;
         let bar_state = Arc::clone(&cs_model.run_status());
-        let bar_model_name = model_name.clone();
-        let ascii = self.ascii;
-        let bar = std::thread::spawn(move || {
-            print_progress_bar(bar_model_name, confidence, precision, bar_state, ascii)
-        });
-        cs_model.par_adaptive(
-            confidence,
-            precision,
-            self.length,
-            self.duration,
-            self.traces.then_some(TracePrinter::new(scxml_model)),
-        );
+        let bar = {
+            let bar_model_name = model_name.clone();
+            let ascii = self.ascii;
+            let guarantees = scxml_model.guarantees.clone();
+            std::thread::spawn(move || {
+                print_progress_bar(
+                    bar_model_name,
+                    &guarantees,
+                    confidence,
+                    precision,
+                    bar_state,
+                    ascii,
+                )
+            })
+        };
+        let tracer = if self.traces {
+            Some(TracePrinter::new(scxml_model))
+        } else {
+            None
+        };
+        cs_model.par_adaptive(confidence, precision, self.length, self.duration, tracer);
         bar.join().expect("terminate bar process");
 
         Ok(())
@@ -99,7 +108,7 @@ impl Cli {
         let bar_model_name = model_name.clone();
         let ascii = self.ascii;
         let bar = std::thread::spawn(move || {
-            print_progress_bar(bar_model_name, confidence, precision, bar_state, ascii)
+            print_progress_bar(bar_model_name, &[], confidence, precision, bar_state, ascii)
         });
         model.par_adaptive::<TracePrinter>(confidence, precision, self.length, self.duration, None);
         bar.join().expect("terminate bar process");
@@ -110,6 +119,7 @@ impl Cli {
 
 fn print_progress_bar(
     model_name: String,
+    guarantee_names: &[String],
     confidence: f64,
     precision: f64,
     bar_state: Arc<Mutex<RunStatus>>,
@@ -120,7 +130,6 @@ fn print_progress_bar(
     const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
     const ASCII_BAR: &str = "#--";
     const ASCII_SPINNER: &str = "|/-\\";
-    let run_status = bar_state.lock().expect("lock state").clone();
 
     let bars = MultiProgress::new();
 
@@ -161,7 +170,7 @@ fn print_progress_bar(
     };
 
     // Guarantees property bars
-    for (name, _) in run_status.guarantees.iter() {
+    for name in guarantee_names.iter() {
         let bar = bars.add(
             ProgressBar::new(1)
                 .with_style(prop_style.clone())
@@ -207,7 +216,7 @@ fn print_progress_bar(
                 //     derive_precision(run_status.successes, run_status.failures, confidence);
                 progress_bar.set_length(bound.ceil() as u64);
                 progress_bar.set_position(runs);
-                for (i, (_, guarantee)) in guarantees.iter().enumerate() {
+                for (i, guarantee) in guarantees.iter().enumerate() {
                     let pos = runs - *guarantee as u64;
                     let bar = &mut bars_guarantees[i];
                     bar.set_position(pos);
@@ -219,7 +228,7 @@ fn print_progress_bar(
                 }
 
                 // Overall property bar
-                let overall = guarantees.iter().map(|(_, g)| *g).sum::<u32>() as u64;
+                let overall = guarantees.iter().sum::<u32>() as u64;
                 let pos = runs - overall;
                 overall_bar.set_position(pos);
                 overall_bar.set_length(runs);
@@ -240,7 +249,8 @@ fn print_progress_bar(
                 "SCAN results for {model_name} (confidence {confidence}, precision {precision})"
             );
             println!("Completed {runs} runs with {successes} successes, {failures} failures)");
-            for (name, f) in guarantees.into_iter() {
+            for (i, name) in guarantee_names.iter().enumerate() {
+                let f = guarantees[i];
                 print!(
                     "{name} success rate: {0:.1$}",
                     ((runs - f as u64) as f64) / (runs as f64),

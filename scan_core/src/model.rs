@@ -23,7 +23,7 @@ pub struct CsModelBuilder {
     ports: BTreeMap<Channel, Val>,
     predicates: Vec<FnExpression<Atom>>,
     assumes: Vec<Pmtl<usize>>,
-    guarantees: Vec<(String, Pmtl<usize>)>,
+    guarantees: Vec<Pmtl<usize>>,
 }
 
 impl CsModelBuilder {
@@ -68,8 +68,8 @@ impl CsModelBuilder {
     }
 
     /// Adds a guarantee [`Pmtl`] formula to the [`CsModelBuilder`].
-    pub fn add_guarantee(&mut self, name: String, guarantee: Pmtl<usize>) {
-        self.guarantees.push((name, guarantee));
+    pub fn add_guarantee(&mut self, guarantee: Pmtl<usize>) {
+        self.guarantees.push(guarantee);
     }
 
     /// Creates a new [`CsModel`] with the given underlying [`ChannelSystem`] and set of predicates.
@@ -78,13 +78,9 @@ impl CsModelBuilder {
     /// as it is not possible to add any further ones after the [`CsModel`] has been initialized.
     pub fn build(self) -> CsModel {
         let mut run_state = RunStatus::default();
-        let guarantees = self
-            .guarantees
-            .iter()
-            .map(|(_, g)| g)
-            .cloned()
-            .collect::<Vec<_>>();
-        run_state.guarantees = self.guarantees.into_iter().map(|(s, _)| (s, 0)).collect();
+        let guarantees = self.guarantees.to_vec();
+        run_state.guarantees = vec![0; self.guarantees.len()];
+        run_state.running = true;
 
         CsModel {
             cs: self.cs,
@@ -102,7 +98,7 @@ pub struct RunStatus {
     pub successes: u32,
     pub failures: u32,
     pub running: bool,
-    pub guarantees: Vec<(String, u32)>,
+    pub guarantees: Vec<u32>,
 }
 
 /// Transition system model based on a [`ChannelSystem`].
@@ -172,7 +168,7 @@ impl CsModel {
             run_state.successes = 0;
             run_state.failures = 0;
             run_state.running = true;
-            run_state.guarantees.iter_mut().for_each(|(_, n)| *n = 0);
+            run_state.guarantees.iter_mut().for_each(|n| *n = 0);
             // Drop handles!
         }
         // WARN FIXME TODO: Implement algorithm for 2.4 Distributed sample generation in Budde et al.
@@ -198,7 +194,7 @@ impl CsModel {
                         }
                         RunOutcome::Fail(guarantee) => {
                             run_status.failures += 1;
-                            run_status.guarantees[guarantee].1 += 1;
+                            run_status.guarantees[guarantee] += 1;
                             // If guarantee is violated, we have found a counter-example!
                             info!("runs: {} failures", run_status.failures);
                         }
@@ -214,11 +210,16 @@ impl CsModel {
                     if adaptive_bound(avg, confidence, precision) <= runs as f64 {
                         info!("adaptive bound satisfied");
                         run_status.running = false;
+                        false
+                    } else {
+                        true
                     }
                 } else if let Some(tracer) = tracer {
                     tracer.finalize(RunOutcome::Incomplete);
+                    false
+                } else {
+                    false
                 }
-                run_status.running
             })
             .count();
         info!("verification terminating");
