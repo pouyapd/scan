@@ -160,7 +160,9 @@ impl ModelBuilder {
                     }
                 }
             }
-            ASTNode::ASTEmpty => { return Ok(()); }
+            ASTNode::ASTEmpty => {
+                return Ok(());
+            }
             _ => {
                 return Err(BuildingError::UnknownError);
             }
@@ -250,7 +252,9 @@ impl ModelBuilder {
                     }
                 }
             }
-            ASTNode::ASTEmpty => { return Ok(()); }
+            ASTNode::ASTEmpty => {
+                return Ok(());
+            }
             _ => {
                 return Err(BuildingError::UnknownError);
             }
@@ -579,7 +583,7 @@ impl ModelBuilder {
                         }
                     }
                 }
-                ASTNode::ASTEmpty => { }
+                ASTNode::ASTEmpty => {}
                 _ => {
                     return Err(BuildingError::UnknownError);
                 }
