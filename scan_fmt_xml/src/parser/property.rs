@@ -1,7 +1,8 @@
 use super::{ATTR_EVENT, ATTR_EXPR, ATTR_LOWER_BOUND, ATTR_PARAM, ATTR_UPPER_BOUND};
 use crate::parser::{ParserError, ATTR_ID, ATTR_REFID, ATTR_TYPE, TAG_CONST, TAG_VAR};
 use anyhow::{anyhow, Context};
-use boa_ast::StatementListItem;
+use boa_ast::scope::Scope;
+use boa_interner::Interner;
 use log::{error, info, trace, warn};
 use quick_xml::{
     events::{
@@ -159,7 +160,12 @@ impl ParserPort {
         ))
     }
 
-    fn parse_event(&mut self, tag: quick_xml::events::BytesStart<'_>) -> anyhow::Result<()> {
+    fn parse_event(
+        &mut self,
+        tag: quick_xml::events::BytesStart<'_>,
+        scope: &Scope,
+        interner: &mut Interner,
+    ) -> anyhow::Result<()> {
         let mut event: Option<String> = None;
         let mut param: Option<String> = None;
         let mut expr: Option<String> = None;
@@ -189,14 +195,15 @@ impl ParserPort {
         self.event = event;
 
         if let Some(expression) = expr {
-            if let StatementListItem::Statement(boa_ast::Statement::Expression(expression)) =
-                boa_parser::Parser::new(boa_parser::Source::from_bytes(&expression))
-                    .parse_script(&mut boa_interner::Interner::new())
-                    .expect("hope this works")
-                    .statements()
-                    .first()
-                    .expect("hopefully there is a statement")
-                    .to_owned()
+            if let boa_ast::StatementListItem::Statement(boa_ast::Statement::Expression(
+                expression,
+            )) = boa_parser::Parser::new(boa_parser::Source::from_bytes(&expression))
+                .parse_script(scope, interner)
+                .expect("hope this works")
+                .statements()
+                .first()
+                .expect("hopefully there is a statement")
+                .to_owned()
             {
                 self.param = Some((param.unwrap(), expression));
             } else {
@@ -303,13 +310,18 @@ impl Properties {
         }
     }
 
-    pub fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Self> {
+    pub fn parse<R: BufRead>(
+        reader: &mut Reader<R>,
+        scope: &Scope,
+        interner: &mut Interner,
+    ) -> anyhow::Result<Self> {
         let mut buf = Vec::new();
         let mut stack: Vec<PropertyTag> = Vec::new();
         let mut ports = HashMap::new();
         let mut predicates = HashMap::new();
         let mut guarantees = HashMap::new();
         let mut assumes = HashMap::new();
+        let scope = Scope::new(scope.clone(), true);
         info!("parsing properties");
         loop {
             let event = reader.read_event_into(&mut buf)?;
@@ -712,7 +724,7 @@ impl Properties {
                                 .is_some_and(|tag| matches!(*tag, PropertyTag::Port(_, _))) =>
                         {
                             if let Some(PropertyTag::Port(_, port)) = stack.last_mut() {
-                                port.parse_event(tag)?;
+                                port.parse_event(tag, &scope, interner)?;
                             } else {
                                 unreachable!("A port must be on top of stack");
                             }

@@ -5,10 +5,8 @@ use super::{
 use crate::channel_system::ChannelSystemDef;
 use crate::grammar::Type;
 use crate::Expression;
-// use ahash::AHashMap as HashMap;
-use hashbrown::HashMap;
 use log::info;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 /// An expression using CS's [`Var`] as variables.
@@ -154,6 +152,11 @@ impl ChannelSystemBuilder {
         Ok(Var(pg_id, var))
     }
 
+    /// Adds a new clock to the given PG and returns a [`Clock`] id object.
+    ///
+    /// It fails if the CS contains no such PG.
+    ///
+    /// See also [`ProgramGraphBuilder::new_clock`].
     pub fn new_clock(&mut self, pg_id: PgId) -> Result<Clock, CsError> {
         self.program_graphs
             .get_mut(pg_id.0 as usize)
@@ -235,6 +238,10 @@ impl ChannelSystemBuilder {
         }
     }
 
+    /// Adds resetting the clock as an effect of the given action.
+    ///
+    /// Fails if either the PG does not belong to the CS,
+    /// or either the action or the clock do not belong to the PG.
     pub fn reset_clock(
         &mut self,
         pg_id: PgId,
@@ -268,7 +275,12 @@ impl ChannelSystemBuilder {
             .map(|pg| Location(pg_id, pg.new_location()))
     }
 
-    /// TODO
+    /// Adds a new location to the given PG with the given time invariants,
+    /// and returns its [`Location`] indexing object.
+    ///
+    /// It fails if the CS contains no such PG.
+    ///
+    /// See also [`ProgramGraphBuilder::new_timed_location`].
     pub fn new_timed_location(
         &mut self,
         pg_id: PgId,
@@ -324,6 +336,11 @@ impl ChannelSystemBuilder {
         }
     }
 
+    /// Adds a timed transition to the PG with the given time constraints.
+    ///
+    /// Fails if the CS contains no such PG, or if the given action, variable or locations do not belong to it.
+    ///
+    /// See also [`ProgramGraphBuilder::add_timed_transition`].
     pub fn add_timed_transition(
         &mut self,
         pg_id: PgId,
@@ -368,7 +385,7 @@ impl ChannelSystemBuilder {
     ///
     /// Fails if the CS contains no such PG, or if the given variable or locations do not belong to it.
     ///
-    /// See also [`ProgramGraphBuilder::add_transition`].
+    /// See also [`ProgramGraphBuilder::add_autonomous_transition`].
     pub fn add_autonomous_transition(
         &mut self,
         pg_id: PgId,
@@ -395,6 +412,11 @@ impl ChannelSystemBuilder {
         }
     }
 
+    /// Adds an autonomous timed transition to the PG with the given time constrints.
+    ///
+    /// Fails if the CS contains no such PG, or if the given variable or locations do not belong to it.
+    ///
+    /// See also [`ProgramGraphBuilder::add_autonomous_timed_transition`].
     pub fn add_autonomous_timed_transition(
         &mut self,
         pg_id: PgId,

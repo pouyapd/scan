@@ -55,8 +55,6 @@ impl Cli {
             std::fs::create_dir("./traces/undetermined").expect("create undetermined dir");
         }
         scxml_model.model.par_adaptive(
-            &scxml_model.guarantees,
-            &scxml_model.assumes,
             confidence,
             precision,
             self.length,

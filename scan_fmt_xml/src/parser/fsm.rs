@@ -1,10 +1,13 @@
 use super::vocabulary::*;
 use crate::parser::ParserError;
 use anyhow::{anyhow, Context};
+use boa_ast::scope::Scope;
 use boa_ast::{Expression as BoaExpression, StatementListItem};
+use boa_interner::Interner;
 use log::{error, info, trace, warn};
 use quick_xml::events::attributes::{AttrError, Attribute};
-use quick_xml::{events, events::Event, Reader};
+use quick_xml::events::Event;
+use quick_xml::{events, Reader};
 use scan_core::Time;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -59,7 +62,8 @@ impl Data {
         tag: events::BytesStart<'_>,
         // ident: Option<String>,
         omg_type: Option<String>,
-        interner: &mut boa_interner::Interner,
+        scope: &Scope,
+        interner: &mut Interner,
     ) -> anyhow::Result<Data> {
         let mut id: Option<String> = None;
         let mut expr: Option<String> = None;
@@ -95,7 +99,7 @@ impl Data {
         if let Some(expression) = expr {
             if let StatementListItem::Statement(boa_ast::Statement::Expression(expression)) =
                 boa_parser::Parser::new(boa_parser::Source::from_bytes(&expression))
-                    .parse_script(interner)
+                    .parse_script(scope, interner)
                     .expect("hope this works")
                     .statements()
                     .first()
@@ -190,7 +194,8 @@ pub struct Transition {
 impl Transition {
     fn parse(
         tag: events::BytesStart<'_>,
-        interner: &mut boa_interner::Interner,
+        scope: &Scope,
+        interner: &mut Interner,
     ) -> anyhow::Result<Transition> {
         let mut event: Option<String> = None;
         let mut target: Option<String> = None;
@@ -219,7 +224,7 @@ impl Transition {
         let cond = if let Some(cond) = cond {
             if let StatementListItem::Statement(boa_ast::Statement::Expression(cond)) =
                 boa_parser::Parser::new(boa_parser::Source::from_bytes(&cond))
-                    .parse_script(interner)
+                    .parse_script(scope, interner)
                     .expect("hope this works")
                     .statements()
                     .first()
@@ -293,7 +298,8 @@ impl Executable {
 
     fn parse_assign(
         tag: events::BytesStart<'_>,
-        interner: &mut boa_interner::Interner,
+        scope: &Scope,
+        interner: &mut Interner,
     ) -> anyhow::Result<Executable> {
         let mut location: Option<String> = None;
         let mut expr: Option<String> = None;
@@ -319,7 +325,7 @@ impl Executable {
         let expr = expr.ok_or(anyhow!(ParserError::MissingAttr(ATTR_EXPR.to_string())))?;
         // FIXME: This is really bad code!
         let statement = boa_parser::Parser::new(boa_parser::Source::from_bytes(&expr))
-            .parse_script(interner)
+            .parse_script(scope, interner)
             .expect("hope this works")
             .statements()
             .first()
@@ -369,7 +375,8 @@ pub struct Send {
 impl Send {
     fn parse(
         tag: events::BytesStart<'_>,
-        interner: &mut boa_interner::Interner,
+        scope: &Scope,
+        interner: &mut Interner,
     ) -> anyhow::Result<Send> {
         let mut event: Option<String> = None;
         let mut target: Option<String> = None;
@@ -404,7 +411,7 @@ impl Send {
         } else if let Some(targetexpr) = targetexpr {
             if let StatementListItem::Statement(boa_ast::Statement::Expression(targetexpr)) =
                 boa_parser::Parser::new(boa_parser::Source::from_bytes(&targetexpr))
-                    .parse_script(interner)
+                    .parse_script(scope, interner)
                     .expect("hope this works")
                     .statements()
                     .first()
@@ -429,8 +436,6 @@ impl Send {
 
 #[derive(Debug, Clone)]
 pub struct If {
-    // pub(crate) cond: boa_ast::Expression,
-    // pub(crate) r#then: Vec<Executable>,
     pub(crate) r#elif: Vec<(boa_ast::Expression, Vec<Executable>)>,
     pub(crate) r#else: Vec<Executable>,
     else_flag: bool,
@@ -440,7 +445,8 @@ impl If {
     fn parse(
         &mut self,
         tag: events::BytesStart<'_>,
-        interner: &mut boa_interner::Interner,
+        scope: &Scope,
+        interner: &mut Interner,
     ) -> anyhow::Result<()> {
         let mut cond: Option<String> = None;
         for attr in tag
@@ -460,7 +466,7 @@ impl If {
         let cond = cond.ok_or(anyhow!(ParserError::MissingAttr(ATTR_COND.to_string())))?;
         if let StatementListItem::Statement(boa_ast::Statement::Expression(cond)) =
             boa_parser::Parser::new(boa_parser::Source::from_bytes(&cond))
-                .parse_script(interner)
+                .parse_script(scope, interner)
                 .expect("hope this works")
                 .statements()
                 .first()
@@ -487,7 +493,8 @@ impl Param {
         tag: events::BytesStart<'_>,
         // ident: String,
         omg_type: Option<String>,
-        interner: &mut boa_interner::Interner,
+        scope: &Scope,
+        interner: &mut Interner,
     ) -> anyhow::Result<Param> {
         let mut name: Option<String> = None;
         let mut location: Option<String> = None;
@@ -525,7 +532,7 @@ impl Param {
         let expr = expr.or(location).ok_or(ParserError::MissingExpr)?;
         if let StatementListItem::Statement(boa_ast::Statement::Expression(expr)) =
             boa_parser::Parser::new(boa_parser::Source::from_bytes(&expr))
-                .parse_script(interner)
+                .parse_script(scope, interner)
                 .expect("hope this works")
                 .statements()
                 .first()
@@ -553,7 +560,7 @@ pub struct Scxml {
 }
 
 impl Scxml {
-    fn parse(tag: events::BytesStart<'_>) -> anyhow::Result<Scxml> {
+    fn parse_tag(tag: events::BytesStart<'_>) -> anyhow::Result<Scxml> {
         let mut id = None;
         let mut initial = None;
         for attr in tag
@@ -582,21 +589,17 @@ impl Scxml {
             states: HashMap::new(),
         })
     }
-}
 
-#[derive(Debug)]
-pub struct Fsm {
-    pub(crate) interner: boa_interner::Interner,
-    pub(crate) scxml: Scxml,
-}
-
-impl Fsm {
-    pub(super) fn parse<R: BufRead>(reader: &mut Reader<R>) -> anyhow::Result<Self> {
+    pub(super) fn parse<R: BufRead>(
+        reader: &mut Reader<R>,
+        interner: &mut Interner,
+        scope: &Scope,
+    ) -> anyhow::Result<Self> {
         let mut buf = Vec::new();
         let mut stack: Vec<ScxmlTag> = Vec::new();
+        let scope = Scope::new(scope.clone(), true);
         // let mut type_annotation: Option<(String, String)> = None;
         let mut type_annotation: Option<String> = None;
-        let mut interner = boa_interner::Interner::new();
         info!("parsing fsm");
         loop {
             let event = reader
@@ -610,7 +613,7 @@ impl Fsm {
                     match tag_name {
                         TAG_SCXML if stack.is_empty() => {
                             let fsm =
-                                Scxml::parse(tag).with_context(|| reader.buffer_position())?;
+                                Scxml::parse_tag(tag).with_context(|| reader.buffer_position())?;
                             stack.push(ScxmlTag::Scxml(fsm));
                         }
                         TAG_DATAMODEL
@@ -634,12 +637,12 @@ impl Fsm {
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
                         {
-                            let transition = Transition::parse(tag, &mut interner)
+                            let transition = Transition::parse(tag, &scope, interner)
                                 .with_context(|| reader.buffer_position())?;
                             stack.push(ScxmlTag::Transition(transition));
                         }
                         TAG_SEND if stack.iter().rev().any(|tag| tag.is_executable()) => {
-                            let send = Send::parse(tag, &mut interner)
+                            let send = Send::parse(tag, &scope, interner)
                                 .with_context(|| reader.buffer_position())?;
                             stack.push(ScxmlTag::Send(send));
                         }
@@ -649,7 +652,7 @@ impl Fsm {
                                 r#else: Vec::new(),
                                 else_flag: false,
                             };
-                            r#if.parse(tag, &mut interner)
+                            r#if.parse(tag, &scope, interner)
                                 .with_context(|| reader.buffer_position())?;
                             stack.push(ScxmlTag::If(r#if));
                         }
@@ -689,10 +692,7 @@ impl Fsm {
                             trace!("'{tag_name}' end tag");
                             match tag {
                                 ScxmlTag::Scxml(fsm) if stack.is_empty() => {
-                                    return Ok(Fsm {
-                                        interner,
-                                        scxml: fsm,
-                                    });
+                                    return Ok(fsm);
                                 }
                                 ScxmlTag::Datamodel(datamodel)
                                     if stack
@@ -776,7 +776,7 @@ impl Fsm {
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::Datamodel(_))) =>
                         {
-                            let data = Data::parse(tag, type_annotation.take(), &mut interner)
+                            let data = Data::parse(tag, type_annotation.take(), &scope, interner)
                                 .with_context(|| reader.buffer_position())?;
                             Data::push(data, &mut stack)
                                 .with_context(|| reader.buffer_position())?;
@@ -797,7 +797,7 @@ impl Fsm {
                                 .last()
                                 .is_some_and(|tag| matches!(*tag, ScxmlTag::State(_))) =>
                         {
-                            let transition = Transition::parse(tag, &mut interner)
+                            let transition = Transition::parse(tag, &scope, interner)
                                 .with_context(|| reader.buffer_position())?;
                             transition
                                 .push(&mut stack)
@@ -812,14 +812,14 @@ impl Fsm {
                                 .with_context(|| reader.buffer_position())?;
                         }
                         TAG_SEND if stack.last().is_some_and(|tag| tag.is_executable()) => {
-                            let send = Send::parse(tag, &mut interner)
+                            let send = Send::parse(tag, &scope, interner)
                                 .with_context(|| reader.buffer_position())?;
                             Executable::Send(send)
                                 .push(&mut stack)
                                 .with_context(|| reader.buffer_position())?;
                         }
                         TAG_ASSIGN if stack.last().is_some_and(|tag| tag.is_executable()) => {
-                            let assign = Executable::parse_assign(tag, &mut interner)
+                            let assign = Executable::parse_assign(tag, &scope, interner)
                                 .with_context(|| reader.buffer_position())?;
                             assign
                                 .push(&mut stack)
@@ -834,7 +834,7 @@ impl Fsm {
                             //     .take()
                             //     .ok_or(anyhow::Error::from(ParserError::NoTypeAnnotation))
                             //     .with_context(|| reader.buffer_position())?;
-                            let param = Param::parse(tag, type_annotation.take(), &mut interner)
+                            let param = Param::parse(tag, type_annotation.take(), &scope, interner)
                                 .with_context(|| reader.buffer_position())?;
                             if let ScxmlTag::Send(send) =
                                 stack.last_mut().expect("param must be inside other tag")
@@ -866,7 +866,7 @@ impl Fsm {
                                 .is_some_and(|tag| matches!(tag, ScxmlTag::If(_))) =>
                         {
                             if let Some(ScxmlTag::If(r#if)) = stack.last_mut() {
-                                r#if.parse(tag, &mut interner)
+                                r#if.parse(tag, &scope, interner)
                                     .with_context(|| reader.buffer_position())?;
                             } else {
                                 unreachable!()

@@ -9,7 +9,7 @@ use std::{
 use scan_fmt_xml::{
     scan_core::{
         channel_system::{self, Channel, Event, PgId},
-        Publisher, Time, Val,
+        Time, Tracer, Val,
     },
     ScxmlModel,
 };
@@ -20,8 +20,6 @@ pub struct PrintTrace {
     path: PathBuf,
     writer: Option<csv::Writer<flate2::write::GzEncoder<File>>>,
     predicates: Arc<Vec<String>>,
-    // guarantees: Arc<Vec<Pmtl<Atom<Event>>>>,
-    // assumes: Arc<Vec<Pmtl<Atom<Event>>>>,
     fsm_names: Arc<HashMap<PgId, String>>,
     fsm_indexes: Arc<HashMap<usize, String>>,
     parameters: Arc<HashMap<Channel, (PgId, PgId, usize, String)>>,
@@ -74,7 +72,7 @@ impl Clone for PrintTrace {
     }
 }
 
-impl Publisher<Event> for PrintTrace {
+impl Tracer<Event> for PrintTrace {
     fn init(&mut self) {
         let idx = self
             .index
@@ -96,7 +94,7 @@ impl Publisher<Event> for PrintTrace {
         self.writer = Some(writer);
     }
 
-    fn publish(&mut self, event: &Event, time: Time, state: &[bool]) {
+    fn trace(&mut self, event: &Event, time: Time, state: &[bool]) {
         let mut fields = Vec::new();
         let time = time.to_string();
         let mut action = String::new();

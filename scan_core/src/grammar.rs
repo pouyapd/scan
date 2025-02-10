@@ -80,6 +80,7 @@ pub enum Val {
 }
 
 impl Val {
+    /// Returns the [`Type`] of the value.
     pub fn r#type(&self) -> Type {
         match self {
             Val::Boolean(_) => Type::Boolean,
@@ -170,9 +171,10 @@ impl<V> Expression<V>
 where
     V: Clone,
 {
-    // Computes the type of an expression.
-    // Fails if the expression is badly typed,
-    // e.g., if variables in it have type incompatible with the expression.
+    /// Computes the type of an expression.
+    ///
+    /// Fails if the expression is badly typed,
+    /// e.g., if variables in it have type incompatible with the expression.
     pub fn r#type(&self) -> Result<Type, TypeError> {
         match self {
             Expression::Const(val) => Ok(val.r#type()),
@@ -302,7 +304,7 @@ where
         }
     }
 
-    pub fn context(&self, vars: &dyn Fn(V) -> Option<Type>) -> Result<(), TypeError> {
+    pub(crate) fn context(&self, vars: &dyn Fn(V) -> Option<Type>) -> Result<(), TypeError> {
         match self {
             Expression::Var(var, t) => {
                 if let Some(var_t) = vars(var.clone()) {
@@ -339,6 +341,9 @@ where
         }
     }
 
+    /// Creates the disjunction of a list of expressions.
+    ///
+    /// Optimizes automatically nested disjunctions through associativity.
     pub fn and(args: Vec<Self>) -> Self {
         match args.len() {
             0 => Expression::Const(Val::Boolean(true)),
@@ -357,6 +362,9 @@ where
         }
     }
 
+    /// Creates the conjunction of a list of expressions.
+    ///
+    /// Optimizes automatically nested conjunctions through associativity.
     pub fn or(args: Vec<Self>) -> Self {
         match args.len() {
             0 => Expression::Const(Val::Boolean(false)),
@@ -375,6 +383,9 @@ where
         }
     }
 
+    /// Creates the component of an expression.
+    ///
+    /// Optimizes automatically the component of a tuple.
     pub fn component(self, index: usize) -> Self {
         if let Expression::Tuple(args) = self {
             args[index].clone()
