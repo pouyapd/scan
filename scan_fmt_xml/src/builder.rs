@@ -25,7 +25,6 @@ pub struct ScxmlModel {
     pub ports: Vec<(String, Type)>,
     pub assumes: Vec<String>,
     pub guarantees: Vec<String>,
-    // TODO: ...other stuff needed to backtrack scxml's ids
 }
 
 #[derive(Debug, Clone)]
@@ -1472,7 +1471,7 @@ impl ModelBuilder {
                 .get(&port.event)
                 .ok_or(anyhow!("missing event {}", port.event))?;
             if let Some((param, init)) = &port.param {
-                let init = self.value(init, &Interner::new())?;
+                let init = self.value(init, &parser.interner)?;
                 let channel = *self
                     .parameters
                     .get(&(origin, target, event_id, param.to_owned()))
