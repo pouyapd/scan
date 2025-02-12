@@ -125,8 +125,6 @@ fn print_progress_bar(
     bar_state: Arc<Mutex<RunStatus>>,
     ascii: bool,
 ) {
-    const ARROW: &str = "█🭬 ";
-    const ASCII_ARROW: &str = "=>-";
     const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
     const ASCII_BAR: &str = "#--";
     const ASCII_SPINNER: &str = "|/-\\";
@@ -153,9 +151,13 @@ fn print_progress_bar(
     let progress_style =
         ProgressStyle::with_template("[{bar:50}] {percent:>3}% ({pos}/{len}) ETA: {eta}")
             .unwrap()
-            .progress_chars(if ascii { ASCII_ARROW } else { ARROW });
+            .progress_chars(if ascii { ASCII_BAR } else { FINE_BAR });
     let progress_bar = ProgressBar::new(bound).with_style(progress_style);
     let progress_bar = bars.add(progress_bar);
+
+    let line_style = ProgressStyle::with_template("Properties satisfaction:").unwrap();
+    let line = ProgressBar::new(0).with_style(line_style);
+    let line = bars.add(line);
 
     // Property bars
     let mut bars_guarantees = Vec::new();
@@ -216,6 +218,7 @@ fn print_progress_bar(
                 //     derive_precision(run_status.successes, run_status.failures, confidence);
                 progress_bar.set_length(bound.ceil() as u64);
                 progress_bar.set_position(runs);
+                line.tick();
                 for (i, guarantee) in guarantees.iter().enumerate() {
                     let pos = runs - *guarantee as u64;
                     let bar = &mut bars_guarantees[i];
@@ -241,6 +244,7 @@ fn print_progress_bar(
             bars.set_move_cursor(false);
             spinner.finish_and_clear();
             progress_bar.finish_and_clear();
+            line.finish_and_clear();
             bars_guarantees.iter().for_each(|b| b.finish_and_clear());
             overall_bar.finish_and_clear();
             // Magnitude of precision, to round results to sensible number of digits
