@@ -57,36 +57,21 @@ impl Cli {
     pub fn run_scxml(&self) -> anyhow::Result<()> {
         let (cs_model, scxml_model) = scan_fmt_xml::load(&self.path)?;
         let scxml_model = Arc::new(scxml_model);
-        let model_name = self
-            .path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map_or("model".to_string(), |s| format!("'{s}'"));
         let confidence = self.confidence;
         let precision = self.precision;
+        let length = self.length;
+        let duration = self.duration;
         let bar_state = Arc::clone(&cs_model.run_status());
-        let bar = {
-            let bar_model_name = model_name.clone();
-            let ascii = self.ascii;
-            let guarantees = scxml_model.guarantees.clone();
-            std::thread::spawn(move || {
-                print_progress_bar(
-                    bar_model_name,
-                    &guarantees,
-                    confidence,
-                    precision,
-                    bar_state,
-                    ascii,
-                )
-            })
-        };
         let tracer = if self.traces {
-            Some(TracePrinter::new(scxml_model))
+            Some(TracePrinter::new(scxml_model.clone()))
         } else {
             None
         };
-        cs_model.par_adaptive(confidence, precision, self.length, self.duration, tracer);
-        bar.join().expect("terminate bar process");
+        let check = std::thread::spawn(move || {
+            cs_model.par_adaptive(confidence, precision, length, duration, tracer);
+        });
+        self.print_progress_bar(&scxml_model.guarantees, bar_state);
+        check.join().expect("terminate bar process");
 
         Ok(())
     }
@@ -96,180 +81,185 @@ impl Cli {
 
         let jani_model = Parser::parse(self.path.as_path())?;
         let model = ModelBuilder::build(jani_model)?;
-        let model = CsModelBuilder::new(model).build();
+        let cs_model = CsModelBuilder::new(model).build();
+        let confidence = self.confidence;
+        let precision = self.precision;
+        let length = self.length;
+        let duration = self.duration;
+        let bar_state = Arc::clone(&cs_model.run_status());
+        // TODO: JANI needs a tracer too
+        let tracer: Option<TracePrinter> = None;
+        let check = std::thread::spawn(move || {
+            cs_model.par_adaptive(confidence, precision, length, duration, tracer);
+        });
+        self.print_progress_bar(&[], bar_state);
+        check.join().expect("terminate bar process");
+
+        Ok(())
+    }
+
+    fn print_progress_bar(&self, guarantee_names: &[String], bar_state: Arc<Mutex<RunStatus>>) {
+        const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
+        const ASCII_BAR: &str = "#--";
+        const ASCII_SPINNER: &str = "|/-\\";
+
         let model_name = self
             .path
             .file_stem()
             .and_then(|s| s.to_str())
             .map_or("model".to_string(), |s| format!("'{s}'"));
-        let confidence = self.confidence;
-        let precision = self.precision;
-        let bar_state = Arc::clone(&model.run_status());
-        let bar_model_name = model_name.clone();
-        let ascii = self.ascii;
-        let bar = std::thread::spawn(move || {
-            print_progress_bar(bar_model_name, &[], confidence, precision, bar_state, ascii)
-        });
-        model.par_adaptive::<TracePrinter>(confidence, precision, self.length, self.duration, None);
-        bar.join().expect("terminate bar process");
 
-        Ok(())
-    }
-}
+        let bars = MultiProgress::new();
 
-fn print_progress_bar(
-    model_name: String,
-    guarantee_names: &[String],
-    confidence: f64,
-    precision: f64,
-    bar_state: Arc<Mutex<RunStatus>>,
-    ascii: bool,
-) {
-    const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
-    const ASCII_BAR: &str = "#--";
-    const ASCII_SPINNER: &str = "|/-\\";
-
-    let bars = MultiProgress::new();
-
-    // Spinner
-    let spinner_style = if ascii {
-        ProgressStyle::with_template("{elapsed_precise} {spinner} {msg}")
-            .unwrap()
-            .tick_chars(ASCII_SPINNER)
-    } else {
-        ProgressStyle::with_template("{elapsed_precise} {spinner} {msg}").unwrap()
-    };
-    let spinner = ProgressBar::new_spinner()
-        .with_style(spinner_style)
-        .with_message(format!(
-            "SCANning {model_name} (target confidence {confidence}, precision {precision})",
-        ));
-    let spinner = bars.add(spinner);
-
-    // Progress bar
-    let bound = okamoto_bound(confidence, precision).ceil() as u64;
-    let progress_style =
-        ProgressStyle::with_template("[{bar:50}] {percent:>3}% ({pos}/{len}) ETA: {eta}")
-            .unwrap()
-            .progress_chars(if ascii { ASCII_BAR } else { FINE_BAR });
-    let progress_bar = ProgressBar::new(bound).with_style(progress_style);
-    let progress_bar = bars.add(progress_bar);
-
-    let line_style = ProgressStyle::with_template("Properties satisfaction:").unwrap();
-    let line = ProgressBar::new(0).with_style(line_style);
-    let line = bars.add(line);
-
-    // Property bars
-    let mut bars_guarantees = Vec::new();
-    let prop_style = if ascii {
-        ProgressStyle::with_template("[{bar:50}] {percent:>3}% {prefix} {msg}")
-            .unwrap()
-            .progress_chars(ASCII_BAR)
-    } else {
-        ProgressStyle::with_template("[{bar:50.green.on_red}] {percent:>3}% {prefix} {msg}")
-            .unwrap()
-            .progress_chars(FINE_BAR)
-    };
-
-    // Guarantees property bars
-    for name in guarantee_names.iter() {
-        let bar = bars.add(
-            ProgressBar::new(1)
-                .with_style(prop_style.clone())
-                .with_position(1)
-                .with_prefix(name.clone()),
-        );
-        bars_guarantees.push(bar);
-    }
-
-    // Overall property bar
-    let overall_style = if ascii {
-        ProgressStyle::with_template("[{bar:50}] {percent:>3}% {prefix} {msg}")
-            .unwrap()
-            .progress_chars(ASCII_BAR)
-    } else {
-        ProgressStyle::with_template("[{bar:50.blue.on_red}] {percent:>3}% {prefix} {msg}")
-            .unwrap()
-            .progress_chars(FINE_BAR)
-    };
-    let overall_bar = bars.add(
-        ProgressBar::new(1)
-            .with_style(overall_style)
-            .with_position(1)
-            .with_prefix("TOTAL"),
-    );
-
-    bars.set_move_cursor(true);
-    loop {
-        let run_status = bar_state.lock().expect("lock state").clone();
-        let successes = run_status.successes;
-        let failures = run_status.failures;
-        let running = run_status.running;
-        let runs = (successes + failures) as u64;
-        let rate = successes as f64 / runs as f64;
-        let guarantees = run_status.guarantees;
-        if running {
-            if runs > progress_bar.position() {
-                // Status spinner
-                spinner.tick();
-
-                let bound = adaptive_bound(rate, confidence, precision);
-                // let derived_precision =
-                //     derive_precision(run_status.successes, run_status.failures, confidence);
-                progress_bar.set_length(bound.ceil() as u64);
-                progress_bar.set_position(runs);
-                line.tick();
-                for (i, guarantee) in guarantees.iter().enumerate() {
-                    let pos = runs - *guarantee as u64;
-                    let bar = &mut bars_guarantees[i];
-                    bar.set_position(pos);
-                    bar.set_length(runs);
-                    if *guarantee > 0 {
-                        bar.set_message(format!("({guarantee} failed)"));
-                    }
-                    bar.tick();
-                }
-
-                // Overall property bar
-                let overall = guarantees.iter().sum::<u32>() as u64;
-                let pos = runs - overall;
-                overall_bar.set_position(pos);
-                overall_bar.set_length(runs);
-                if overall > 0 {
-                    overall_bar.set_message(format!("({overall} failed)"));
-                }
-                overall_bar.tick();
-            }
+        // Spinner
+        let spinner_style = if self.ascii {
+            ProgressStyle::with_template("{elapsed_precise} {spinner} {msg}")
+                .unwrap()
+                .tick_chars(ASCII_SPINNER)
         } else {
-            bars.set_move_cursor(false);
-            spinner.finish_and_clear();
-            progress_bar.finish_and_clear();
-            line.finish_and_clear();
-            bars_guarantees.iter().for_each(|b| b.finish_and_clear());
-            overall_bar.finish_and_clear();
-            // Magnitude of precision, to round results to sensible number of digits
-            let mag = (precision.log10().abs().ceil() as usize).max(2);
-            println!(
-                "SCAN results for {model_name} (confidence {confidence}, precision {precision})"
+            ProgressStyle::with_template("{elapsed_precise} {spinner} {msg}").unwrap()
+        };
+        let spinner = ProgressBar::new_spinner()
+            .with_style(spinner_style)
+            .with_message(format!(
+                "SCANning {model_name} (target confidence {}, precision {})",
+                self.confidence, self.precision
+            ));
+        let spinner = bars.add(spinner);
+
+        // Progress bar
+        let bound = okamoto_bound(self.confidence, self.precision).ceil() as u64;
+        let progress_style = if self.ascii {
+            ProgressStyle::with_template("{bar:50} {percent:>3}% ({pos}/{len}) ETA: {eta}")
+                .unwrap()
+                .progress_chars(ASCII_BAR)
+        } else {
+            ProgressStyle::with_template(
+                "{bar:50.white.on_black} {percent:>3}% ({pos}/{len}) ETA: {eta}",
+            )
+            .unwrap()
+            .progress_chars(FINE_BAR)
+        };
+        let progress_bar = ProgressBar::new(bound).with_style(progress_style);
+        let progress_bar = bars.add(progress_bar);
+
+        let line_style = ProgressStyle::with_template("Properties verification:").unwrap();
+        let line = ProgressBar::new(0).with_style(line_style);
+        let line = bars.add(line);
+
+        // Property bars
+        let mut bars_guarantees = Vec::new();
+        let prop_style = if self.ascii {
+            ProgressStyle::with_template("{bar:50} {percent:>3}% {prefix} {msg}")
+                .unwrap()
+                .progress_chars(ASCII_BAR)
+        } else {
+            ProgressStyle::with_template("{bar:50.green.on_red} {percent:>3}% {prefix} {msg}")
+                .unwrap()
+                .progress_chars(FINE_BAR)
+        };
+
+        // Guarantees property bars
+        for name in guarantee_names.iter() {
+            let bar = bars.add(
+                ProgressBar::new(1)
+                    .with_style(prop_style.clone())
+                    .with_position(1)
+                    .with_prefix(name.clone()),
             );
-            println!("Completed {runs} runs with {successes} successes, {failures} failures)");
-            for (i, name) in guarantee_names.iter().enumerate() {
-                let f = guarantees[i];
-                print!(
-                    "{name} success rate: {0:.1$}",
-                    ((runs - f as u64) as f64) / (runs as f64),
-                    mag,
-                );
-                if f > 0 {
-                    println!(" ({f} fails)");
-                } else {
-                    println!();
-                }
-            }
-            println!("Overall success rate: {rate:.0$}", mag);
-            break;
+            bars_guarantees.push(bar);
         }
-        // Sleep a while to limit update/refresh rate.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Overall property bar
+        let overall_style = if self.ascii {
+            ProgressStyle::with_template("{bar:50} {percent:>3}% {prefix} {msg}")
+                .unwrap()
+                .progress_chars(ASCII_BAR)
+        } else {
+            ProgressStyle::with_template("{bar:50.blue.on_red} {percent:>3}% {prefix} {msg}")
+                .unwrap()
+                .progress_chars(FINE_BAR)
+        };
+        let overall_bar = bars.add(
+            ProgressBar::new(1)
+                .with_style(overall_style)
+                .with_position(1)
+                .with_prefix("TOTAL"),
+        );
+
+        bars.set_move_cursor(true);
+        loop {
+            let run_status = bar_state.lock().expect("lock state").clone();
+            let successes = run_status.successes;
+            let failures = run_status.failures;
+            let running = run_status.running;
+            let runs = (successes + failures) as u64;
+            let rate = successes as f64 / runs as f64;
+            let guarantees = run_status.guarantees;
+            if running {
+                if runs > progress_bar.position() {
+                    // Status spinner
+                    spinner.tick();
+
+                    let bound = adaptive_bound(rate, self.confidence, self.precision);
+                    // let derived_precision =
+                    //     derive_precision(run_status.successes, run_status.failures, confidence);
+                    progress_bar.set_length(bound.ceil() as u64);
+                    progress_bar.set_position(runs);
+                    line.tick();
+                    for (i, guarantee) in guarantees.iter().enumerate() {
+                        let pos = runs - *guarantee as u64;
+                        let bar = &mut bars_guarantees[i];
+                        bar.set_position(pos);
+                        bar.set_length(runs);
+                        if *guarantee > 0 {
+                            bar.set_message(format!("({guarantee} failed)"));
+                        }
+                        bar.tick();
+                    }
+
+                    // Overall property bar
+                    let overall = guarantees.iter().sum::<u32>() as u64;
+                    let pos = runs - overall;
+                    overall_bar.set_position(pos);
+                    overall_bar.set_length(runs);
+                    if overall > 0 {
+                        overall_bar.set_message(format!("({overall} failed)"));
+                    }
+                    overall_bar.tick();
+                }
+            } else {
+                bars.set_move_cursor(false);
+                spinner.finish_and_clear();
+                progress_bar.finish_and_clear();
+                line.finish_and_clear();
+                bars_guarantees.iter().for_each(|b| b.finish_and_clear());
+                overall_bar.finish_and_clear();
+                // Magnitude of precision, to round results to sensible number of digits
+                let mag = (self.precision.log10().abs().ceil() as usize).max(2);
+                println!(
+                    "SCAN results for {model_name} (confidence {}, precision {})",
+                    self.confidence, self.precision
+                );
+                println!("Completed {runs} runs with {successes} successes, {failures} failures)");
+                for (i, name) in guarantee_names.iter().enumerate() {
+                    let f = guarantees[i];
+                    print!(
+                        "{name} success rate: {0:.1$}",
+                        ((runs - f as u64) as f64) / (runs as f64),
+                        mag,
+                    );
+                    if f > 0 {
+                        println!(" ({f} fails)");
+                    } else {
+                        println!();
+                    }
+                }
+                println!("Overall success rate: {rate:.0$}", mag);
+                break;
+            }
+            // Sleep a while to limit update/refresh rate.
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 }
