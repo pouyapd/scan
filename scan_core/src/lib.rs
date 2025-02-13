@@ -21,19 +21,26 @@ pub use smc::*;
 /// The type that represents time.
 pub type Time = u32;
 
+#[derive(Debug, Clone, Copy)]
+pub enum RunOutcome {
+    Incomplete,
+    Success,
+    Fail(usize),
+}
+
 /// Trait that handles streaming of traces,
 /// e.g., to print them to file.
-pub trait Tracer<A> {
+pub trait Tracer<A>: Clone + Send + Sync {
     /// Initialize new streaming.
     ///
     /// This method needs to be called once, before calls to [`Self::trace`].
     fn init(&mut self);
 
     /// Stream a new state of the trace.
-    fn trace(&mut self, action: &A, time: Time, state: &[bool]);
+    fn trace<I: IntoIterator<Item = Val>>(&mut self, action: &A, time: Time, ports: I);
 
     /// Finalize and close streaming.
     ///
     /// This method needs to be called at the end of the execution.
-    fn finalize(self, success: Option<bool>);
+    fn finalize(self, outcome: RunOutcome);
 }
