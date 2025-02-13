@@ -3,7 +3,7 @@
 // TODO list:
 // * add support (if later needed) to the following features:
 //      * Model -> "restrict-initial"
-//      * BasicType
+//      * BoundedType
 //      * Type -> "clock" and "continuous"
 //      * VariableDeclaration -> "transient"
 //      * Automaton -> "restrict-initial"
@@ -160,6 +160,9 @@ impl ModelBuilder {
                     }
                 }
             }
+            ASTNode::ASTEmpty => {
+                return Ok(());
+            }
             _ => {
                 return Err(BuildingError::UnknownError);
             }
@@ -240,14 +243,19 @@ impl ModelBuilder {
                                 &mut None,
                             )?;
                         }
-                        ASTNode::ASTVariableDeclarationTransient { transient: _ } => {
-                            return Err(BuildingError::FeatureNotSupported(
-                                "\"transient\"".to_string(),
-                            ));
+                        ASTNode::ASTVariableDeclarationTransient { transient } => {
+                            if transient {
+                                return Err(BuildingError::FeatureNotSupported(
+                                    "\"transient\"".to_string(),
+                                ));
+                            }
                         }
                         _ => continue,
                     }
                 }
+            }
+            ASTNode::ASTEmpty => {
+                return Ok(());
             }
             _ => {
                 return Err(BuildingError::UnknownError);
@@ -459,12 +467,17 @@ impl ModelBuilder {
                                     "\"time-progress\"".to_string(),
                                 ));
                             }
-                            ASTNode::ASTAutomatonLocationTransientValues {
-                                transient_values: _,
-                            } => {
-                                return Err(BuildingError::FeatureNotSupported(
-                                    "\"transient-values\"".to_string(),
-                                ));
+                            ASTNode::ASTAutomatonLocationTransientValues { transient_values } => {
+                                for v in transient_values {
+                                    match v {
+                                        ASTNode::ASTEmpty => {}
+                                        _ => {
+                                            return Err(BuildingError::FeatureNotSupported(
+                                                "\"transient-values\"".to_string(),
+                                            ));
+                                        }
+                                    }
+                                }
                             }
                             _ => continue,
                         }
@@ -532,10 +545,12 @@ impl ModelBuilder {
                                     &mut None,
                                 )?;
                             }
-                            ASTNode::ASTVariableDeclarationTransient { transient: _ } => {
-                                return Err(BuildingError::FeatureNotSupported(
-                                    "\"transient\"".to_string(),
-                                ));
+                            ASTNode::ASTVariableDeclarationTransient { transient } => {
+                                if transient {
+                                    return Err(BuildingError::FeatureNotSupported(
+                                        "\"transient\"".to_string(),
+                                    ));
+                                }
                             }
                             _ => continue,
                         }
@@ -577,6 +592,7 @@ impl ModelBuilder {
                         }
                     }
                 }
+                ASTNode::ASTEmpty => {}
                 _ => {
                     return Err(BuildingError::UnknownError);
                 }
@@ -788,6 +804,7 @@ impl ModelBuilder {
                                                                         }
                                                                     }
                                                                 },
+                                                                ASTNode::ASTEmpty => { },
                                                                 _ => {
                                                                     return Err(BuildingError::UnknownError);
                                                                 }

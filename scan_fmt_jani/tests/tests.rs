@@ -13,17 +13,25 @@ fn jani_test2() {
     test(Path::new("./tests/test2.jani"))
 }
 
-// FAIL: Feature not supported: probability
-// #[test]
-// fn die() {
-//     test(Path::new("./tests/die.jani"))
-// }
+#[test]
+fn die() {
+    parse_test(Path::new("./tests/die.jani"))
+}
 
-// FAIL: Feature not supported: probability
-// #[test]
-// fn dining_crypt3() {
-//     test(Path::new("./tests/dining_crypt3.jani"))
-// }
+#[test]
+fn dining_crypt3() {
+    parse_test(Path::new("./tests/dining_crypt3.jani"))
+}
+
+#[test]
+fn ij_3() {
+    parse_test(Path::new("./tests/ij.3.jani"))
+}
+
+fn parse_test(path: &Path) {
+    let _ast = scan_fmt_jani::Parser::parse(path).unwrap();
+    // println!("{ast:?}");
+}
 
 fn test(path: &Path) {
     let ast = scan_fmt_jani::Parser::parse(path).unwrap();
