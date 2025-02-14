@@ -54,7 +54,7 @@ impl Cli {
         }
     }
 
-    pub fn run_scxml(&self) -> anyhow::Result<()> {
+    fn run_scxml(&self) -> anyhow::Result<()> {
         let (cs_model, scxml_model) = scan_fmt_xml::load(&self.path)?;
         let scxml_model = Arc::new(scxml_model);
         let confidence = self.confidence;
@@ -76,7 +76,7 @@ impl Cli {
         Ok(())
     }
 
-    pub fn run_jani(&self) -> anyhow::Result<()> {
+    fn run_jani(&self) -> anyhow::Result<()> {
         use scan_fmt_jani::*;
 
         let jani_model = Parser::parse(self.path.as_path())?;
