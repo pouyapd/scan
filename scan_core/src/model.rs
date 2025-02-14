@@ -95,10 +95,36 @@ impl CsModelBuilder {
 /// Represents the state of the current verification run.
 #[derive(Debug, Clone, Default)]
 pub struct RunStatus {
-    pub successes: u32,
-    pub failures: u32,
-    pub running: bool,
-    pub guarantees: Vec<u32>,
+    /// Whether the verification is still running (`true`) or has terminated (`false`).
+    running: bool,
+    /// How many runs have succeeded.
+    successes: u32,
+    /// How many runs have failed.
+    failures: u32,
+    /// How many times each guarantee has been violated.
+    guarantees: Vec<u32>,
+}
+
+impl RunStatus {
+    /// Gets the running status of the verification run.
+    pub fn running(&self) -> bool {
+        self.running
+    }
+
+    /// Gets the current number of successful runs.
+    pub fn successes(&self) -> u32 {
+        self.successes
+    }
+
+    /// Gets the current number of failed runs.
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
+
+    /// Gets the current number of violations for the guarantee corresponding to `index`.
+    pub fn guarantee(&self, index: usize) -> Option<u32> {
+        self.guarantees.get(index).copied()
+    }
 }
 
 /// Transition system model based on a [`ChannelSystem`].
