@@ -1,41 +1,42 @@
 use super::{
     Action, Clock, FnEffect, FnExpression, Location, PgError, PgExpression, ProgramGraph,
-    TimeConstraint, Var, EPSILON, TIME, WAIT,
+    TimeConstraint, Var, EPSILON,
 };
 use crate::{
     grammar::{Type, Val},
     program_graph::ProgramGraphDef,
-    Integer,
 };
 use log::info;
-use std::collections::HashMap;
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 enum Effect {
-    Effects(Vec<(Var, PgExpression)>),
+    Effects(Vec<(Var, PgExpression)>, Vec<Clock>),
     Send(PgExpression),
     Receive(Var),
 }
 
-impl From<Effect> for FnEffect {
+impl<R: Rng + 'static> From<Effect> for FnEffect<R> {
     fn from(value: Effect) -> Self {
         match value {
-            Effect::Effects(effects) => {
+            Effect::Effects(effects, resets) => {
                 let mut effects = effects
                     .into_iter()
-                    .map(|(var, expr)| -> (Var, FnExpression<Var>) {
-                        (var, FnExpression::<Var>::from(expr))
+                    .map(|(var, expr)| -> (Var, FnExpression<Var, _>) {
+                        (var, FnExpression::<Var, _>::from(expr))
                     })
                     .collect::<Vec<_>>();
                 effects.shrink_to_fit();
-                FnEffect::Effects(effects)
+                FnEffect::Effects(effects, resets)
             }
             Effect::Send(msg) => FnEffect::Send(msg.into()),
             Effect::Receive(var) => FnEffect::Receive(var),
         }
     }
 }
+
+type TransitionBuilder = (Action, Location, Option<PgExpression>, Vec<TimeConstraint>);
 
 /// Defines and builds a PG.
 #[derive(Debug, Clone)]
@@ -44,8 +45,11 @@ pub struct ProgramGraphBuilder {
     effects: Vec<Effect>,
     // Transitions are indexed by locations
     // We can assume there is at most one condition by logical disjunction
-    transitions: Vec<HashMap<(Action, Location), Option<PgExpression>>>,
+    locations: Vec<(Vec<TransitionBuilder>, Vec<TimeConstraint>)>,
+    // Time invariants of each location
     vars: Vec<Val>,
+    // Number of clocks
+    clocks: u16,
 }
 
 impl Default for ProgramGraphBuilder {
@@ -64,15 +68,13 @@ impl ProgramGraphBuilder {
         let mut pgb = Self {
             effects: Vec::new(),
             vars: Vec::new(),
-            transitions: Vec::new(),
+            locations: Vec::new(),
+            clocks: 0,
         };
         // Create an initial location and make sure it is equal to the constant `Self::INITIAL_LOCATION`
         // This is the simplest way to make sure the state of the builder is always consistent
         let initial_location = pgb.new_location();
         assert_eq!(initial_location, Self::INITIAL);
-
-        let time = pgb.new_clock();
-        assert_eq!(time, TIME);
 
         pgb
     }
@@ -92,6 +94,7 @@ impl ProgramGraphBuilder {
     }
 
     /// Adds a new variable with the given initial value (and the inferred type) to the PG.
+    /// It creates and uses a default RNG for probabilistic expressions.
     ///
     /// It fails if the expression giving the initial value of the variable is not well-typed.
     ///
@@ -107,31 +110,102 @@ impl ProgramGraphBuilder {
     ///     .expect_err("expression is badly-typed");
     /// ```
     pub fn new_var(&mut self, init: PgExpression) -> Result<Var, PgError> {
+        let mut rng = SmallRng::from_os_rng();
+        self.new_var_with_rng(init, &mut rng)
+    }
+
+    /// Adds a new variable with the given initial value (and the inferred type) to the PG,
+    /// using the given RNG for probabilistic expressions.
+    ///
+    /// It fails if the expression giving the initial value of the variable is not well-typed.
+    ///
+    /// ```
+    /// # use scan_core::program_graph::{PgExpression, ProgramGraphBuilder, Var};
+    /// # use rand::rngs::SmallRng;
+    /// # use rand::{Rng, SeedableRng};
+    /// # let mut pg_builder = ProgramGraphBuilder::new();
+    /// // Create RNG using `rand`
+    /// let mut rng = SmallRng::from_os_rng();
+    ///
+    /// // Create a new variable
+    /// let var: Var = pg_builder
+    ///     .new_var_with_rng(PgExpression::RandBool(0.5), &mut rng)
+    ///     .expect("expression is well-typed");
+    /// ```
+    pub fn new_var_with_rng<R: Rng + 'static>(
+        &mut self,
+        init: PgExpression,
+        rng: &mut R,
+    ) -> Result<Var, PgError> {
         let idx = self.vars.len();
         // We check the type to make sure the expression is well-formed
         let _ = init.r#type().map_err(PgError::Type)?;
         init.context(&|var| self.vars.get(var.0 as usize).map(Val::r#type))
             .map_err(PgError::Type)?;
-        let val = FnExpression::from(init).eval(&|var| self.vars[var.0 as usize].clone());
+        let val = FnExpression::from(init).eval(&|var| self.vars[var.0 as usize].clone(), rng);
         self.vars.push(val);
         Ok(Var(idx as u16))
     }
 
-    /// Adds a new clock returns a [`Clock`] id object.
+    /// Adds a new clock and returns a [`Clock`] id object.
     ///
     /// See also [`crate::channel_system::ChannelSystemBuilder::new_clock`].
     pub fn new_clock(&mut self) -> Clock {
-        let idx = self.vars.len();
-        self.vars.push(Val::Integer(0));
-        Clock(idx as u16)
+        // We adopt the convention of indexing n clocks from 0 to n-1
+        let idx = self.clocks;
+        self.clocks += 1;
+        Clock(idx)
     }
 
     /// Adds a new action to the PG.
+    ///
+    /// ```
+    /// # use scan_core::program_graph::{Action, ProgramGraphBuilder};
+    /// # let mut pg_builder = ProgramGraphBuilder::new();
+    /// // Create a new action
+    /// let action: Action = pg_builder.new_action();
+    /// ```
+    #[inline(always)]
     pub fn new_action(&mut self) -> Action {
-        // Actions are indexed progressively
         let idx = self.effects.len();
-        self.effects.push(Effect::Effects(Vec::new()));
+        self.effects.push(Effect::Effects(Vec::new(), Vec::new()));
         Action(idx as u16)
+    }
+
+    /// Associates a clock reset to an action.
+    ///
+    /// Returns an error if the clock to be reset does not belong to the Program Graph.
+    ///
+    /// ```
+    /// # use scan_core::program_graph::{Clock, ProgramGraphBuilder};
+    /// # let mut pg_builder = ProgramGraphBuilder::new();
+    /// # let mut other_pg_builder = ProgramGraphBuilder::new();
+    /// let action = pg_builder.new_action();
+    /// let clock = other_pg_builder.new_clock();
+    /// // Associate action with clock reset
+    /// pg_builder
+    ///     .add_reset(action, clock)
+    ///     .expect_err("the clock does not belong to this PG");
+    /// ```
+    pub fn add_reset(&mut self, action: Action, clock: Clock) -> Result<(), PgError> {
+        if action == EPSILON {
+            return Err(PgError::NoEffects);
+        }
+        if clock.0 >= self.clocks {
+            return Err(PgError::MissingClock(clock));
+        }
+        match self
+            .effects
+            .get_mut(action.0 as usize)
+            .ok_or(PgError::MissingAction(action))?
+        {
+            Effect::Effects(_, resets) => {
+                resets.push(clock);
+                Ok(())
+            }
+            Effect::Send(_) => Err(PgError::EffectOnSend),
+            Effect::Receive(_) => Err(PgError::EffectOnReceive),
+        }
     }
 
     /// Adds an effect to the given action.
@@ -140,18 +214,21 @@ impl ProgramGraphBuilder {
     /// It fails if the type of the variable and that of the expression do not match.
     ///
     /// ```
-    /// # use scan_core::program_graph::{PgExpression, ProgramGraphBuilder};
+    /// # use scan_core::program_graph::{Action, PgExpression, ProgramGraphBuilder, Var};
     /// # let mut pg_builder = ProgramGraphBuilder::new();
     /// // Create a new action
-    /// let action = pg_builder.new_action();
+    /// let action: Action = pg_builder.new_action();
     ///
     /// // Create a new variable
-    /// let var = pg_builder.new_var(PgExpression::from(true)).expect("expression is well-typed");
+    /// let var: Var = pg_builder.new_var(PgExpression::from(true)).expect("expression is well-typed");
     ///
     /// // Add an effect to the action
     /// pg_builder
     ///     .add_effect(action, var, PgExpression::from(1))
     ///     .expect_err("var is of type bool but expression is of type integer");
+    /// pg_builder
+    ///     .add_effect(action, var, PgExpression::from(false))
+    ///     .expect("var and expression type match");
     /// ```
     pub fn add_effect(
         &mut self,
@@ -159,7 +236,7 @@ impl ProgramGraphBuilder {
         var: Var,
         effect: PgExpression,
     ) -> Result<(), PgError> {
-        if action == EPSILON || action == WAIT {
+        if action == EPSILON {
             return Err(PgError::NoEffects);
         }
         effect
@@ -176,7 +253,7 @@ impl ProgramGraphBuilder {
                 .get_mut(action.0 as usize)
                 .ok_or(PgError::MissingAction(action))?
             {
-                Effect::Effects(effects) => {
+                Effect::Effects(effects, _) => {
                     effects.push((var, effect));
                     Ok(())
                 }
@@ -185,24 +262,6 @@ impl ProgramGraphBuilder {
             }
         } else {
             Err(PgError::TypeMismatch)
-        }
-    }
-
-    /// Adds resetting the clock as an effect of the given action.
-    ///
-    /// Fails if either the action or the clock do not belong to the PG.
-    ///
-    /// See also [`crate::channel_system::ChannelSystemBuilder::reset_clock`].
-    pub fn reset_clock(&mut self, action: Action, clock: Clock) -> Result<(), PgError> {
-        if clock == TIME {
-            // return an error
-            Err(PgError::TimeClock)
-        } else {
-            self.add_effect(
-                action,
-                Var(clock.0),
-                PgExpression::Var(Var(TIME.0), Type::Integer),
-            )
         }
     }
 
@@ -229,23 +288,26 @@ impl ProgramGraphBuilder {
     }
 
     /// Adds a new location to the PG and returns its [`Location`] indexing object.
+    #[inline(always)]
     pub fn new_location(&mut self) -> Location {
-        // Locations are indexed progressively
-        let idx = self.transitions.len();
-        self.transitions.push(HashMap::new());
-        Location(idx as u16)
+        self.new_timed_location(Vec::new())
+            .expect("new untimed location")
     }
 
     /// Adds a new location to the PG with the given time invariants,
     /// and returns its [`Location`] indexing object.
-    pub fn new_timed_location(&mut self, invariants: &[TimeConstraint]) -> Location {
-        // Locations are indexed progressively
-        let idx = self.transitions.len();
-        self.transitions.push(HashMap::new());
-        let loc = Location(idx as u16);
-        self.add_timed_transition(loc, WAIT, loc, None, invariants)
-            .expect("add wait transition");
-        loc
+    pub fn new_timed_location(
+        &mut self,
+        invariants: Vec<TimeConstraint>,
+    ) -> Result<Location, PgError> {
+        if let Some((clock, _, _)) = invariants.iter().find(|(c, _, _)| c.0 >= self.clocks) {
+            Err(PgError::MissingClock(*clock))
+        } else {
+            // Locations are indexed progressively
+            let idx = self.locations.len();
+            self.locations.push((Vec::new(), invariants));
+            Ok(Location(idx as u16))
+        }
     }
 
     /// Adds a transition to the PG.
@@ -275,6 +337,7 @@ impl ProgramGraphBuilder {
     ///     .add_transition(initial_loc, action, initial_loc, Some(PgExpression::from(1)))
     ///     .expect_err("the guard expression is not boolean");
     /// ```
+    #[inline(always)]
     pub fn add_transition(
         &mut self,
         pre: Location,
@@ -282,41 +345,7 @@ impl ProgramGraphBuilder {
         post: Location,
         guard: Option<PgExpression>,
     ) -> Result<(), PgError> {
-        // Check 'pre' and 'post' locations exists
-        if self.transitions.len() as u16 <= pre.0 {
-            Err(PgError::MissingLocation(pre))
-        } else if self.transitions.len() as u16 <= post.0 {
-            Err(PgError::MissingLocation(post))
-        } else if action != EPSILON && action != WAIT && self.effects.len() as u16 <= action.0 {
-            // Check 'action' exists
-            Err(PgError::MissingAction(action))
-        } else if guard
-            .as_ref()
-            .is_some_and(|guard| !matches!(guard.r#type(), Ok(Type::Boolean)))
-        {
-            Err(PgError::TypeMismatch)
-        } else {
-            if let Some(guard) = guard.clone() {
-                guard
-                    .context(&|var| self.vars.get(var.0 as usize).map(Val::r#type))
-                    .map_err(PgError::Type)?;
-            }
-            let transitions = &mut self.transitions[pre.0 as usize];
-            let _ = transitions
-                .entry((action, post))
-                .and_modify(|previous_guard| {
-                    if let Some(previous_guard) = previous_guard.as_mut() {
-                        if let Some(guard) = guard.clone() {
-                            *previous_guard =
-                                PgExpression::or(vec![previous_guard.clone(), guard.clone()]);
-                        }
-                    } else {
-                        *previous_guard = guard.clone()
-                    }
-                })
-                .or_insert(guard);
-            Ok(())
-        }
+        self.add_timed_transition(pre, action, post, guard, Vec::new())
     }
 
     /// Adds a timed transition to the PG under timed constraints.
@@ -339,10 +368,10 @@ impl ProgramGraphBuilder {
     ///
     /// // Add a timed transition
     /// pg_builder
-    ///     .add_timed_transition(initial_loc, action, initial_loc, None, &[(clock, None, Some(1))])
+    ///     .add_timed_transition(initial_loc, action, initial_loc, None, vec![(clock, None, Some(1))])
     ///     .expect("this transition can be added");
     /// pg_builder
-    ///     .add_timed_transition(initial_loc, action, initial_loc, Some(PgExpression::from(1)), &[(clock, Some(1), None)])
+    ///     .add_timed_transition(initial_loc, action, initial_loc, Some(PgExpression::from(1)), vec![(clock, Some(1), None)])
     ///     .expect_err("the guard expression is not boolean");
     /// ```
     pub fn add_timed_transition(
@@ -351,41 +380,34 @@ impl ProgramGraphBuilder {
         action: Action,
         post: Location,
         guard: Option<PgExpression>,
-        constraints: &[TimeConstraint],
+        constraints: Vec<TimeConstraint>,
     ) -> Result<(), PgError> {
-        let time_constraints = constraints
-            .iter()
-            .flat_map(|(clock, lower_bound, upper_bound)| {
-                let lower_bound = lower_bound.map(|lower_bound| {
-                    PgExpression::LessEq(Box::new((
-                        PgExpression::Const(Val::Integer(lower_bound as Integer)),
-                        PgExpression::Sum(vec![
-                            PgExpression::Var(Var(TIME.0), Type::Integer),
-                            PgExpression::Opposite(Box::new(PgExpression::Var(
-                                Var(clock.0),
-                                Type::Integer,
-                            ))),
-                        ]),
-                    )))
-                });
-                let upper_bound = upper_bound.map(|upper_bound| {
-                    PgExpression::LessEq(Box::new((
-                        PgExpression::Sum(vec![
-                            PgExpression::Var(Var(TIME.0), Type::Integer),
-                            PgExpression::Opposite(Box::new(PgExpression::Var(
-                                Var(clock.0),
-                                Type::Integer,
-                            ))),
-                        ]),
-                        PgExpression::Const(Val::Integer(upper_bound as Integer)),
-                    )))
-                });
-                lower_bound.into_iter().chain(upper_bound)
-            });
-
-        let guard = PgExpression::and(time_constraints.chain(guard).collect());
-
-        self.add_transition(pre, action, post, Some(guard))
+        // Check 'pre' and 'post' locations exists
+        if self.locations.len() as u16 <= pre.0 {
+            Err(PgError::MissingLocation(pre))
+        } else if self.locations.len() as u16 <= post.0 {
+            Err(PgError::MissingLocation(post))
+        } else if action != EPSILON && self.effects.len() as u16 <= action.0 {
+            // Check 'action' exists
+            Err(PgError::MissingAction(action))
+        } else if guard
+            .as_ref()
+            .is_some_and(|guard| !matches!(guard.r#type(), Ok(Type::Boolean)))
+        {
+            Err(PgError::TypeMismatch)
+        } else if let Some((clock, _, _)) = constraints.iter().find(|(c, _, _)| c.0 >= self.clocks)
+        {
+            Err(PgError::MissingClock(*clock))
+        } else {
+            if let Some(guard) = guard.clone() {
+                guard
+                    .context(&|var| self.vars.get(var.0 as usize).map(Val::r#type))
+                    .map_err(PgError::Type)?;
+            }
+            let (transitions, _) = &mut self.locations[pre.0 as usize];
+            transitions.push((action, post, guard, constraints));
+            Ok(())
+        }
     }
 
     /// Adds an autonomous transition to the PG, i.e., a transition enabled by the epsilon action.
@@ -411,6 +433,7 @@ impl ProgramGraphBuilder {
     ///     .add_autonomous_transition(initial_loc, initial_loc, Some(PgExpression::from(1)))
     ///     .expect_err("the guard expression is not boolean");
     /// ```
+    #[inline(always)]
     pub fn add_autonomous_transition(
         &mut self,
         pre: Location,
@@ -437,18 +460,19 @@ impl ProgramGraphBuilder {
     ///
     /// // Add an autonomous timed transition
     /// pg_builder
-    ///     .add_autonomous_timed_transition(initial_loc, initial_loc, None, &[(clock, None, Some(1))])
+    ///     .add_autonomous_timed_transition(initial_loc, initial_loc, None, vec![(clock, None, Some(1))])
     ///     .expect("this transition can be added");
     /// pg_builder
-    ///     .add_autonomous_timed_transition(initial_loc, initial_loc, Some(PgExpression::from(1)), &[(clock, Some(1), None)])
+    ///     .add_autonomous_timed_transition(initial_loc, initial_loc, Some(PgExpression::from(1)), vec![(clock, Some(1), None)])
     ///     .expect_err("the guard expression is not boolean");
     /// ```
+    #[inline(always)]
     pub fn add_autonomous_timed_transition(
         &mut self,
         pre: Location,
         post: Location,
         guard: Option<PgExpression>,
-        constraints: &[TimeConstraint],
+        constraints: Vec<TimeConstraint>,
     ) -> Result<(), PgError> {
         self.add_timed_transition(pre, EPSILON, post, guard, constraints)
     }
@@ -457,42 +481,43 @@ impl ProgramGraphBuilder {
     ///
     /// Since the construction of the builder is already checked ad every step,
     /// this method cannot fail.
-    pub fn build(mut self) -> ProgramGraph {
+    pub fn build<R: Rng + 'static>(mut self) -> ProgramGraph<R> {
         // Since vectors of effects and transitions will become unmutable,
         // they should be shrunk to take as little space as possible
         self.effects.shrink_to_fit();
-        self.transitions.shrink_to_fit();
-        let transitions = self
-            .transitions
-            .into_iter()
-            .map(|v| {
-                let mut trans = Vec::from_iter(
-                    v.into_iter()
-                        .map(|((a, p), g)| (a, p, g.map(FnExpression::from))),
-                );
-                trans.sort_unstable_by_key(|(a, p, _)| (*a, *p));
-                trans.shrink_to_fit();
-                trans
-            })
-            .collect::<Vec<Vec<_>>>();
         // Vars are not going to be unmutable,
         // but their number will be constant anyway
         self.vars.shrink_to_fit();
+        let mut locations = self
+            .locations
+            .into_iter()
+            .map(|(transitions, invariants)| {
+                let mut transitions = transitions
+                    .into_iter()
+                    .map(|(a, p, guard, c)| (a, p, guard.map(FnExpression::from), c))
+                    .collect::<Vec<_>>();
+                transitions.sort_unstable_by_key(|(a, p, ..)| (*a, *p));
+                transitions.shrink_to_fit();
+                (transitions, invariants)
+            })
+            .collect::<Vec<_>>();
+        locations.shrink_to_fit();
         // Build program graph
         info!(
             "create Program Graph with:\n{} locations\n{} actions\n{} vars",
-            transitions.len(),
+            locations.len(),
             self.effects.len(),
             self.vars.len()
         );
         let def = ProgramGraphDef {
             effects: self.effects.into_iter().map(FnEffect::from).collect(),
-            transitions,
+            locations,
         };
         ProgramGraph {
             current_location: Self::INITIAL,
             vars: self.vars,
             def: Arc::new(def),
+            clocks: vec![0; self.clocks as usize],
         }
     }
 }

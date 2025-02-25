@@ -3,6 +3,8 @@ use crate::{
     adaptive_bound, Expression, FnExpression, Pmtl, PmtlOracle, RunOutcome, Time, Tracer, Val,
 };
 use log::{info, trace};
+use rand::rngs::mock::StepRng;
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::collections::{btree_map, BTreeMap};
 use std::sync::{Arc, Mutex};
@@ -18,17 +20,17 @@ pub enum Atom {
 
 /// A builder type for [`CsModel`].
 #[derive(Debug)]
-pub struct CsModelBuilder {
-    cs: ChannelSystem,
+pub struct CsModelBuilder<R: Rng> {
+    cs: ChannelSystem<R>,
     ports: BTreeMap<Channel, Val>,
-    predicates: Vec<FnExpression<Atom>>,
+    predicates: Vec<FnExpression<Atom, StepRng>>,
     assumes: Vec<Pmtl<usize>>,
     guarantees: Vec<Pmtl<usize>>,
 }
 
-impl CsModelBuilder {
+impl<R: Rng> CsModelBuilder<R> {
     /// Creates new [`CsModelBuilder`] from a [`ChannelSystem`].
-    pub fn new(initial_state: ChannelSystem) -> Self {
+    pub fn new(initial_state: ChannelSystem<R>) -> Self {
         // TODO: Check predicates are Boolean expressions and that conversion does not fail
         Self {
             cs: initial_state,
@@ -53,11 +55,14 @@ impl CsModelBuilder {
     /// Adds a new predicate to the [`CsModelBuilder`],
     /// which is an expression over the CS's channels.
     pub fn add_predicate(&mut self, predicate: Expression<Atom>) -> usize {
-        let predicate = FnExpression::<Atom>::from(predicate);
-        let _ = predicate.eval(&|port| match port {
-            Atom::State(channel) => self.ports.get(&channel).unwrap().clone(),
-            Atom::Event(_event) => Val::Boolean(false),
-        });
+        let predicate = FnExpression::<Atom, _>::from(predicate);
+        let _ = predicate.eval(
+            &|port| match port {
+                Atom::State(channel) => self.ports.get(&channel).unwrap().clone(),
+                Atom::Event(_event) => Val::Boolean(false),
+            },
+            &mut StepRng::new(0, 1),
+        );
         self.predicates.push(predicate);
         self.predicates.len() - 1
     }
@@ -76,7 +81,7 @@ impl CsModelBuilder {
     ///
     /// Predicates have to be passed all at once,
     /// as it is not possible to add any further ones after the [`CsModel`] has been initialized.
-    pub fn build(self) -> CsModel {
+    pub fn build(self) -> CsModel<R> {
         let mut run_state = RunStatus::default();
         let guarantees = self.guarantees.to_vec();
         run_state.guarantees = vec![0; self.guarantees.len()];
@@ -132,18 +137,19 @@ impl RunStatus {
 /// It is essentially a CS which keeps track of the [`Event`]s produced by the execution
 /// and determining a set of predicates.
 #[derive(Debug, Clone)]
-pub struct CsModel {
-    cs: ChannelSystem,
+pub struct CsModel<R: Rng> {
+    cs: ChannelSystem<R>,
     ports: BTreeMap<Channel, Val>,
-    predicates: Arc<Vec<FnExpression<Atom>>>,
+    // TODO: predicates should not use rng
+    predicates: Arc<Vec<FnExpression<Atom, StepRng>>>,
     oracle: PmtlOracle,
     run_status: Arc<Mutex<RunStatus>>,
 }
 
-impl CsModel {
+impl<R: Rng + SeedableRng + Sync + Clone> CsModel<R> {
     /// Gets the underlying [`ChannelSystem`].
     #[inline(always)]
-    pub fn channel_system(&self) -> &ChannelSystem {
+    pub fn channel_system(&self) -> &ChannelSystem<R> {
         &self.cs
     }
 
@@ -156,10 +162,13 @@ impl CsModel {
         self.predicates
             .iter()
             .map(|prop| {
-                if let Val::Boolean(b) = prop.eval(&|port| match port {
-                    Atom::State(channel) => self.ports.get(&channel).unwrap().clone(),
-                    Atom::Event(event) => Val::Boolean(*last_event == event),
-                }) {
+                if let Val::Boolean(b) = prop.eval(
+                    &|port| match port {
+                        Atom::State(channel) => self.ports.get(&channel).unwrap().clone(),
+                        Atom::Event(event) => Val::Boolean(*last_event == event),
+                    },
+                    &mut StepRng::new(0, 1),
+                ) {
                     Some(b)
                 } else {
                     None
@@ -206,7 +215,8 @@ impl CsModel {
                 if let Some(tracer) = tracer.as_mut() {
                     tracer.init();
                 }
-                let result = self.clone().experiment(&mut tracer, length, duration);
+                let model = self.clone();
+                let result = model.experiment(&mut tracer, length, duration);
                 let run_status = &mut *self.run_status.lock().expect("lock state");
                 if run_status.running {
                     if let Some(tracer) = tracer {
@@ -260,13 +270,11 @@ impl CsModel {
     where
         P: Tracer<Event>,
     {
-        use rand::rngs::SmallRng;
-        use rand::SeedableRng;
-
+        // WARN: without reseeding experiments will not be randomized!
+        self.cs.reseed_rng();
         let mut current_len = 0;
-        let rng = &mut SmallRng::from_os_rng();
         trace!("new run starting");
-        while let Some(event) = self.cs.montecarlo_execution(rng, duration) {
+        while let Some(event) = self.cs.montecarlo_execution(duration) {
             // We only need to keep track of events that are associated to the ports
             if let btree_map::Entry::Occupied(mut e) = self.ports.entry(event.channel) {
                 if let EventType::Send(ref val) = event.event_type {

@@ -6,6 +6,8 @@ use crate::channel_system::ChannelSystemDef;
 use crate::grammar::Type;
 use crate::Expression;
 use log::info;
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -96,23 +98,45 @@ impl TryFrom<(PgId, CsExpression)> for PgExpression {
                 (pg_id, comps.0).try_into()?,
                 (pg_id, comps.1).try_into()?,
             )))),
+            Expression::RandBool(p) => Ok(Expression::RandBool(p)),
+            Expression::RandInt(l, u) => Ok(Expression::RandInt(l, u)),
         }
     }
 }
 
 /// The object used to define and build a CS.
-#[derive(Debug, Default, Clone)]
-pub struct ChannelSystemBuilder {
+#[derive(Debug, Clone)]
+pub struct ChannelSystemBuilder<R: Rng> {
     program_graphs: Vec<ProgramGraphBuilder>,
     channels: Vec<(Type, Option<usize>)>,
     communications: HashMap<Action, (Channel, Message)>,
+    rng: R,
 }
 
-impl ChannelSystemBuilder {
-    /// Create a new [`ProgramGraphBuilder`].
+impl ChannelSystemBuilder<SmallRng> {
+    /// Create a new [`ProgramGraphBuilder`] with a default RNG (see also `ChannelSystemBuilder::new_with_rng`).
     /// At creation, this will be completely empty.
     pub fn new() -> Self {
-        Self::default()
+        Self::new_with_rng(SmallRng::from_os_rng())
+    }
+}
+
+impl Default for ChannelSystemBuilder<SmallRng> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R: Rng + 'static> ChannelSystemBuilder<R> {
+    /// Create a new [`ProgramGraphBuilder`] with the given RNG (see also `ChannelSystemBuilder::new`).
+    /// At creation, this will be completely empty.
+    pub fn new_with_rng(rng: R) -> Self {
+        Self {
+            program_graphs: Vec::new(),
+            channels: Vec::new(),
+            communications: HashMap::new(),
+            rng,
+        }
     }
 
     /// Add a new PG to the CS.
@@ -147,7 +171,7 @@ impl ChannelSystemBuilder {
             .ok_or(CsError::MissingPg(pg_id))?;
         let init = PgExpression::try_from((pg_id, init))?;
         let var = pg
-            .new_var(init)
+            .new_var_with_rng(init, &mut self.rng)
             .map_err(|err| CsError::ProgramGraph(pg_id, err))?;
         Ok(Var(pg_id, var))
     }
@@ -174,6 +198,28 @@ impl ChannelSystemBuilder {
             .get_mut(pg_id.0 as usize)
             .ok_or(CsError::MissingPg(pg_id))
             .map(|pg| Action(pg_id, pg.new_action()))
+    }
+
+    /// Adds resetting the clock as an effect of the given action.
+    ///
+    /// Fails if either the PG does not belong to the CS,
+    /// or either the action or the clock do not belong to the PG.
+    ///
+    /// See also [`ProgramGraphBuilder::add_reset`].
+    pub fn add_reset(&mut self, pg_id: PgId, action: Action, clock: Clock) -> Result<(), CsError> {
+        if action.0 != pg_id {
+            return Err(CsError::ActionNotInPg(action, pg_id));
+        }
+        if clock.0 != pg_id {
+            return Err(CsError::ClockNotInPg(clock, pg_id));
+        }
+        self.program_graphs
+            .get_mut(pg_id.0 as usize)
+            .ok_or(CsError::MissingPg(pg_id))
+            .and_then(|pg| {
+                pg.add_reset(action.1, clock.1)
+                    .map_err(|err| CsError::ProgramGraph(pg_id, err))
+            })
     }
 
     /// Add an effect to the given action of the given PG.
@@ -238,31 +284,6 @@ impl ChannelSystemBuilder {
         }
     }
 
-    /// Adds resetting the clock as an effect of the given action.
-    ///
-    /// Fails if either the PG does not belong to the CS,
-    /// or either the action or the clock do not belong to the PG.
-    pub fn reset_clock(
-        &mut self,
-        pg_id: PgId,
-        action: Action,
-        clock: Clock,
-    ) -> Result<(), CsError> {
-        if action.0 != pg_id {
-            Err(CsError::ActionNotInPg(action, pg_id))
-        } else if clock.0 != pg_id {
-            Err(CsError::DifferentPgs(pg_id, clock.0))
-        } else {
-            self.program_graphs
-                .get_mut(pg_id.0 as usize)
-                .ok_or(CsError::MissingPg(pg_id))
-                .and_then(|pg| {
-                    pg.reset_clock(action.1, clock.1)
-                        .map_err(|err| CsError::ProgramGraph(pg_id, err))
-                })
-        }
-    }
-
     /// Adds a new location to the given PG.
     ///
     /// It fails if the CS contains no such PG.
@@ -299,7 +320,11 @@ impl ChannelSystemBuilder {
         self.program_graphs
             .get_mut(pg_id.0 as usize)
             .ok_or(CsError::MissingPg(pg_id))
-            .map(|pg| Location(pg_id, pg.new_timed_location(&invariants)))
+            .and_then(|pg| {
+                pg.new_timed_location(invariants)
+                    .map(|loc| Location(pg_id, loc))
+                    .map_err(|err| CsError::ProgramGraph(pg_id, err))
+            })
     }
 
     /// Adds a transition to the PG.
@@ -375,7 +400,7 @@ impl ChannelSystemBuilder {
                 .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))
                 .and_then(|pg| {
-                    pg.add_timed_transition(pre.1, action.1, post.1, guard, &constraints)
+                    pg.add_timed_transition(pre.1, action.1, post.1, guard, constraints)
                         .map_err(|err| CsError::ProgramGraph(pg_id, err))
                 })
         }
@@ -448,7 +473,7 @@ impl ChannelSystemBuilder {
                 .get_mut(pg_id.0 as usize)
                 .ok_or(CsError::MissingPg(pg_id))
                 .and_then(|pg| {
-                    pg.add_autonomous_timed_transition(pre.1, post.1, guard, &constraints)
+                    pg.add_autonomous_timed_transition(pre.1, post.1, guard, constraints)
                         .map_err(|err| CsError::ProgramGraph(pg_id, err))
                 })
         }
@@ -592,13 +617,13 @@ impl ChannelSystemBuilder {
     }
 
     /// Produces a [`ChannelSystem`] defined by the [`ChannelSystemBuilder`]'s data and consuming it.
-    pub fn build(mut self) -> ChannelSystem {
+    pub fn build(mut self) -> ChannelSystem<R> {
         info!(
             "create Channel System with:\n{} Program Graphs\n{} channels",
             self.program_graphs.len(),
             self.channels.len(),
         );
-        let mut program_graphs: Vec<ProgramGraph> = self
+        let mut program_graphs: Vec<ProgramGraph<R>> = self
             .program_graphs
             .into_iter()
             .map(|builder| builder.build())
@@ -650,6 +675,7 @@ impl ChannelSystemBuilder {
         };
 
         ChannelSystem {
+            rng: self.rng,
             time: 0,
             program_graphs,
             message_queue,

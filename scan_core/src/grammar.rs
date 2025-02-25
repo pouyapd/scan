@@ -6,6 +6,7 @@
 //! Boolean logic and basic arithmetic expressions.
 
 use ordered_float::OrderedFloat;
+use rand::Rng;
 use std::hash::Hash;
 use thiserror::Error;
 
@@ -25,6 +26,12 @@ pub enum TypeError {
     /// The index is out of bounds.
     #[error("the index is out of bounds")]
     IndexOutOfBounds,
+    /// Bounds violate some constraint.
+    #[error("the bounds violate some constraint")]
+    BadBounds,
+    /// Probability violates some constraint.
+    #[error("the probability violates some constraint")]
+    BadProbability,
 }
 
 /// The types supported by the language internally used by PGs and CSs.
@@ -119,6 +126,13 @@ where
     Tuple(Vec<Expression<V>>),
     /// The component of a tuple.
     Component(usize, Box<Expression<V>>),
+    // -------------
+    // Random values
+    // -------------
+    /// A Bernulli distribution with the given probability.
+    RandBool(f64),
+    /// A random integer between a lower bound (included) and an upper bound (excluded).
+    RandInt(Integer, Integer),
     // -----------------
     // Logical operators
     // -----------------
@@ -301,6 +315,10 @@ where
                     Err(TypeError::TypeMismatch)
                 }
             }
+            Expression::RandBool(p) if 0f64 <= *p && *p <= 1f64 => Ok(Type::Boolean),
+            Expression::RandBool(_) => Err(TypeError::BadProbability),
+            Expression::RandInt(l, u) if l < u => Ok(Type::Integer),
+            Expression::RandInt(_, _) => Err(TypeError::BadBounds),
         }
     }
 
@@ -317,7 +335,7 @@ where
                     Err(TypeError::UnknownVar)
                 }
             }
-            Expression::Const(_) => Ok(()),
+            Expression::Const(_) | Expression::RandBool(_) | Expression::RandInt(_, _) => Ok(()),
             Expression::Tuple(tuple)
             | Expression::And(tuple)
             | Expression::Or(tuple)
@@ -514,28 +532,30 @@ where
     }
 }
 
-type DynFnExpr<V> = dyn Fn(&dyn Fn(V) -> Val) -> Val + Send + Sync;
+type DynFnExpr<V, R> = dyn Fn(&dyn Fn(V) -> Val, &mut R) -> Val + Send + Sync;
 
-pub(crate) struct FnExpression<V>(Box<DynFnExpr<V>>);
+pub(crate) struct FnExpression<V, R: Rng>(Box<DynFnExpr<V, R>>);
 
-impl<C> std::fmt::Debug for FnExpression<C> {
+impl<C, R: Rng> std::fmt::Debug for FnExpression<C, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Expression")
     }
 }
 
-impl<V> FnExpression<V> {
+impl<V, R: Rng> FnExpression<V, R> {
     #[inline(always)]
-    pub fn eval(&self, vars: &dyn Fn(V) -> Val) -> Val {
-        self.0(vars)
+    pub fn eval(&self, vars: &dyn Fn(V) -> Val, rng: &mut R) -> Val {
+        self.0(vars, rng)
     }
 }
 
-impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
+impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
+    for FnExpression<V, R>
+{
     fn from(value: Expression<V>) -> Self {
         FnExpression(match value {
-            Expression::Const(val) => Box::new(move |_| val.clone()),
-            Expression::Var(var, _t) => Box::new(move |vars| {
+            Expression::Const(val) => Box::new(move |_, _| val.clone()),
+            Expression::Var(var, _t) => Box::new(move |vars, _| {
                 vars(var.clone())
                 // let val = vars(var);
                 // if t == val.r#type() {
@@ -545,16 +565,21 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 // }
             }),
             Expression::Tuple(exprs) => {
-                let exprs: Vec<FnExpression<_>> =
+                let exprs: Vec<FnExpression<_, _>> =
                     exprs.into_iter().map(FnExpression::from).collect();
-                Box::new(move |vars| {
-                    Val::Tuple(exprs.iter().map(|expr| expr.eval(vars)).collect::<Vec<_>>())
+                Box::new(move |vars, rng| {
+                    Val::Tuple(
+                        exprs
+                            .iter()
+                            .map(|expr| expr.eval(vars, rng))
+                            .collect::<Vec<_>>(),
+                    )
                 })
             }
             Expression::Component(index, expr) => {
                 let expr = Self::from(*expr);
-                Box::new(move |vars| {
-                    if let Val::Tuple(vals) = expr.eval(vars) {
+                Box::new(move |vars, rng| {
+                    if let Val::Tuple(vals) = expr.eval(vars, rng) {
                         vals[index].clone()
                     } else {
                         panic!("index out of bounds");
@@ -562,10 +587,10 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 })
             }
             Expression::And(exprs) => {
-                let exprs: Vec<FnExpression<_>> = exprs.into_iter().map(Self::from).collect();
-                Box::new(move |vars| {
+                let exprs: Vec<FnExpression<_, _>> = exprs.into_iter().map(Self::from).collect();
+                Box::new(move |vars, rng| {
                     for expr in exprs.iter() {
-                        if let Val::Boolean(b) = expr.eval(vars) {
+                        if let Val::Boolean(b) = expr.eval(vars, rng) {
                             if b {
                                 continue;
                             } else {
@@ -579,10 +604,10 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 })
             }
             Expression::Or(exprs) => {
-                let exprs: Vec<FnExpression<_>> = exprs.into_iter().map(Self::from).collect();
-                Box::new(move |vars| {
+                let exprs: Vec<FnExpression<_, _>> = exprs.into_iter().map(Self::from).collect();
+                Box::new(move |vars, rng| {
                     for expr in exprs.iter() {
-                        if let Val::Boolean(b) = expr.eval(vars) {
+                        if let Val::Boolean(b) = expr.eval(vars, rng) {
                             if b {
                                 return Val::Boolean(true);
                             } else {
@@ -599,8 +624,9 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 let (lhs, rhs) = *exprs;
                 let lhs = FnExpression::from(lhs);
                 let rhs = FnExpression::from(rhs);
-                Box::new(move |vars| {
-                    if let (Val::Boolean(lhs), Val::Boolean(rhs)) = (lhs.eval(vars), rhs.eval(vars))
+                Box::new(move |vars, rng| {
+                    if let (Val::Boolean(lhs), Val::Boolean(rhs)) =
+                        (lhs.eval(vars, rng), rhs.eval(vars, rng))
                     {
                         Val::Boolean(rhs || !lhs)
                     } else {
@@ -610,8 +636,8 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
             }
             Expression::Not(expr) => {
                 let expr = FnExpression::from(*expr);
-                Box::new(move |vars| {
-                    if let Val::Boolean(b) = expr.eval(vars) {
+                Box::new(move |vars, rng| {
+                    if let Val::Boolean(b) = expr.eval(vars, rng) {
                         Val::Boolean(!b)
                     } else {
                         panic!("type mismatch");
@@ -620,22 +646,22 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
             }
             Expression::Opposite(expr) => {
                 let expr = FnExpression::from(*expr);
-                Box::new(move |vars| match expr.eval(vars) {
+                Box::new(move |vars, rng| match expr.eval(vars, rng) {
                     Val::Integer(i) => Val::Integer(-i),
                     Val::Float(f) => Val::Float(-f),
                     _ => panic!("type mismatch"),
                 })
             }
             Expression::Sum(exprs) => {
-                let exprs: Vec<FnExpression<_>> = exprs.into_iter().map(Self::from).collect();
-                Box::new(move |vars| {
+                let exprs: Vec<FnExpression<_, _>> = exprs.into_iter().map(Self::from).collect();
+                Box::new(move |vars, rng| {
                     exprs.iter().fold(Val::Integer(0), |val, expr| match val {
-                        Val::Integer(acc) => match expr.eval(vars) {
+                        Val::Integer(acc) => match expr.eval(vars, rng) {
                             Val::Integer(i) => Val::Integer(acc + i),
                             Val::Float(f) => Val::Float(OrderedFloat::from(acc) + f),
                             _ => panic!("type mismatch"),
                         },
-                        Val::Float(acc) => match expr.eval(vars) {
+                        Val::Float(acc) => match expr.eval(vars, rng) {
                             Val::Integer(i) => Val::Float(acc + OrderedFloat::from(i)),
                             Val::Float(f) => Val::Float(acc + f),
                             _ => panic!("type mismatch"),
@@ -645,15 +671,15 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 })
             }
             Expression::Mult(exprs) => {
-                let exprs: Vec<FnExpression<_>> = exprs.into_iter().map(Self::from).collect();
-                Box::new(move |vars| {
+                let exprs: Vec<FnExpression<_, _>> = exprs.into_iter().map(Self::from).collect();
+                Box::new(move |vars, rng| {
                     exprs.iter().fold(Val::Integer(0), |val, expr| match val {
-                        Val::Integer(acc) => match expr.eval(vars) {
+                        Val::Integer(acc) => match expr.eval(vars, rng) {
                             Val::Integer(i) => Val::Integer(acc * i),
                             Val::Float(f) => Val::Float(OrderedFloat::from(acc) * f),
                             _ => panic!("type mismatch"),
                         },
-                        Val::Float(acc) => match expr.eval(vars) {
+                        Val::Float(acc) => match expr.eval(vars, rng) {
                             Val::Integer(i) => Val::Float(acc * OrderedFloat::from(i)),
                             Val::Float(f) => Val::Float(acc * f),
                             _ => panic!("type mismatch"),
@@ -666,23 +692,25 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 let (lhs, rhs) = *exprs;
                 let lhs = FnExpression::from(lhs);
                 let rhs = FnExpression::from(rhs);
-                Box::new(move |vars| match (lhs.eval(vars), rhs.eval(vars)) {
-                    (Val::Integer(lhs), Val::Integer(rhs)) => Val::Boolean(lhs == rhs),
-                    (Val::Boolean(lhs), Val::Boolean(rhs)) => Val::Boolean(lhs == rhs),
-                    _ => panic!("type mismatch"),
-                })
+                Box::new(
+                    move |vars, rng| match (lhs.eval(vars, rng), rhs.eval(vars, rng)) {
+                        (Val::Integer(lhs), Val::Integer(rhs)) => Val::Boolean(lhs == rhs),
+                        (Val::Boolean(lhs), Val::Boolean(rhs)) => Val::Boolean(lhs == rhs),
+                        _ => panic!("type mismatch"),
+                    },
+                )
             }
             Expression::Greater(exprs) => {
                 let (lhs, rhs) = *exprs;
                 let lhs = FnExpression::from(lhs);
                 let rhs = FnExpression::from(rhs);
-                Box::new(move |vars| match lhs.eval(vars) {
-                    Val::Integer(lhs) => match rhs.eval(vars) {
+                Box::new(move |vars, rng| match lhs.eval(vars, rng) {
+                    Val::Integer(lhs) => match rhs.eval(vars, rng) {
                         Val::Integer(rhs) => Val::Boolean(lhs > rhs),
                         Val::Float(rhs) => Val::Boolean(OrderedFloat::from(lhs) > rhs),
                         _ => panic!("type mismatch"),
                     },
-                    Val::Float(lhs) => match rhs.eval(vars) {
+                    Val::Float(lhs) => match rhs.eval(vars, rng) {
                         Val::Integer(rhs) => Val::Boolean(lhs > OrderedFloat::from(rhs)),
                         Val::Float(rhs) => Val::Boolean(lhs > rhs),
                         _ => panic!("type mismatch"),
@@ -694,8 +722,9 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 let (lhs, rhs) = *exprs;
                 let lhs = FnExpression::from(lhs);
                 let rhs = FnExpression::from(rhs);
-                Box::new(move |vars| {
-                    if let (Val::Integer(lhs), Val::Integer(rhs)) = (lhs.eval(vars), rhs.eval(vars))
+                Box::new(move |vars, rng| {
+                    if let (Val::Integer(lhs), Val::Integer(rhs)) =
+                        (lhs.eval(vars, rng), rhs.eval(vars, rng))
                     {
                         Val::Boolean(lhs >= rhs)
                     } else {
@@ -707,13 +736,13 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 let (lhs, rhs) = *exprs;
                 let lhs = FnExpression::from(lhs);
                 let rhs = FnExpression::from(rhs);
-                Box::new(move |vars| match lhs.eval(vars) {
-                    Val::Integer(lhs) => match rhs.eval(vars) {
+                Box::new(move |vars, rng| match lhs.eval(vars, rng) {
+                    Val::Integer(lhs) => match rhs.eval(vars, rng) {
                         Val::Integer(rhs) => Val::Boolean(lhs < rhs),
                         Val::Float(rhs) => Val::Boolean(OrderedFloat::from(lhs) < rhs),
                         _ => panic!("type mismatch"),
                     },
-                    Val::Float(lhs) => match rhs.eval(vars) {
+                    Val::Float(lhs) => match rhs.eval(vars, rng) {
                         Val::Integer(rhs) => Val::Boolean(lhs < OrderedFloat::from(rhs)),
                         Val::Float(rhs) => Val::Boolean(lhs < rhs),
                         _ => panic!("type mismatch"),
@@ -725,8 +754,9 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 let (source_lhs, source_rhs) = *exprs;
                 let lhs = FnExpression::from(source_lhs);
                 let rhs = FnExpression::from(source_rhs);
-                Box::new(move |vars| {
-                    if let (Val::Integer(lhs), Val::Integer(rhs)) = (lhs.eval(vars), rhs.eval(vars))
+                Box::new(move |vars, rng| {
+                    if let (Val::Integer(lhs), Val::Integer(rhs)) =
+                        (lhs.eval(vars, rng), rhs.eval(vars, rng))
                     {
                         Val::Boolean(lhs <= rhs)
                     } else {
@@ -738,9 +768,9 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 let (list, element) = *exprs;
                 let list = FnExpression::from(list);
                 let element = FnExpression::from(element);
-                Box::new(move |vars| {
-                    if let Val::List(t, mut l) = list.eval(vars) {
-                        let element = element.eval(vars);
+                Box::new(move |vars, rng| {
+                    if let Val::List(t, mut l) = list.eval(vars, rng) {
+                        let element = element.eval(vars, rng);
                         if element.r#type() == t {
                             l.push(element);
                             Val::List(t, l)
@@ -754,8 +784,8 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
             }
             Expression::Truncate(list) => {
                 let list = FnExpression::from(*list);
-                Box::new(move |vars| {
-                    if let Val::List(t, mut l) = list.eval(vars) {
+                Box::new(move |vars, rng| {
+                    if let Val::List(t, mut l) = list.eval(vars, rng) {
                         if !l.is_empty() {
                             let _ = l.pop();
                             Val::List(t, l)
@@ -769,8 +799,8 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
             }
             Expression::Len(list) => {
                 let list = FnExpression::from(*list);
-                Box::new(move |vars| {
-                    if let Val::List(_t, l) = list.eval(vars) {
+                Box::new(move |vars, rng| {
+                    if let Val::List(_t, l) = list.eval(vars, rng) {
                         Val::Integer(l.len() as Integer)
                     } else {
                         panic!("type mismatch");
@@ -781,14 +811,19 @@ impl<V: Clone + Send + Sync + 'static> From<Expression<V>> for FnExpression<V> {
                 let (lhs, rhs) = *exprs;
                 let lhs = FnExpression::from(lhs);
                 let rhs = FnExpression::from(rhs);
-                Box::new(move |vars| {
-                    if let (Val::Integer(lhs), Val::Integer(rhs)) = (lhs.eval(vars), rhs.eval(vars))
+                Box::new(move |vars, rng| {
+                    if let (Val::Integer(lhs), Val::Integer(rhs)) =
+                        (lhs.eval(vars, rng), rhs.eval(vars, rng))
                     {
                         Val::Integer(lhs % rhs)
                     } else {
                         panic!("type mismatch");
                     }
                 })
+            }
+            Expression::RandBool(p) => Box::new(move |_, rng| Val::Boolean(rng.random_bool(p))),
+            Expression::RandInt(l, u) => {
+                Box::new(move |_, rng| Val::Integer(rng.random_range(l..u)))
             }
         })
     }

@@ -15,6 +15,7 @@
 
 use crate::jani_parser::ASTNode;
 use ordered_float::OrderedFloat;
+use rand::rngs::SmallRng;
 use rand::Rng;
 use scan_core::channel_system::*;
 use scan_core::{Expression, Type, Val};
@@ -55,13 +56,16 @@ impl ModelBuilder {
     ///
     /// * Ok(`ChannelSystem`): The [`ChannelSystem`] corresponding to the JANI model, if building is successful.
     /// * Err(`BuildingError`): A [`BuildingError`] indicating the type of error that occurred during building, if building fails.
-    pub fn build(ast: ASTNode) -> Result<ChannelSystem, BuildingError> {
+    pub fn build(ast: ASTNode) -> Result<ChannelSystem<SmallRng>, BuildingError> {
         let mut builder = ChannelSystemBuilder::new();
         Self::visit_model(ast, &mut builder)?;
         Ok(builder.build())
     }
 
-    fn visit_model(ast: ASTNode, builder: &mut ChannelSystemBuilder) -> Result<(), BuildingError> {
+    fn visit_model(
+        ast: ASTNode,
+        builder: &mut ChannelSystemBuilder<SmallRng>,
+    ) -> Result<(), BuildingError> {
         let mut constants_node: Vec<ASTNode> = Vec::new();
         let mut variables_node: Vec<ASTNode> = Vec::new();
         let mut automata_node: Vec<ASTNode> = Vec::new();
@@ -197,7 +201,7 @@ impl ModelBuilder {
 
     fn visit_variable(
         ast: ASTNode,
-        builder: &mut ChannelSystemBuilder,
+        builder: &mut ChannelSystemBuilder<SmallRng>,
         vars_pg: PgId,
         constants_hm: &HashMap<String, (CsExpression, Type)>,
         variables_hm: &mut BTreeMap<String, (Var, CsExpression, Type)>,
@@ -306,7 +310,7 @@ impl ModelBuilder {
 
     fn visit_automaton(
         ast: ASTNode,
-        builder: &mut ChannelSystemBuilder,
+        builder: &mut ChannelSystemBuilder<SmallRng>,
         vars_pg: PgId,
         constants_hm: &HashMap<String, (CsExpression, Type)>,
         variables_hm: &BTreeMap<String, (Var, CsExpression, Type)>,
@@ -411,7 +415,7 @@ impl ModelBuilder {
     fn add_locations(
         initial_locations_node: Vec<ASTNode>,
         locations_node: Vec<ASTNode>,
-        builder: &mut ChannelSystemBuilder,
+        builder: &mut ChannelSystemBuilder<SmallRng>,
         pg: PgId,
         locations_hm: &mut HashMap<String, Location>,
     ) -> Result<(), BuildingError> {
@@ -494,7 +498,7 @@ impl ModelBuilder {
 
     fn add_variables(
         variables_node: Vec<ASTNode>,
-        builder: &mut ChannelSystemBuilder,
+        builder: &mut ChannelSystemBuilder<SmallRng>,
         pg: PgId,
         constants_hm: &HashMap<String, (CsExpression, Type)>,
         variables_hm: &BTreeMap<String, (Var, CsExpression, Type)>,
@@ -604,7 +608,7 @@ impl ModelBuilder {
 
     fn add_transitions(
         edges_node: Vec<ASTNode>,
-        builder: &mut ChannelSystemBuilder,
+        builder: &mut ChannelSystemBuilder<SmallRng>,
         pg: PgId,
         vars_pg: PgId,
         constants_hm: &HashMap<String, (CsExpression, Type)>,

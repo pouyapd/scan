@@ -1,11 +1,13 @@
+use rand::{rngs::SmallRng, SeedableRng};
 use scan_core::{program_graph::*, *};
 
 #[test]
 fn counter_pg() -> Result<(), PgError> {
+    let mut rng = SmallRng::from_seed([0; 32]);
     let mut pg = ProgramGraphBuilder::new();
     let initial = pg.initial_location();
     let action = pg.new_action();
-    let var = pg.new_var(Expression::Const(Val::Integer(0)))?;
+    let var = pg.new_var_with_rng(Expression::Const(Val::Integer(0)), &mut rng)?;
     pg.add_effect(
         action,
         var,
@@ -27,7 +29,7 @@ fn counter_pg() -> Result<(), PgError> {
     while let Some((act, post)) = pg.possible_transitions().last() {
         assert_eq!(post, initial);
         assert_eq!(act, action);
-        pg.transition(act, post)?;
+        pg.transition(act, post, &mut rng)?;
     }
     Ok(())
 }

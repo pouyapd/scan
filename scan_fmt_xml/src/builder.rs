@@ -4,6 +4,7 @@ use crate::parser::{Executable, If, OmgType, OmgTypes, Param, Parser, Scxml, Sen
 use anyhow::anyhow;
 use boa_interner::{Interner, ToInternedString};
 use log::{info, trace};
+use rand::rngs::SmallRng;
 use scan_core::{channel_system::*, *};
 use std::{
     collections::{HashMap, HashSet},
@@ -52,7 +53,7 @@ enum EcmaObj<V: Clone> {
 /// Builder turning a [`Parser`] into a [`ChannelSystem`].
 #[derive(Debug)]
 pub struct ModelBuilder {
-    cs: ChannelSystemBuilder,
+    cs: ChannelSystemBuilder<SmallRng>,
     // Associates a type's id with both its OMG type and SCAN type.
     // NOTE: This is necessary because, at the moment, it is not possible to derive one from the other.
     // QUESTION: is there a better way?
@@ -97,7 +98,7 @@ impl ModelBuilder {
     /// Can fail if the model specification contains semantic errors
     /// (particularly type mismatches)
     /// or references to non-existing items.
-    pub fn build(mut parser: Parser) -> anyhow::Result<(CsModel, ScxmlModel)> {
+    pub fn build(mut parser: Parser) -> anyhow::Result<(CsModel<SmallRng>, ScxmlModel)> {
         let mut model_builder = ModelBuilder {
             cs: ChannelSystemBuilder::new(),
             types: HashMap::new(),
@@ -894,14 +895,12 @@ impl ModelBuilder {
                 let mut loc = loc;
                 if let Some(delay) = delay {
                     // WARN NOTE FIXME: here we could reuse some other clock instead of creating a new one every time.
-                    let reset = self.cs.new_action(pg_id).expect("action");
                     let clock = self.cs.new_clock(pg_id).expect("new clock");
-                    self.cs
-                        .reset_clock(pg_id, reset, clock)
-                        .expect("reset clock");
+                    let reset = self.cs.new_action(pg_id).expect("action");
+                    self.cs.add_reset(pg_id, reset, clock).expect("add reset");
                     let next_loc = self
                         .cs
-                        .new_timed_location(pg_id, &[(clock, None, Some(*delay))])
+                        .new_timed_location(pg_id, &[(clock, None, Some(*delay + 1))])
                         .expect("PG exists");
                     self.cs
                         .add_transition(pg_id, loc, reset, next_loc, None)
@@ -1527,7 +1526,7 @@ impl ModelBuilder {
         Ok(())
     }
 
-    fn build_model(self) -> (CsModel, ScxmlModel) {
+    fn build_model(self) -> (CsModel<SmallRng>, ScxmlModel) {
         let mut model = CsModelBuilder::new(self.cs.build());
         let mut ports = Vec::new();
         for (port_name, (atom, init)) in self.ports {
