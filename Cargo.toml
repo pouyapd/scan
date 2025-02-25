@@ -13,9 +13,9 @@ panic = "abort"
 members = ["scan_core", "scan_fmt_xml", "scan_fmt_jani"]
 
 [workspace.dependencies]
-anyhow = "1.0.95"
-log = "0.4.25"
-ordered-float = "4.6.0"
+anyhow = "1.0.96"
+log = "0.4.26"
+ordered-float = "5.0.0"
 rand = { version = "0.9.0", features = ["small_rng"] }
 thiserror = "2.0.11"
 
@@ -23,7 +23,7 @@ thiserror = "2.0.11"
 anyhow = { workspace = true }
 scan_fmt_xml = { version = "0.1.0", path = "scan_fmt_xml" }
 scan_fmt_jani = { version = "0.1.0", path = "scan_fmt_jani" }
-clap = { version = "4.5.29", features = ["derive"] }
+clap = { version = "4.5.31", features = ["derive"] }
 env_logger = "0.11.6"
 log = { workspace = true }
 indicatif = { version = "0.17.11", features = ["improved_unicode"] }

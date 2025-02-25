@@ -100,7 +100,7 @@ use crate::program_graph::{
 use crate::{grammar::*, Time};
 pub use builder::*;
 use rand::seq::{IteratorRandom, SliceRandom};
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use thiserror::Error;
@@ -203,6 +203,9 @@ pub enum CsError {
     /// The location does not belong to the PG.
     #[error("location {0:?} does not belong to program graph {1:?}")]
     LocationNotInPg(Location, PgId),
+    /// The clock does not belong to the PG.
+    #[error("clock {0:?} does not belong to program graph {1:?}")]
+    ClockNotInPg(Clock, PgId),
     /// The given PGs do not match.
     #[error("program graphs {0:?} and {1:?} do not match")]
     DifferentPgs(PgId, PgId),
@@ -284,14 +287,21 @@ impl ChannelSystemDef {
 /// This guarantees that there are no type errors involved in the definition of its PGs,
 /// and thus the CS will always be in a consistent state.
 #[derive(Debug, Clone)]
-pub struct ChannelSystem {
+pub struct ChannelSystem<R: Rng> {
+    rng: R,
     time: Time,
-    program_graphs: Vec<ProgramGraph>,
+    program_graphs: Vec<ProgramGraph<R>>,
     message_queue: Vec<VecDeque<Val>>,
     def: Arc<ChannelSystemDef>,
 }
 
-impl ChannelSystem {
+impl<R: Rng + SeedableRng> ChannelSystem<R> {
+    pub(crate) fn reseed_rng(&mut self) {
+        self.rng = R::from_os_rng();
+    }
+}
+
+impl<R: Rng> ChannelSystem<R> {
     /// Returns the current time of the CS.
     #[inline(always)]
     pub fn time(&self) -> Time {
@@ -321,26 +331,42 @@ impl ChannelSystem {
             })
     }
 
-    pub(crate) fn montecarlo_execution<R: Rng>(
-        &mut self,
-        rng: &mut R,
-        duration: Time,
-    ) -> Option<Event> {
+    pub(crate) fn montecarlo_execution(&mut self, duration: Time) -> Option<Event> {
         let mut pg_vec = Vec::from_iter((0..self.program_graphs.len() as u16).map(PgId));
         while self.time <= duration {
             // Resets PG queue
             let mut pg_list = pg_vec.as_mut_slice();
             while !pg_list.is_empty() {
-                let (select, remainder) = pg_list.partial_shuffle(rng, 1);
+                let (select, remainder) = pg_list.partial_shuffle(&mut self.rng, 1);
                 pg_list = remainder;
                 let pg_id = select[0];
                 while let Some((action, post)) = self.program_graphs[pg_id.0 as usize]
                     .possible_transitions()
                     .filter(|(action, _)| {
-                        self.check_communication(pg_id, Action(pg_id, *action))
-                            .is_ok()
+                        // self.check_communication(pg_id, Action(pg_id, *action))
+                        //     .is_ok()
+                        self.def.communication(Action(pg_id, *action)).is_none_or(
+                            |(channel, message)| {
+                                let (_, capacity) = self.def.channels[channel.0 as usize];
+                                let queue = &self.message_queue[channel.0 as usize];
+                                // Channel capacity must never be exeeded!
+                                assert!(capacity.is_none_or(|cap| queue.len() <= cap));
+                                // NOTE FIXME currently handshake is unsupported
+                                !matches!(capacity, Some(0))
+                                    && match message {
+                                        Message::Send => {
+                                            capacity.is_none_or(|cap| queue.len() < cap)
+                                        }
+                                        Message::Receive => !queue.is_empty(),
+                                        Message::ProbeFullQueue => {
+                                            capacity.is_some_and(|cap| queue.len() == cap)
+                                        }
+                                        Message::ProbeEmptyQueue => queue.is_empty(),
+                                    }
+                            },
+                        )
                     })
-                    .choose(rng)
+                    .choose(&mut self.rng)
                 {
                     let event = self
                         .transition(pg_id, Action(pg_id, action), Location(pg_id, post))
@@ -421,7 +447,7 @@ impl ChannelSystem {
                 }
                 Message::Send => {
                     let val = self.program_graphs[pg_id.0 as usize]
-                        .send(action.1, post.1)
+                        .send(action.1, post.1, &mut self.rng)
                         .map_err(|err| CsError::ProgramGraph(pg_id, err))?;
                     self.message_queue[channel.0 as usize].push_back(val.clone());
                     EventType::Send(val)
@@ -448,7 +474,7 @@ impl ChannelSystem {
                 }
                 Message::ProbeEmptyQueue => {
                     self.program_graphs[pg_id.0 as usize]
-                        .transition(action.1, post.1)
+                        .transition(action.1, post.1, &mut self.rng)
                         .map_err(|err| CsError::ProgramGraph(pg_id, err))?;
                     EventType::ProbeEmptyQueue
                 }
@@ -463,7 +489,7 @@ impl ChannelSystem {
                 }
                 Message::ProbeFullQueue => {
                     self.program_graphs[pg_id.0 as usize]
-                        .transition(action.1, post.1)
+                        .transition(action.1, post.1, &mut self.rng)
                         .map_err(|err| CsError::ProgramGraph(pg_id, err))?;
                     EventType::ProbeFullQueue
                 }
@@ -476,7 +502,7 @@ impl ChannelSystem {
         } else {
             // Transition the program graph
             self.program_graphs[pg_id.0 as usize]
-                .transition(action.1, post.1)
+                .transition(action.1, post.1, &mut self.rng)
                 .map_err(|err| CsError::ProgramGraph(pg_id, err))
                 .map(|()| None)
         }
@@ -485,22 +511,19 @@ impl ChannelSystem {
     /// Tries waiting for the given delta of time.
     /// Returns error if any of the PG cannot wait due to some time invariant.
     pub fn wait(&mut self, delta: Time) -> Result<(), CsError> {
-        let res = self
+        if let Some(pg) = self
             .program_graphs
-            .iter_mut()
-            .enumerate()
-            .try_for_each(|(idx, pg)| {
-                pg.wait(delta)
-                    .map_err(|err| CsError::ProgramGraph(PgId(idx as u16), err))
-            });
-        if res.is_ok() {
-            self.time += delta;
+            .iter()
+            .position(|pg| !pg.can_wait(delta))
+        {
+            Err(CsError::ProgramGraph(PgId(pg as u16), PgError::Invariant))
         } else {
-            self.program_graphs
-                .iter_mut()
-                .for_each(|pg| pg.set_time(self.time));
+            self.program_graphs.iter_mut().for_each(|pg| {
+                pg.wait(delta).expect("wait");
+            });
+            self.time += delta;
+            Ok(())
         }
-        res
     }
 }
 

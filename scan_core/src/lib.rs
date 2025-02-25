@@ -21,10 +21,19 @@ pub use smc::*;
 /// The type that represents time.
 pub type Time = u32;
 
+/// The possible outcomes of a model execution.
 #[derive(Debug, Clone, Copy)]
 pub enum RunOutcome {
+    /// The run was not completed.
+    /// This can happen because:
+    ///
+    /// - Execution exceeded maximum lenght;
+    /// - Execution exceeded maximum duration; or
+    /// - Execution violated an assume.
     Incomplete,
+    /// The run completed successfully.
     Success,
+    /// The run failed by violating the guarantee corresponding to the given index.
     Fail(usize),
 }
 

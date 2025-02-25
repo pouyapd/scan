@@ -54,7 +54,7 @@ impl Cli {
         }
     }
 
-    pub fn run_scxml(&self) -> anyhow::Result<()> {
+    fn run_scxml(&self) -> anyhow::Result<()> {
         let (cs_model, scxml_model) = scan_fmt_xml::load(&self.path)?;
         let scxml_model = Arc::new(scxml_model);
         let confidence = self.confidence;
@@ -76,7 +76,7 @@ impl Cli {
         Ok(())
     }
 
-    pub fn run_jani(&self) -> anyhow::Result<()> {
+    fn run_jani(&self) -> anyhow::Result<()> {
         use scan_fmt_jani::*;
 
         let jani_model = Parser::parse(self.path.as_path())?;
@@ -190,13 +190,9 @@ impl Cli {
         bars.set_move_cursor(true);
         loop {
             let run_status = bar_state.lock().expect("lock state").clone();
-            let successes = run_status.successes;
-            let failures = run_status.failures;
-            let running = run_status.running;
-            let runs = (successes + failures) as u64;
-            let rate = successes as f64 / runs as f64;
-            let guarantees = run_status.guarantees;
-            if running {
+            let runs = (run_status.successes() + run_status.failures()) as u64;
+            let rate = run_status.successes() as f64 / runs as f64;
+            if run_status.running() {
                 if runs > progress_bar.position() {
                     // Status spinner
                     spinner.tick();
@@ -207,24 +203,25 @@ impl Cli {
                     progress_bar.set_length(bound.ceil() as u64);
                     progress_bar.set_position(runs);
                     line.tick();
-                    for (i, guarantee) in guarantees.iter().enumerate() {
-                        let pos = runs - *guarantee as u64;
-                        let bar = &mut bars_guarantees[i];
+                    let mut overall_fails = 0;
+                    for (i, bar) in bars_guarantees.iter().enumerate() {
+                        let fails = run_status.guarantee(i).expect("guarantee exists");
+                        overall_fails += fails;
+                        let pos = runs - fails as u64;
                         bar.set_position(pos);
                         bar.set_length(runs);
-                        if *guarantee > 0 {
-                            bar.set_message(format!("({guarantee} failed)"));
+                        if fails > 0 {
+                            bar.set_message(format!("({fails} failed)"));
                         }
                         bar.tick();
                     }
 
                     // Overall property bar
-                    let overall = guarantees.iter().sum::<u32>() as u64;
-                    let pos = runs - overall;
+                    let pos = runs - overall_fails as u64;
                     overall_bar.set_position(pos);
                     overall_bar.set_length(runs);
-                    if overall > 0 {
-                        overall_bar.set_message(format!("({overall} failed)"));
+                    if overall_fails > 0 {
+                        overall_bar.set_message(format!("({overall_fails} failed)"));
                     }
                     overall_bar.tick();
                 }
@@ -241,9 +238,13 @@ impl Cli {
                     "SCAN results for {model_name} (confidence {}, precision {})",
                     self.confidence, self.precision
                 );
-                println!("Completed {runs} runs with {successes} successes, {failures} failures)");
+                println!(
+                    "Completed {runs} runs with {} successes, {} failures)",
+                    run_status.successes(),
+                    run_status.failures()
+                );
                 for (i, name) in guarantee_names.iter().enumerate() {
-                    let f = guarantees[i];
+                    let f = run_status.guarantee(i).expect("guarantee exists");
                     print!(
                         "{name} success rate: {0:.1$}",
                         ((runs - f as u64) as f64) / (runs as f64),

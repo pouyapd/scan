@@ -1,17 +1,19 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use rand::rngs::mock::StepRng;
 use scan_core::program_graph::*;
 use scan_core::*;
 
 #[inline(always)]
-fn run_to_completion(mut pg: ProgramGraph) {
+fn run_to_completion(mut pg: ProgramGraph<StepRng>) {
+    let mut rng = StepRng::new(0, 1);
     while let Some((action, post)) = pg.possible_transitions().last() {
-        assert!(pg.transition(action, post).is_ok());
+        assert!(pg.transition(action, post, &mut rng).is_ok());
     }
     // pg.possible_transitions().last()
 }
 
 #[inline(always)]
-fn simple_pg() -> ProgramGraph {
+fn simple_pg() -> ProgramGraph<StepRng> {
     let mut pg = ProgramGraphBuilder::new();
     let pre = pg.initial_location();
     let action = pg.new_action();
@@ -21,7 +23,7 @@ fn simple_pg() -> ProgramGraph {
 }
 
 #[inline(always)]
-fn condition_pg() -> ProgramGraph {
+fn condition_pg() -> ProgramGraph<StepRng> {
     let mut pg = ProgramGraphBuilder::new();
     let pre = pg.initial_location();
     let action = pg.new_action();
@@ -52,7 +54,7 @@ fn condition_pg() -> ProgramGraph {
 }
 
 #[inline(always)]
-fn long_pg() -> ProgramGraph {
+fn long_pg() -> ProgramGraph<StepRng> {
     let mut pg = ProgramGraphBuilder::new();
     let mut pre = pg.initial_location();
     let action = pg.new_action();
@@ -65,7 +67,7 @@ fn long_pg() -> ProgramGraph {
 }
 
 #[inline(always)]
-fn counter_pg() -> ProgramGraph {
+fn counter_pg() -> ProgramGraph<StepRng> {
     let mut pg = ProgramGraphBuilder::new();
     let initial = pg.initial_location();
     let action = pg.new_action();
