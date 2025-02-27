@@ -37,6 +37,7 @@ impl Parser {
     ///
     /// * Ok(`ASTNode`): The root [`ASTNode`] of the abstract syntax tree representing the JANI model, if parsing is successful.
     /// * Err(`ParsingError`): A [`ParsingError`] indicating the type of error that occurred during parsing, if parsing fails.
+    ///
     /// Information on the error, such as the location in the file and possible suggestions for fixing it, are printed to stderr.
     pub fn parse(input: &Path) -> Result<ASTNode, ParsingError> {
         // Parse the input string

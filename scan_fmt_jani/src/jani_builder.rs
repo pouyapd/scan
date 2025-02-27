@@ -142,7 +142,7 @@ impl ModelBuilder {
                         },
                         ASTNode::ASTConstantDeclarationValue { value } => {
                             constant_value = Self::visit_expression(
-                                &*value,
+                                &value,
                                 constants_hm,
                                 None,
                                 None,
@@ -172,7 +172,7 @@ impl ModelBuilder {
             }
         }
 
-        if let None = constant_value {
+        if constant_value.is_none() {
             return Err(BuildingError::NoValueConstant(constant_name));
         }
 
@@ -240,9 +240,9 @@ impl ModelBuilder {
                         },
                         ASTNode::ASTVariableDeclarationInitialValue { initial_value } => {
                             variable_initial_value = Self::visit_expression(
-                                &*initial_value,
-                                &constants_hm,
-                                Some(&variables_hm),
+                                &initial_value,
+                                constants_hm,
+                                Some(variables_hm),
                                 None,
                                 &mut None,
                             )?;
@@ -266,17 +266,17 @@ impl ModelBuilder {
             }
         }
 
-        if let None = variable_initial_value {
+        if variable_initial_value.is_none() {
             match variable_type.as_str() {
                 "int" => {
-                    variable_initial_value = Some(Expression::Const(Val::Integer(0 as i32)));
+                    variable_initial_value = Some(Expression::Const(Val::Integer(0_i32)));
                 }
                 "bool" => {
                     variable_initial_value = Some(Expression::Const(Val::Boolean(false)));
                 }
                 "real" => {
                     variable_initial_value =
-                        Some(Expression::Const(Val::Float(OrderedFloat(0.0 as f64))));
+                        Some(Expression::Const(Val::Float(OrderedFloat(0.0_f64))));
                 }
                 _ => {
                     return Err(BuildingError::UnknownError);
@@ -392,8 +392,8 @@ impl ModelBuilder {
             variables_node,
             builder,
             pg,
-            &constants_hm,
-            &variables_hm,
+            constants_hm,
+            variables_hm,
             &mut local_variables_hm,
         )?;
 
@@ -403,8 +403,8 @@ impl ModelBuilder {
             builder,
             pg,
             vars_pg,
-            &constants_hm,
-            &variables_hm,
+            constants_hm,
+            variables_hm,
             &local_variables_hm,
             &locations_hm,
         )?;
@@ -419,13 +419,10 @@ impl ModelBuilder {
         pg: PgId,
         locations_hm: &mut HashMap<String, Location>,
     ) -> Result<(), BuildingError> {
-        let initial_location: String;
         // Choose a random initial location if there are multiple
-        let rng = rand::thread_rng().gen_range(0..initial_locations_node.len());
-        match &initial_locations_node[rng] {
-            ASTNode::ASTIdentifier { identifier } => {
-                initial_location = identifier.trim_matches('\"').to_string();
-            }
+        let rng = rand::rng().random_range(0..initial_locations_node.len());
+        let initial_location: String = match &initial_locations_node[rng] {
+            ASTNode::ASTIdentifier { identifier } => identifier.trim_matches('\"').to_string(),
             _ => {
                 return Err(BuildingError::UnknownError);
             }
@@ -542,10 +539,10 @@ impl ModelBuilder {
                             },
                             ASTNode::ASTVariableDeclarationInitialValue { initial_value } => {
                                 variable_initial_value = Self::visit_expression(
-                                    &*initial_value,
-                                    &constants_hm,
-                                    Some(&variables_hm),
-                                    Some(&local_variables_hm),
+                                    &initial_value,
+                                    constants_hm,
+                                    Some(variables_hm),
+                                    Some(local_variables_hm),
                                     &mut None,
                                 )?;
                             }
@@ -560,11 +557,11 @@ impl ModelBuilder {
                         }
                     }
 
-                    if let None = variable_initial_value {
+                    if variable_initial_value.is_none() {
                         match variable_type.as_str() {
                             "int" => {
                                 variable_initial_value =
-                                    Some(Expression::Const(Val::Integer(0 as i32)));
+                                    Some(Expression::Const(Val::Integer(0_i32)));
                             }
                             "bool" => {
                                 variable_initial_value =
@@ -572,7 +569,7 @@ impl ModelBuilder {
                             }
                             "real" => {
                                 variable_initial_value =
-                                    Some(Expression::Const(Val::Float(OrderedFloat(0.0 as f64))));
+                                    Some(Expression::Const(Val::Float(OrderedFloat(0.0_f64))));
                             }
                             _ => {
                                 return Err(BuildingError::UnknownError);
@@ -713,7 +710,7 @@ impl ModelBuilder {
                                     let identifier = identifier.trim_matches('\"').to_string();
                                     match locations_hm.get(&identifier) {
                                         Some(l) => {
-                                            start_location = Some(l.clone());
+                                            start_location = Some(*l);
                                         }
                                         None => {
                                             return Err(BuildingError::LocationNotFound(
@@ -731,10 +728,10 @@ impl ModelBuilder {
                                     match p {
                                         ASTNode::ASTAutomatonEdgeGuardExp { exp } => {
                                             guard = Self::visit_expression(
-                                                &*exp,
-                                                &constants_hm,
-                                                Some(&variables_hm),
-                                                Some(&local_variables_hm),
+                                                &exp,
+                                                constants_hm,
+                                                Some(variables_hm),
+                                                Some(local_variables_hm),
                                                 &mut Some(&mut guard_global_variables),
                                             )?;
                                         }
@@ -754,7 +751,7 @@ impl ModelBuilder {
                                                                 let identifier = identifier.trim_matches('\"').to_string();
                                                                 match locations_hm.get(&identifier) {
                                                                     Some(l) => {
-                                                                        destination_locations.push(l.clone());
+                                                                        destination_locations.push(*l);
                                                                     },
                                                                     None => {
                                                                         return Err(BuildingError::LocationNotFound(identifier));
@@ -781,7 +778,7 @@ impl ModelBuilder {
                                                                                         }
                                                                                         match local_variables_hm.get(&identifier) {
                                                                                             Some((v, _)) => {
-                                                                                                destination_variables.push(v.clone());
+                                                                                                destination_variables.push(*v);
                                                                                                 if variables_hm.contains_key(&identifier) {
                                                                                                     destination_global_variables.push(identifier.to_string());
                                                                                                 }
@@ -797,7 +794,7 @@ impl ModelBuilder {
                                                                                 }
                                                                             },
                                                                             ASTNode::ASTAutomatonEdgeDestinationAssignmentValue { value } => {
-                                                                                if let Some(exp) = Self::visit_expression(&*value, &constants_hm, Some(&variables_hm), Some(&local_variables_hm), &mut None)? {
+                                                                                if let Some(exp) = Self::visit_expression(&value, constants_hm, Some(variables_hm), Some(local_variables_hm), &mut None)? {
                                                                                     destination_values.push(exp);
                                                                                 }
                                                                             },
@@ -873,12 +870,12 @@ impl ModelBuilder {
 
             // Add transitions to pg
             if guard_global_variables.is_empty() && destination_global_variables.is_empty() {
-                for i in 0..destination_locations.len() {
+                for post in &destination_locations {
                     builder.add_transition(
                         pg,
                         start_location.unwrap(),
                         transition_action,
-                        destination_locations[i],
+                        *post,
                         guard.clone(),
                     )?;
                 }
@@ -893,11 +890,10 @@ impl ModelBuilder {
                 let mut pre = init_loc;
                 let mut var: Option<Var> = None;
                 let mut ch_read: Option<Channel> = None;
-                for i in 0..guard_global_variables.len() {
-                    let v = guard_global_variables[i].clone();
+                for (i, v) in guard_global_variables.iter().enumerate() {
                     let id = variables_hm
                         .keys()
-                        .position(|k| k == &v)
+                        .position(|k| k == v)
                         .ok_or(BuildingError::UnknownError)?;
                     let req = transition_locations
                         .get(&format!("req_{}", v))
@@ -918,7 +914,7 @@ impl ModelBuilder {
                     pre = *read;
                     var = Some(
                         local_variables_hm
-                            .get(&v)
+                            .get(v)
                             .ok_or(BuildingError::UnknownError)?
                             .0,
                     );
@@ -946,10 +942,9 @@ impl ModelBuilder {
             } else {
                 let mut pre = act_loc;
                 let mut ch_write: Option<Channel> = None;
-                for i in 0..destination_global_variables.len() {
-                    let v = destination_global_variables[i].clone();
+                for (i, v) in destination_global_variables.iter().enumerate() {
                     let (var, type_) = local_variables_hm
-                        .get(&v)
+                        .get(v)
                         .ok_or(BuildingError::UnknownError)?;
                     let write = transition_locations
                         .get(&format!("write_{}", v))
@@ -996,8 +991,8 @@ impl ModelBuilder {
                 builder.add_transition(pg, pre, a, ok_loc, None)?;
             }
             let end = builder.new_send(pg, ch_req, Expression::Const(Val::Integer(-1)))?;
-            for i in 0..destination_locations.len() {
-                builder.add_transition(pg, ok_loc, end, destination_locations[i], None)?;
+            for location in &destination_locations {
+                builder.add_transition(pg, ok_loc, end, *location, None)?;
             }
             builder.add_transition(pg, not_ok_loc, end, start_location.unwrap(), None)?;
         }
@@ -1016,20 +1011,20 @@ impl ModelBuilder {
 
         match expression {
             ASTNode::ASTConstantValueInteger { value } => {
-                exp = Some(Expression::Const(Val::Integer(*value as i32)));
+                exp = Some(Expression::Const(Val::Integer(*value)));
             }
             ASTNode::ASTConstantValueBoolean { value } => {
-                exp = Some(Expression::Const(Val::Boolean(*value as bool)));
+                exp = Some(Expression::Const(Val::Boolean(*value)));
             }
             ASTNode::ASTConstantValueReal { value } => {
-                exp = Some(Expression::Const(Val::Float(OrderedFloat(*value as f64))));
+                exp = Some(Expression::Const(Val::Float(OrderedFloat(*value))));
             }
             ASTNode::ASTIdentifier { identifier } => {
                 let identifier = identifier.trim_matches('\"').to_string();
                 if let Some(local_variables_hm) = local_variables_hm {
                     match local_variables_hm.get(&identifier) {
                         Some((var, type_)) => {
-                            exp = Some(Expression::Var(var.clone(), type_.clone()));
+                            exp = Some(Expression::Var(*var, type_.clone()));
                             if let Some(guard_global_variables) = guard_global_variables {
                                 if let Some(variables_hm) = variables_hm {
                                     if variables_hm.contains_key(&identifier) {
@@ -1084,8 +1079,8 @@ impl ModelBuilder {
                         }
                         ASTNode::ASTExpressionLeft { left } => {
                             left_exp = Self::visit_expression(
-                                &*left,
-                                &constants_hm,
+                                left,
+                                constants_hm,
                                 variables_hm,
                                 local_variables_hm,
                                 guard_global_variables,
@@ -1093,8 +1088,8 @@ impl ModelBuilder {
                         }
                         ASTNode::ASTExpressionRight { right } => {
                             right_exp = Self::visit_expression(
-                                &*right,
-                                &constants_hm,
+                                right,
+                                constants_hm,
                                 variables_hm,
                                 local_variables_hm,
                                 guard_global_variables,
@@ -1187,8 +1182,8 @@ impl ModelBuilder {
                         }
                         ASTNode::ASTExpressionOperand { exp } => {
                             operand_exp = Self::visit_expression(
-                                &*exp,
-                                &constants_hm,
+                                exp,
+                                constants_hm,
                                 variables_hm,
                                 local_variables_hm,
                                 guard_global_variables,
@@ -1228,6 +1223,6 @@ impl ModelBuilder {
             }
         }
 
-        return Ok(exp);
+        Ok(exp)
     }
 }
