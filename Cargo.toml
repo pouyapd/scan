@@ -21,8 +21,8 @@ thiserror = "2.0.12"
 
 [dependencies]
 anyhow = { workspace = true }
-scan_fmt_xml = { version = "0.1.0", path = "scan_fmt_xml" }
-scan_fmt_jani = { version = "0.1.0", path = "scan_fmt_jani" }
+scan_scxml = { version = "0.1.0", path = "scan_scxml" }
+scan_jani = { version = "0.1.0", path = "scan_jani" }
 clap = { version = "4.5.35", features = ["derive"] }
 env_logger = "0.11.8"
 log = { workspace = true }
