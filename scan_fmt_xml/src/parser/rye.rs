@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail};
-use chumsky::{prelude::*, select, Parser};
+use chumsky::{prelude::*, select, IterParser, Parser};
 use logos::Logos;
 use scan_core::{Pmtl, Time};
 
@@ -67,15 +67,16 @@ pub enum Token {
     Predicate(String),
 }
 
-fn parser() -> impl Parser<Token, Pmtl<String>, Error = Simple<Token>> {
+fn parser<'src>() -> impl Parser<'src, &'src [Token], Pmtl<String>, extra::Err<Simple<'src, Token>>>
+{
     let integer = select! {
         Token::Integer(n) => n as u32,
     };
 
     let bounds = just(Token::BracketOpen)
-        .ignore_then(integer.or_else(|_| Ok(Time::MIN)))
+        .ignore_then(integer.or_not().map(|p| p.unwrap_or(Time::MIN)))
         .then_ignore(just(Token::Colon))
-        .then(integer.or_else(|_| Ok(Time::MAX)))
+        .then(integer.or_not().map(|p| p.unwrap_or(Time::MAX)))
         .then_ignore(just(Token::BracketClose));
 
     recursive(|p| {
@@ -97,8 +98,7 @@ fn parser() -> impl Parser<Token, Pmtl<String>, Error = Simple<Token>> {
             .or(just(Token::Once))
             .or(just(Token::Historically))
             .repeated()
-            .then(atom)
-            .foldr(|op, rhs| match op {
+            .foldr(atom, |op, rhs| match op {
                 Token::Not => Pmtl::Not(Box::new(rhs)),
                 Token::Once => Pmtl::Once(Box::new(rhs), Time::MIN, Time::MAX),
                 Token::Historically => Pmtl::Historically(Box::new(rhs), Time::MIN, Time::MAX),
@@ -109,35 +109,32 @@ fn parser() -> impl Parser<Token, Pmtl<String>, Error = Simple<Token>> {
             .or(just(Token::Historically))
             .then(bounds.clone())
             .repeated()
-            .then(unary)
-            .foldr(|(op, (l, u)), rhs| match op {
+            .foldr(unary, |(op, (l, u)), rhs| match op {
                 Token::Once => Pmtl::Once(Box::new(rhs), l, u),
                 Token::Historically => Pmtl::Historically(Box::new(rhs), l, u),
                 _ => unreachable!(),
             });
 
-        let binary = temp_unary
-            .clone()
-            .then(
-                just(Token::And)
-                    .or(just(Token::Or))
-                    .or(just(Token::Implies))
-                    .or(just(Token::Since))
-                    .then(temp_unary)
-                    .repeated(),
-            )
-            .foldl(|lhs, (op, rhs)| match op {
+        let binary = temp_unary.clone().foldl(
+            just(Token::And)
+                .or(just(Token::Or))
+                .or(just(Token::Implies))
+                .or(just(Token::Since))
+                .then(temp_unary)
+                .repeated(),
+            |lhs, (op, rhs)| match op {
                 Token::And => Pmtl::And(vec![lhs, rhs]),
                 Token::Or => Pmtl::Or(vec![lhs, rhs]),
                 Token::Implies => Pmtl::Implies(Box::new((lhs, rhs))),
                 Token::Since => Pmtl::Since(Box::new((lhs, rhs)), Time::MIN, Time::MAX),
                 _ => unreachable!(),
-            });
+            },
+        );
 
-        binary
-            .clone()
-            .then(just(Token::Since).then(bounds).then(binary).repeated())
-            .foldl(|lhs, ((_op, (l, u)), rhs)| Pmtl::Since(Box::new((lhs, rhs)), l, u))
+        binary.clone().foldl(
+            just(Token::Since).then(bounds).then(binary).repeated(),
+            |lhs, ((_op, (l, u)), rhs)| Pmtl::Since(Box::new((lhs, rhs)), l, u),
+        )
     })
     .then_ignore(end())
 }
@@ -158,9 +155,11 @@ pub fn parse(input: &str) -> anyhow::Result<Pmtl<String>> {
     }
 
     //parses the tokens to construct an AST
-    parser()
-        .parse(tokens)
-        .map_err(|_err| anyhow!("failed parsing Rye expression"))
+    let result = parser()
+        .parse(&tokens)
+        .into_result()
+        .map_err(|_err| anyhow!("failed parsing Rye expression"));
+    result
 }
 
 #[cfg(test)]
