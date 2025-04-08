@@ -74,7 +74,7 @@ use super::grammar::*;
 use crate::Time;
 pub use builder::*;
 use core::panic;
-use rand::{rngs::mock::StepRng, Rng};
+use rand::{Rng, RngCore};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -181,7 +181,24 @@ enum FnEffect<R: Rng> {
     Receive(Var),
 }
 
-type Guard = FnExpression<Var, StepRng>;
+struct DummyRng;
+
+impl RngCore for DummyRng {
+    fn next_u32(&mut self) -> u32 {
+        panic!("DummyRng should never be called")
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        panic!("DummyRng should never be called")
+    }
+
+    fn fill_bytes(&mut self, dst: &mut [u8]) {
+        let _ = dst;
+        panic!("DummyRng should never be called")
+    }
+}
+
+type Guard = FnExpression<Var, DummyRng>;
 
 type Transition = (Action, Location, Option<Guard>, Vec<TimeConstraint>);
 
@@ -264,20 +281,21 @@ impl<R: Rng> ProgramGraph<R> {
             .iter()
             .filter_map(|(action, post_state, guard, constraints)| {
                 let (_, ref invariants) = self.def.locations[post_state.0 as usize];
-                let resets = if *action == EPSILON {
-                    &Vec::new()
+                if *action == EPSILON {
+                    self.active_autonomous_transition(guard.as_ref(), constraints, invariants)
                 } else {
                     match self.def.effects[action.0 as usize] {
-                        FnEffect::Effects(_, ref resets) => resets,
-                        FnEffect::Send(_) | FnEffect::Receive(_) => &Vec::new(),
+                        FnEffect::Effects(_, ref resets) => {
+                            self.active_transition(guard.as_ref(), constraints, invariants, resets)
+                        }
+                        FnEffect::Send(_) | FnEffect::Receive(_) => self
+                            .active_autonomous_transition(guard.as_ref(), constraints, invariants),
                     }
-                };
-                self.active_transition(guard.as_ref(), constraints, invariants, resets)
-                    .then_some((*action, *post_state))
+                }
+                .then_some((*action, *post_state))
             })
     }
 
-    #[inline(always)]
     fn active_transition(
         &self,
         guard: Option<&Guard>,
@@ -287,9 +305,8 @@ impl<R: Rng> ProgramGraph<R> {
     ) -> bool {
         guard.is_none_or(|guard| {
             // TODO FIXME: is there a way to avoid creating a dummy RNG?
-            let mut rng = StepRng::new(0, 0);
             if let Val::Boolean(pass) =
-                guard.eval(&|var| self.vars[var.0 as usize].clone(), &mut rng)
+                guard.eval(&|var| self.vars[var.0 as usize].clone(), &mut DummyRng)
             {
                 pass
             } else {
@@ -309,6 +326,27 @@ impl<R: Rng> ProgramGraph<R> {
         })
     }
 
+    fn active_autonomous_transition(
+        &self,
+        guard: Option<&Guard>,
+        constraints: &[TimeConstraint],
+        invariants: &[TimeConstraint],
+    ) -> bool {
+        guard.is_none_or(|guard| {
+            // TODO FIXME: is there a way to avoid creating a dummy RNG?
+            if let Val::Boolean(pass) =
+                guard.eval(&|var| self.vars[var.0 as usize].clone(), &mut DummyRng)
+            {
+                pass
+            } else {
+                panic!("guard is not a boolean");
+            }
+        }) && constraints.iter().chain(invariants).all(|(c, l, u)| {
+            let time = self.clocks[c.0 as usize];
+            l.is_none_or(|l| l <= time) && u.is_none_or(|u| time < u)
+        })
+    }
+
     /// Executes a transition characterized by the argument action and post-state.
     ///
     /// Fails if the requested transition is not admissible,
@@ -320,35 +358,41 @@ impl<R: Rng> ProgramGraph<R> {
         rng: &'a mut R,
     ) -> Result<(), PgError> {
         let (_, ref invariants) = self.def.locations[post_state.0 as usize];
-        let (effects, resets) = if action == EPSILON {
-            (&Vec::new(), &Vec::new())
-        } else {
-            match self.def.effects[action.0 as usize] {
-                FnEffect::Effects(ref effects, ref resets) => (effects, resets),
-                FnEffect::Send(_) | FnEffect::Receive(_) => {
-                    return Err(PgError::Communication(action))
-                }
+        if action == EPSILON {
+            if !self
+                .def
+                .guards(self.current_location, action, post_state)
+                .any(|(guard, constraints)| {
+                    self.active_autonomous_transition(guard.as_ref(), constraints, invariants)
+                })
+            {
+                return Err(PgError::UnsatisfiedGuard);
             }
-        };
-        if self
-            .def
-            .guards(self.current_location, action, post_state)
-            .any(|(guard, constraints)| {
-                self.active_transition(guard.as_ref(), constraints, invariants, resets)
-            })
+        } else if let FnEffect::Effects(ref effects, ref resets) =
+            self.def.effects[action.0 as usize]
         {
-            for (var, effect) in effects {
-                self.vars[var.0 as usize] =
-                    effect.eval(&|var| self.vars[var.0 as usize].clone(), rng);
+            if self
+                .def
+                .guards(self.current_location, action, post_state)
+                .any(|(guard, constraints)| {
+                    self.active_transition(guard.as_ref(), constraints, invariants, resets)
+                })
+            {
+                effects.iter().for_each(|(var, effect)| {
+                    self.vars[var.0 as usize] =
+                        effect.eval(&|var| self.vars[var.0 as usize].clone(), rng)
+                });
+                resets
+                    .iter()
+                    .for_each(|clock| self.clocks[clock.0 as usize] = 0);
+            } else {
+                return Err(PgError::UnsatisfiedGuard);
             }
-            for clock in resets {
-                self.clocks[clock.0 as usize] = 0;
-            }
-            self.current_location = post_state;
-            Ok(())
         } else {
-            Err(PgError::UnsatisfiedGuard)
+            return Err(PgError::Communication(action));
         }
+        self.current_location = post_state;
+        Ok(())
     }
 
     /// Checks if it is possible to wait a given amount of time-units without violating the time invariants.

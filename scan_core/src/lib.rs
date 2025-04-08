@@ -46,7 +46,7 @@ pub trait Tracer<A>: Clone + Send + Sync {
     fn init(&mut self);
 
     /// Stream a new state of the trace.
-    fn trace<I: IntoIterator<Item = Val>>(&mut self, action: &A, time: Time, ports: I);
+    fn trace<'a, I: IntoIterator<Item = &'a Val>>(&mut self, action: &A, time: Time, ports: I);
 
     /// Finalize and close streaming.
     ///

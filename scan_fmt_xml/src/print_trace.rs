@@ -102,7 +102,7 @@ impl Tracer<Event> for TracePrinter {
         self.writer = Some(writer);
     }
 
-    fn trace<I: IntoIterator<Item = Val>>(&mut self, event: &Event, time: Time, ports: I) {
+    fn trace<'a, I: IntoIterator<Item = &'a Val>>(&mut self, event: &Event, time: Time, ports: I) {
         let mut fields = Vec::new();
         let time = time.to_string();
         let mut action = String::new();
@@ -226,7 +226,7 @@ impl Tracer<Event> for TracePrinter {
                     param_value,
                 ]
                 .into_iter()
-                .chain(ports.into_iter().map(|v| format_val(&v))),
+                .chain(ports.into_iter().map(format_val)),
             )
             .expect("write record");
     }

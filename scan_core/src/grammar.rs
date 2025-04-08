@@ -555,14 +555,14 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
     fn from(value: Expression<V>) -> Self {
         FnExpression(match value {
             Expression::Const(val) => Box::new(move |_, _| val.clone()),
-            Expression::Var(var, _t) => Box::new(move |vars, _| {
-                vars(var.clone())
-                // let val = vars(var);
-                // if t == val.r#type() {
-                //     val
-                // } else {
-                //     panic!("value and variable type mismatch");
-                // }
+            Expression::Var(var, t) => Box::new(move |vars, _| {
+                // vars(var.clone())
+                let val = vars(var.clone());
+                if t == val.r#type() {
+                    val
+                } else {
+                    panic!("value and variable type mismatch");
+                }
             }),
             Expression::Tuple(exprs) => {
                 let exprs: Vec<FnExpression<_, _>> =
@@ -589,35 +589,25 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
             Expression::And(exprs) => {
                 let exprs: Vec<FnExpression<_, _>> = exprs.into_iter().map(Self::from).collect();
                 Box::new(move |vars, rng| {
-                    for expr in exprs.iter() {
+                    Val::Boolean(exprs.iter().all(|expr| {
                         if let Val::Boolean(b) = expr.eval(vars, rng) {
-                            if b {
-                                continue;
-                            } else {
-                                return Val::Boolean(false);
-                            }
+                            b
                         } else {
                             panic!("type mismatch");
                         }
-                    }
-                    Val::Boolean(true)
+                    }))
                 })
             }
             Expression::Or(exprs) => {
                 let exprs: Vec<FnExpression<_, _>> = exprs.into_iter().map(Self::from).collect();
                 Box::new(move |vars, rng| {
-                    for expr in exprs.iter() {
+                    Val::Boolean(exprs.iter().any(|expr| {
                         if let Val::Boolean(b) = expr.eval(vars, rng) {
-                            if b {
-                                return Val::Boolean(true);
-                            } else {
-                                continue;
-                            }
+                            b
                         } else {
                             panic!("type mismatch");
                         }
-                    }
-                    Val::Boolean(false)
+                    }))
                 })
             }
             Expression::Implies(exprs) => {

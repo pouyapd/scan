@@ -285,7 +285,7 @@ impl<R: Rng + SeedableRng + Sync + Clone> CsModel<R> {
             let state = self.labels(&event);
             let time = self.time();
             if let Some(tracer) = tracer.as_mut() {
-                tracer.trace(&event, time, self.ports.values().cloned());
+                tracer.trace(&event, time, self.ports.values());
             }
             self.oracle = self.oracle.update(&state, time);
             if self.oracle.output_assumes().is_some() {

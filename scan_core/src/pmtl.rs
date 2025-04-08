@@ -146,6 +146,7 @@ pub struct PmtlOracle {
     subformulae: Arc<Vec<ArcPmtl<usize>>>,
     valuations: Vec<NumSet>,
     outputs: Vec<NumSet>,
+    buf_valuations: Vec<NumSet>,
 }
 
 impl<V> Pmtl<V>
@@ -305,8 +306,9 @@ impl PmtlOracle {
             time: (0, 1),
             assumes,
             guarantees,
-            valuations: Vec::from_iter((0..subformulae.len()).map(|_| NumSet::new())),
-            outputs: Vec::from_iter((0..subformulae.len()).map(|_| NumSet::new())),
+            valuations: vec![NumSet::new(); subformulae.len()],
+            outputs: vec![NumSet::new(); subformulae.len()],
+            buf_valuations: vec![NumSet::new(); subformulae.len()],
             subformulae,
         }
     }
@@ -332,71 +334,72 @@ impl PmtlOracle {
             .map(|(i, _)| i)
     }
 
-    pub(crate) fn update(self, state: &[bool], time: Time) -> Self {
+    pub(crate) fn update(mut self, state: &[bool], time: Time) -> Self {
         assert!(self.time.0 <= time);
         let new_time = (time, self.time.1 + 1);
-        let mut valuations = Vec::with_capacity(self.subformulae.len());
-        let mut outputs = Vec::with_capacity(self.subformulae.len());
+        self.buf_valuations.clear();
+        self.outputs.clear();
         for (idx, formula) in self.subformulae.iter().enumerate() {
             match formula {
                 ArcPmtl::True => {
-                    valuations.push(NumSet::full());
-                    outputs.push(NumSet::from_range(self.time, new_time));
+                    self.buf_valuations.push(NumSet::full());
+                    self.outputs.push(NumSet::from_range(self.time, new_time));
                 }
                 ArcPmtl::False => {
-                    valuations.push(NumSet::new());
-                    outputs.push(NumSet::new());
+                    self.buf_valuations.push(NumSet::new());
+                    self.outputs.push(NumSet::new());
                 }
                 ArcPmtl::Atom(atom) => {
                     if state[*atom] {
                         let numset = NumSet::from_range(self.time, new_time);
-                        valuations.push(numset.clone());
-                        outputs.push(numset);
+                        self.buf_valuations.push(numset.clone());
+                        self.outputs.push(numset);
                     } else {
-                        valuations.push(NumSet::new());
-                        outputs.push(NumSet::new());
+                        self.buf_valuations.push(NumSet::new());
+                        self.outputs.push(NumSet::new());
                     }
                 }
                 ArcPmtl::And(subs) => {
-                    let nset =
-                        NumSet::intersection(subs.iter().filter_map(|f| outputs.get(f.1)).cloned())
-                            .simplify();
-                    valuations.push(nset.clone());
-                    outputs.push(nset);
+                    let nset = NumSet::intersection(
+                        subs.iter().filter_map(|f| self.outputs.get(f.1)).cloned(),
+                    )
+                    .simplify();
+                    self.buf_valuations.push(nset.clone());
+                    self.outputs.push(nset);
                 }
                 ArcPmtl::Or(subs) => {
                     let nset = subs
                         .iter()
-                        .filter_map(|sub| outputs.get(sub.1))
+                        .filter_map(|sub| self.outputs.get(sub.1))
                         .fold(NumSet::new(), |mut union, numset| {
                             union.union(numset);
                             union
                         })
                         .simplify();
-                    valuations.push(nset.clone());
-                    outputs.push(nset);
+                    self.buf_valuations.push(nset.clone());
+                    self.outputs.push(nset);
                 }
                 ArcPmtl::Not(subformula) => {
-                    let mut nset = outputs.get(subformula.1).expect("nset").clone();
+                    let mut nset = self.outputs.get(subformula.1).expect("nset").clone();
                     nset.complement();
                     nset.cut(self.time, new_time);
                     nset.simplify();
-                    valuations.push(nset.clone());
-                    outputs.push(nset);
+                    self.buf_valuations.push(nset.clone());
+                    self.outputs.push(nset);
                 }
                 ArcPmtl::Implies(sub_0, sub_1) => {
-                    let out_lhs = outputs.get(sub_0.1).expect("output lhs");
-                    let out_rhs = outputs.get(sub_1.1).expect("output rhs");
+                    let out_lhs = self.outputs.get(sub_0.1).expect("output lhs");
+                    let out_rhs = self.outputs.get(sub_1.1).expect("output rhs");
                     let mut nset = out_lhs.clone();
                     nset.complement();
                     nset.union(out_rhs);
                     nset.cut(self.time, new_time);
                     nset.simplify();
-                    valuations.push(nset.clone());
-                    outputs.push(nset);
+                    self.buf_valuations.push(nset.clone());
+                    self.outputs.push(nset);
                 }
                 ArcPmtl::Historically(sub, lower_bound, upper_bound) => {
-                    let mut output_sub = outputs.get(sub.1).expect("nset").clone();
+                    let mut output_sub = self.outputs.get(sub.1).expect("nset").clone();
                     output_sub.insert_bound(new_time);
                     let mut valuation = self.valuations.get(idx).expect("formula").clone();
                     let mut partial_lower_bound = self.time;
@@ -429,15 +432,15 @@ impl PmtlOracle {
                     nset_output.complement();
                     nset_output.cut(self.time, new_time);
                     valuation.cut(self.time, (Time::MAX, Time::MAX));
-                    valuations.push(valuation.simplify());
-                    outputs.push(nset_output.simplify());
+                    self.buf_valuations.push(valuation.simplify());
+                    self.outputs.push(nset_output.simplify());
                 }
                 ArcPmtl::Previously(sub, lower_bound, upper_bound) => {
-                    let mut output_sub = outputs.get(sub.1).expect("nset").clone();
+                    let mut output_sub = self.outputs.get(sub.1).expect("nset").clone();
                     output_sub.insert_bound(new_time);
                     let mut valuation = self.valuations.get(idx).expect("formula").clone();
                     let mut partial_lower_bound = self.time;
-                    let mut output = NumSet::new();
+                    let mut nset_output = NumSet::new();
                     for (partial_upper_bound, out_sub) in
                         output_sub.bounds().iter().filter(|(ub, _)| self.time < *ub)
                     {
@@ -461,16 +464,16 @@ impl PmtlOracle {
                         }
                         let mut to_add = valuation.clone();
                         to_add.cut(partial_lower_bound, *partial_upper_bound);
-                        output.union(&to_add);
+                        nset_output.union(&to_add);
                         partial_lower_bound = *partial_upper_bound;
                     }
                     valuation.cut(self.time, (Time::MAX, Time::MAX));
-                    valuations.push(valuation.simplify());
-                    outputs.push(output.simplify());
+                    self.buf_valuations.push(valuation.simplify());
+                    self.outputs.push(nset_output.simplify());
                 }
                 ArcPmtl::Since(sub_0, sub_1, lower_bound, upper_bound) => {
-                    let mut nset_lhs = outputs.get(sub_0.1).expect("nset").clone();
-                    let nset_rhs_orig = outputs.get(sub_1.1).expect("nset");
+                    let mut nset_lhs = self.outputs.get(sub_0.1).expect("nset").clone();
+                    let nset_rhs_orig = self.outputs.get(sub_1.1).expect("nset");
                     let mut nset_rhs = nset_rhs_orig.clone();
                     nset_rhs.insert_bound(new_time);
                     nset_lhs.insert_bound(new_time);
@@ -531,8 +534,8 @@ impl PmtlOracle {
                         partial_lower_bound = *partial_upper_bound;
                     }
                     valuation.cut(self.time, (Time::MAX, Time::MAX));
-                    valuations.push(valuation.simplify());
-                    outputs.push(nset_output.simplify());
+                    self.buf_valuations.push(valuation.simplify());
+                    self.outputs.push(nset_output.simplify());
                 }
             }
         }
@@ -541,8 +544,10 @@ impl PmtlOracle {
             assumes: self.assumes,
             guarantees: self.guarantees,
             subformulae: self.subformulae,
-            valuations,
-            outputs,
+            valuations: self.buf_valuations,
+            outputs: self.outputs,
+            // Reuse allocated memory
+            buf_valuations: self.valuations,
         }
     }
 }
