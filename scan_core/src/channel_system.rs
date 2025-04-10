@@ -76,19 +76,35 @@
 //! let mut cs = cs_builder.build();
 //!
 //! // Since the channel is empty, only pg_1 can transition (with send)
-//! assert_eq!(Vec::from_iter(cs.possible_transitions()), vec![(pg_1, send, vec![vec![initial_1]])]);
+//! {
+//! let mut iter = cs.possible_transitions();
+//! let (pg, action, mut trans) = iter.next().unwrap();
+//! assert_eq!(pg, pg_1);
+//! assert_eq!(action, send);
+//! let post_locs: Vec<Location> = trans.next().unwrap().collect();
+//! assert_eq!(post_locs, vec![initial_1]);
+//! assert!(iter.next().is_none());
+//! }
 //!
 //! // Perform the transition, which sends a value to the channel queue
 //! // After this, the channel is full
-//! cs.transition(pg_1, send, vec![initial_1])
+//! cs.transition(pg_1, send, &[initial_1])
 //!     .expect("transition is possible");
 //!
 //! // Since the channel is now full, only pg_2 can transition (with receive)
-//! assert_eq!(Vec::from_iter(cs.possible_transitions()), vec![(pg_2, receive, vec![vec![initial_2]])]);
+//! {
+//! let mut iter = cs.possible_transitions();
+//! let (pg, action, mut trans) = iter.next().unwrap();
+//! assert_eq!(pg, pg_2);
+//! assert_eq!(action, receive);
+//! let post_locs: Vec<Location> = trans.next().unwrap().collect();
+//! assert_eq!(post_locs, vec![initial_2]);
+//! assert!(iter.next().is_none());
+//! }
 //!
 //! // Perform the transition, which receives a value to the channel queue
 //! // After this, the channel is empty
-//! cs.transition(pg_2, receive, vec![initial_2])
+//! cs.transition(pg_2, receive, &[initial_2])
 //!     .expect("transition is possible");
 //! ```
 

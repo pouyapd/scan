@@ -22,7 +22,8 @@
 //! though the structure of the PG itself can no longer be altered.
 //!
 //! ```
-//! # use scan_core::program_graph::ProgramGraphBuilder;
+//! # use scan_core::program_graph::{ProgramGraphBuilder, Location};
+//! # use smallvec::smallvec;
 //! // Create a new PG builder
 //! let mut pg_builder = ProgramGraphBuilder::new();
 //!
@@ -47,16 +48,23 @@
 //! let mut pg = pg_builder.build();
 //!
 //! // Execution starts in the initial location
-//! assert_eq!(pg.current_states(), &[initial_loc]);
+//! assert_eq!(pg.current_states().as_slice(), &[initial_loc]);
 //!
 //! // Compute the possible transitions on the PG
-//! assert_eq!(Vec::from_iter(pg.possible_transitions()), vec![(action, vec![vec![post_loc]])]);
+//! {
+//!     let mut iter = pg.possible_transitions();
+//!     let (act, mut trans) = iter.next().unwrap();
+//!     assert_eq!(act, action);
+//!     let post_locs: Vec<Location> = trans.next().unwrap().collect();
+//!     assert_eq!(post_locs, vec![post_loc]);
+//!     assert!(iter.next().is_none());
+//! }
 //!
 //! // Perform a transition
 //! # use rand::{Rng, SeedableRng};
 //! # use rand::rngs::SmallRng;
 //! let mut rng = SmallRng::from_os_rng();
-//! let result = pg.transition(action, vec![post_loc], &mut rng);
+//! let result = pg.transition(action, &[post_loc], &mut rng);
 //!
 //! // Performing a transition can fail, in particular, if the transition was not allowed
 //! result.expect("The transition from the initial location onto itself is possible");
@@ -65,7 +73,7 @@
 //! assert!(pg.possible_transitions().next().is_none());
 //!
 //! // Attempting to transition results in an error
-//! pg.transition(action, vec![post_loc], &mut rng).expect_err("The transition is not possible");
+//! pg.transition(action, &[post_loc], &mut rng).expect_err("The transition is not possible");
 //! ```
 
 mod builder;
@@ -266,7 +274,7 @@ impl<R: Rng> ProgramGraph<R> {
     /// let mut pg = pg_builder.build::<SmallRng>();
     ///
     /// // Execution starts in the initial location
-    /// assert_eq!(pg.current_states(), &vec![initial_loc]);
+    /// assert_eq!(pg.current_states().as_slice(), &[initial_loc]);
     /// ```
     #[inline(always)]
     pub fn current_states(&self) -> &SmallVec<[Location; 8]> {
@@ -660,7 +668,16 @@ mod tests {
         assert_eq!(pg.possible_transitions().count(), 2);
         pg.transition(move_left, &[left], &mut rng)
             .expect("move left");
-        assert_eq!(pg.possible_transitions().count(), 0);
+        assert!(
+            pg.possible_transitions()
+                .next()
+                .unwrap()
+                .1
+                .next()
+                .unwrap()
+                .next()
+                .is_none()
+        );
         pg.transition(move_left, &[left], &mut rng)
             .expect_err("battery = 0");
         Ok(())
