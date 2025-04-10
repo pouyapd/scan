@@ -26,24 +26,16 @@ fn counter_pg() -> Result<(), PgError> {
             .unwrap();
     }
     let mut pg = pg.build();
-    let mut post;
-    let mut action;
-    loop {
-        if let Some((a, p)) = pg
-            .possible_transitions()
-            .filter_map(|(a, iter)| {
-                iter.into_iter()
-                    .map(|mut v| v.next())
-                    .collect::<Option<Vec<_>>>()
-                    .map(|l| (a, l))
-            })
-            .next()
-        {
-            action = a;
-            post = p;
-        } else {
-            break;
-        }
+    while let Some((action, post)) = pg
+        .possible_transitions()
+        .filter_map(|(a, iter)| {
+            iter.into_iter()
+                .map(|v| v.last())
+                .collect::<Option<Vec<_>>>()
+                .map(|l| (a, l))
+        })
+        .last()
+    {
         assert!(pg.transition(action, post.as_slice(), &mut rng).is_ok());
     }
     Ok(())
