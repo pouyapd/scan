@@ -41,7 +41,7 @@ fn test(path: &Path) {
     while let Some((pg_id, action, destination)) = model.possible_transitions().choose(&mut rng) {
         let destination = &destination
             .into_iter()
-            .map(|d| *d.choose(&mut rng).expect("destination"))
+            .map(|d| d.choose(&mut rng).expect("destination"))
             .collect::<Vec<_>>();
         model.transition(pg_id, action, destination).unwrap();
         steps += 1;

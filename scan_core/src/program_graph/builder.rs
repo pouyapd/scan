@@ -1,10 +1,10 @@
 use super::{
-    Action, Clock, FnEffect, FnExpression, Location, PgError, PgExpression, ProgramGraph,
-    ProgramGraphDef, TimeConstraint, Var, EPSILON,
+    Action, Clock, EPSILON, FnEffect, FnExpression, Location, PgError, PgExpression, ProgramGraph,
+    ProgramGraphDef, TimeConstraint, Var,
 };
 use crate::grammar::{Type, Val};
 use log::info;
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use std::{collections::BTreeSet, sync::Arc};
 
 #[derive(Debug, Clone)]
@@ -495,6 +495,11 @@ impl ProgramGraphBuilder {
     pub fn build<R: Rng + 'static>(mut self) -> ProgramGraph<R> {
         // Since vectors of effects and transitions will become unmutable,
         // they should be shrunk to take as little space as possible
+        self.effects.iter_mut().for_each(|effect| {
+            if let Effect::Effects(_, resets) = effect {
+                resets.sort_unstable();
+            }
+        });
         self.effects.shrink_to_fit();
         // Vars are not going to be unmutable,
         // but their number will be constant anyway
@@ -502,13 +507,17 @@ impl ProgramGraphBuilder {
         let mut locations = self
             .locations
             .into_iter()
-            .map(|(transitions, invariants)| {
+            .map(|(transitions, mut invariants)| {
                 let mut transitions = transitions
                     .into_iter()
-                    .map(|(a, p, guard, c)| (a, p, guard.map(FnExpression::from), c))
+                    .map(|(a, p, guard, mut c)| {
+                        c.sort_unstable();
+                        (a, p, guard.map(FnExpression::from), c)
+                    })
                     .collect::<Vec<_>>();
                 transitions.sort_unstable_by_key(|(a, p, ..)| (*a, *p));
                 transitions.shrink_to_fit();
+                invariants.sort_unstable();
                 let actions = BTreeSet::from_iter(transitions.iter().map(|(a, ..)| *a));
                 (transitions, invariants, actions)
             })

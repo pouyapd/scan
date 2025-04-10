@@ -106,7 +106,7 @@ pub struct Var(u16);
 ///
 /// These cannot be directly created or manipulated,
 /// but have to be generated and/or provided by a [`ProgramGraphBuilder`] or [`ProgramGraph`].
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Clock(u16);
 
 /// A time constraint given by a clock and, optionally, a lower bound and/or an upper bound.
@@ -303,8 +303,7 @@ impl<R: Rng> ProgramGraph<R> {
             &self.buf
         }
         .iter()
-        .copied()
-        .map(|action| (action, self.possible_transitions_action(action)))
+        .map(|action| (*action, self.possible_transitions_action(*action)))
     }
 
     #[inline(always)]
@@ -314,11 +313,10 @@ impl<R: Rng> ProgramGraph<R> {
     ) -> impl Iterator<Item = impl Iterator<Item = Location> + use<'_, R>> + use<'_, R> {
         self.current_states
             .iter()
-            .map(move |loc| self.possible_transitions_action_post(action, *loc))
+            .map(move |loc| self.possible_transitions_action_loc(action, *loc))
     }
 
-    #[inline(always)]
-    fn possible_transitions_action_post(
+    fn possible_transitions_action_loc(
         &self,
         action: Action,
         current_state: Location,
@@ -336,8 +334,8 @@ impl<R: Rng> ProgramGraph<R> {
                     return None;
                 }
                 let (_, ref invariants, _) = self.def.locations[post_state.0 as usize];
-                let resets = if action == EPSILON {
-                    &Vec::new()
+                if if action == EPSILON {
+                    self.active_autonomous_transition(guard.as_ref(), constraints, invariants)
                 } else {
                     match self.def.effects[action.0 as usize] {
                         FnEffect::Effects(_, ref resets) => {
@@ -346,8 +344,7 @@ impl<R: Rng> ProgramGraph<R> {
                         FnEffect::Send(_) | FnEffect::Receive(_) => self
                             .active_autonomous_transition(guard.as_ref(), constraints, invariants),
                     }
-                };
-                if self.active_transition(guard.as_ref(), constraints, invariants, resets) {
+                } {
                     last_post_state = Some(*post_state);
                     last_post_state
                 } else {
@@ -376,8 +373,7 @@ impl<R: Rng> ProgramGraph<R> {
             let time = self.clocks[c.0 as usize];
             l.is_none_or(|l| l <= time) && u.is_none_or(|u| time < u)
         }) && invariants.iter().all(|(c, l, u)| {
-            // TODO NOTE: use binary search on resets?
-            let time = if resets.contains(c) {
+            let time = if resets.binary_search(c).is_ok() {
                 0
             } else {
                 self.clocks[c.0 as usize]
@@ -407,61 +403,6 @@ impl<R: Rng> ProgramGraph<R> {
         })
     }
 
-    /// Executes a transition characterized by the argument action and post-state.
-    ///
-    /// Fails if the requested transition is not admissible,
-    /// or if the post-location time invariants are violated.
-    pub fn transition(
-        &mut self,
-        action: Action,
-        post_states: &[Location],
-        rng: &mut R,
-    ) -> Result<(), PgError> {
-        if post_states.len() != self.current_states.len() {
-            return Err(PgError::MismatchingPostStates);
-        }
-        if action == EPSILON {
-            if self
-                .current_states
-                .iter()
-                .zip(post_states)
-                .any(|(current_location, post_state)| {
-                    let invariants = self.def.locations[post_state.0 as usize].1.as_slice();
-                    !self.def.guards(*current_location, action, *post_state).any(
-                        |(guard, constraints)| {
-                            self.active_autonomous_transition(
-                                guard.as_ref(),
-                                constraints,
-                                invariants,
-                            )
-                        },
-                    )
-                })
-            {
-                return Err(PgError::UnsatisfiedGuard);
-            }
-        } else if let FnEffect::Effects(ref effects, ref resets) =
-            self.def.effects[action.0 as usize]
-        {
-            if self.active_transitions(action, post_states, resets) {
-                effects.iter().for_each(|(var, effect)| {
-                    self.vars[var.0 as usize] =
-                        effect.eval(&|var| self.vars[var.0 as usize].clone(), rng)
-                });
-                resets
-                    .iter()
-                    .for_each(|clock| self.clocks[clock.0 as usize] = 0);
-            } else {
-                return Err(PgError::UnsatisfiedGuard);
-            }
-        } else {
-            return Err(PgError::Communication(action));
-        }
-        self.current_states.copy_from_slice(post_states);
-        self.update_buf();
-        Ok(())
-    }
-
     fn active_transitions(
         &self,
         action: Action,
@@ -483,6 +424,70 @@ impl<R: Rng> ProgramGraph<R> {
                         )
                     })
             })
+    }
+
+    fn active_autonomous_transitions(&self, post_states: &[Location]) -> bool {
+        self.current_states
+            .iter()
+            .zip(post_states)
+            .all(|(current_state, post_state)| {
+                self.def
+                    .guards(*current_state, EPSILON, *post_state)
+                    .any(|(guard, constraints)| {
+                        self.active_autonomous_transition(
+                            guard.as_ref(),
+                            constraints,
+                            &self.def.locations[post_state.0 as usize].1,
+                        )
+                    })
+            })
+    }
+
+    /// Executes a transition characterized by the argument action and post-state.
+    ///
+    /// Fails if the requested transition is not admissible,
+    /// or if the post-location time invariants are violated.
+    pub fn transition(
+        &mut self,
+        action: Action,
+        post_states: &[Location],
+        rng: &mut R,
+    ) -> Result<(), PgError> {
+        if post_states.len() != self.current_states.len() {
+            return Err(PgError::MismatchingPostStates);
+        }
+        if let Some(ps) = post_states
+            .iter()
+            .find(|ps| ps.0 >= self.def.locations.len() as u16)
+        {
+            return Err(PgError::MissingLocation(*ps));
+        }
+        if action == EPSILON {
+            if !self.active_autonomous_transitions(post_states) {
+                return Err(PgError::UnsatisfiedGuard);
+            }
+        } else if action.0 >= self.def.effects.len() as u16 {
+            return Err(PgError::MissingAction(action));
+        } else if let FnEffect::Effects(ref effects, ref resets) =
+            self.def.effects[action.0 as usize]
+        {
+            if self.active_transitions(action, post_states, resets) {
+                effects.iter().for_each(|(var, effect)| {
+                    self.vars[var.0 as usize] =
+                        effect.eval(&|var| self.vars[var.0 as usize].clone(), rng)
+                });
+                resets
+                    .iter()
+                    .for_each(|clock| self.clocks[clock.0 as usize] = 0);
+            } else {
+                return Err(PgError::UnsatisfiedGuard);
+            }
+        } else {
+            return Err(PgError::Communication(action));
+        }
+        self.current_states.copy_from_slice(post_states);
+        self.update_buf();
+        Ok(())
     }
 
     /// Checks if it is possible to wait a given amount of time-units without violating the time invariants.
