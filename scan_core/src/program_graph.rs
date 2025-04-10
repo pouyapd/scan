@@ -70,9 +70,8 @@
 
 mod builder;
 
-use crate::{grammar::*, Time};
+use crate::{Time, grammar::*};
 pub use builder::*;
-use core::panic;
 use rand::{Rng, RngCore};
 use smallvec::SmallVec;
 use std::{collections::BTreeSet, sync::Arc};
@@ -295,13 +294,9 @@ impl<R: Rng> ProgramGraph<R> {
     ) -> impl Iterator<
         Item = (
             Action,
-            impl Iterator<Item = impl Iterator<Item = Location> + use<'_, R>>,
+            impl Iterator<Item = impl Iterator<Item = Location> + use<'_, R>> + use<'_, R>,
         ),
     > + use<'_, R> {
-        // let filter = |action: Action| {
-        //     self.possible_transitions_action(action)
-        //         .map(|t| (action, t))
-        // };
         if self.current_states.len() == 1 {
             &self.def.locations[self.current_states[0].0 as usize].2
         } else {
@@ -310,20 +305,16 @@ impl<R: Rng> ProgramGraph<R> {
         .iter()
         .copied()
         .map(|action| (action, self.possible_transitions_action(action)))
-        // .filter_map(filter)
     }
 
     #[inline(always)]
     fn possible_transitions_action(
         &self,
         action: Action,
-    ) -> impl Iterator<Item = impl Iterator<Item = Location> + use<'_, R>> {
-        self.current_states.iter().map(move |loc| {
-            self.possible_transitions_action_post(action, *loc)
-            // let mut ts = ts.peekable();
-            // (ts.peek().is_some()).then_some(ts)
-        })
-        // .collect::<Option<_>>()
+    ) -> impl Iterator<Item = impl Iterator<Item = Location> + use<'_, R>> + use<'_, R> {
+        self.current_states
+            .iter()
+            .map(move |loc| self.possible_transitions_action_post(action, *loc))
     }
 
     #[inline(always)]
@@ -467,6 +458,7 @@ impl<R: Rng> ProgramGraph<R> {
             return Err(PgError::Communication(action));
         }
         self.current_states.copy_from_slice(post_states);
+        self.update_buf();
         Ok(())
     }
 
@@ -572,9 +564,9 @@ impl<R: Rng> ProgramGraph<R> {
 
 #[cfg(test)]
 mod tests {
-    use rand::rngs::mock::StepRng;
-    use rand::rngs::SmallRng;
     use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+    use rand::rngs::mock::StepRng;
 
     use super::*;
 
