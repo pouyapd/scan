@@ -78,9 +78,9 @@
 
 mod builder;
 
-use crate::{Time, grammar::*};
+use crate::{DummyRng, Time, grammar::*};
 pub use builder::*;
-use rand::{Rng, RngCore};
+use rand::Rng;
 use smallvec::SmallVec;
 use std::{collections::BTreeSet, sync::Arc};
 use thiserror::Error;
@@ -124,11 +124,8 @@ pub type TimeConstraint = (Clock, Option<Time>, Option<Time>);
 pub type PgExpression = Expression<Var>;
 
 /// The error type for operations with [`ProgramGraphBuilder`]s and [`ProgramGraph`]s.
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, Copy, Error)]
 pub enum PgError {
-    /// The expression is badly typed.
-    #[error("malformed expression {0:?}")]
-    BadExpression(PgExpression),
     /// There is no such action in the PG.
     #[error("action {0:?} does not belong to this program graph")]
     MissingAction(Action),
@@ -191,23 +188,6 @@ enum FnEffect<R: Rng> {
     Receive(Var),
 }
 
-struct DummyRng;
-
-impl RngCore for DummyRng {
-    fn next_u32(&mut self) -> u32 {
-        panic!("DummyRng should never be called")
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        panic!("DummyRng should never be called")
-    }
-
-    fn fill_bytes(&mut self, dst: &mut [u8]) {
-        let _ = dst;
-        panic!("DummyRng should never be called")
-    }
-}
-
 type Guard = FnExpression<Var, DummyRng>;
 
 type Transition = (Action, Location, Option<Guard>, Vec<TimeConstraint>);
@@ -248,7 +228,7 @@ impl<R: Rng> ProgramGraphDef<R> {
 /// The only way to produce a [`ProgramGraph`] is through a [`ProgramGraphBuilder`].
 /// This guarantees that there are no type errors involved in the definition of action's effects and transitions' guards,
 /// and thus the PG will always be in a consistent state.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProgramGraph<R: Rng> {
     current_states: SmallVec<[Location; 8]>,
     vars: Vec<Val>,

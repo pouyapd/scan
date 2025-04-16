@@ -189,7 +189,7 @@ pub enum Message {
 }
 
 /// The error type for operations with [`ChannelSystemBuilder`]s and [`ChannelSystem`]s.
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Clone, Copy, Error)]
 pub enum CsError {
     /// A PG within the CS returned an error of its own.
     #[error("error from program graph {0:?}")]
@@ -247,7 +247,7 @@ pub enum CsError {
 }
 
 /// A Channel System event related to a channel.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// The PG producing the event in the course of a transition.
     pub pg_id: PgId,
@@ -258,7 +258,7 @@ pub struct Event {
 }
 
 /// A Channel System event type related to a channel.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EventType {
     /// Sending a value to a channel.
     Send(Val),
@@ -304,7 +304,6 @@ impl ChannelSystemDef {
 /// The only way to produce a [`ChannelSystem`] is through a [`ChannelSystemBuilder`].
 /// This guarantees that there are no type errors involved in the definition of its PGs,
 /// and thus the CS will always be in a consistent state.
-#[derive(Debug, Clone)]
 pub struct ChannelSystem<R: Rng> {
     rng: R,
     time: Time,
@@ -313,9 +312,15 @@ pub struct ChannelSystem<R: Rng> {
     def: Arc<ChannelSystemDef>,
 }
 
-impl<R: Rng + SeedableRng> ChannelSystem<R> {
-    pub(crate) fn reseed_rng(&mut self) {
-        self.rng = R::from_os_rng();
+impl<R: Rng + Clone + SeedableRng> Clone for ChannelSystem<R> {
+    fn clone(&self) -> Self {
+        Self {
+            rng: R::from_os_rng(),
+            time: self.time,
+            program_graphs: self.program_graphs.clone(),
+            message_queue: self.message_queue.clone(),
+            def: Arc::clone(&self.def),
+        }
     }
 }
 
