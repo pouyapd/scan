@@ -1,9 +1,10 @@
+use scan_core::Integer;
 use serde::Deserialize;
 
 use super::Identifier;
 
 /// an expression is constant if all subexpressions are constant, unless noted otherwise
-#[derive(Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged, rename_all = "kebab-case")]
 pub(crate) enum Expression {
     /// constant value
@@ -85,7 +86,7 @@ pub(crate) enum Expression {
     },
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Constant {
     /// Euler's number (the base of the natural logarithm); type real
@@ -96,7 +97,7 @@ pub(crate) enum Constant {
     Pi,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(untagged, rename_all = "kebab-case")]
 pub(crate) enum ConstantValue {
     /// Boolean value; has type bool
@@ -104,16 +105,19 @@ pub(crate) enum ConstantValue {
     /// mathematical constants that cannot be expressed using numeric values and basic jani-model expressions
     Constant(Constant),
     /// numeric value; has type int if it is an integer and type real otherwise
-    Number(f64),
+    #[serde(rename = "number")]
+    NumberInt(Integer),
+    #[serde(rename = "number")]
+    NumberReal(f64),
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum IteOp {
     Ite,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum BoolOp {
     #[serde(rename = "∧")]
@@ -122,14 +126,14 @@ pub(crate) enum BoolOp {
     Or,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum NegOp {
     #[serde(rename = "¬")]
     Neg,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum EqCompOp {
     #[serde(rename = "=")]
@@ -138,7 +142,7 @@ pub(crate) enum EqCompOp {
     Neq,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum NumCompOp {
     #[serde(rename = "<")]
@@ -152,7 +156,7 @@ pub(crate) enum NumCompOp {
 }
 
 /// computes left + right / left - right / left * right / left modulo right
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum IntOp {
     #[serde(rename = "+")]
@@ -166,7 +170,7 @@ pub(crate) enum IntOp {
 }
 
 /// computes left + right / left - right / left * right / left modulo right
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum RealOp {
     #[serde(rename = "/")]
@@ -176,7 +180,7 @@ pub(crate) enum RealOp {
 }
 
 /// floor / ceiling: computes ⌊exp⌋ / ⌈exp⌉
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Real2IntOp {
     Floor,

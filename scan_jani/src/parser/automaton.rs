@@ -114,23 +114,23 @@ pub(crate) struct Destination {
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Assignment {
     /// what to assign to (can be both transient and non-transient)
-    r#ref: LValue,
+    pub(crate) r#ref: LValue,
     /// the new value to assign to the variable; must be of the variable's type;
     /// if the variable's type is clock, must be a clock- and sampling-free expression
-    value: Expression,
+    pub(crate) value: Expression,
     // TODO
     // "?index": Number.step(1), // the index, to create sequences of atomic assignment sets, default 0
     /// an optional comment
     #[serde(skip)]
-    comment: String,
+    pub(crate) comment: String,
 }
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Probability {
     /// the probability expression, type real; note that this may evaluate to zero
-    exp: Expression,
+    pub(crate) exp: Expression,
     /// an optional comment
     #[serde(skip)]
-    comment: String,
+    pub(crate) comment: String,
 }

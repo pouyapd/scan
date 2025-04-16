@@ -3,6 +3,13 @@
 	"name": "sync.jani",
 	"type": "lts",
 	"actions": [ { "name": "step" }],
+  "variables": [
+    {
+      "initial-value": true,
+      "name": "q1",
+      "type": "bool"
+    }
+  ],
 	"automata": [
 		{
 			"name": "automaton_1",
@@ -13,9 +20,27 @@
 				{
 					"location": "l",
 					"action": "step_1",
+					"guard": {
+						"exp": "q1"
+					},
 					"destinations": [
 						{
-							"location": "o"
+							"location": "o",
+							"assignments": [
+								{
+	                "ref": "q1",
+	                "value": false
+								}
+							]
+						}
+					]
+				},
+				{
+					"location": "o",
+					"action": "step_1",
+					"destinations": [
+						{
+							"location": "l"
 						}
 					]
 				}

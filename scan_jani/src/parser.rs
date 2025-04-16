@@ -5,14 +5,16 @@ mod composition;
 mod constant_declaration;
 mod expression;
 mod jani_type;
+mod property;
 mod variable_declaration;
 
 pub(crate) use automaton::*;
-pub(crate) use composition::{Composition, Sync};
-pub(crate) use constant_declaration::ConstantDeclaration;
-pub(crate) use expression::Expression;
-pub(crate) use jani_type::Type;
-pub(crate) use variable_declaration::VariableDeclaration;
+pub(crate) use composition::*;
+pub(crate) use constant_declaration::*;
+pub(crate) use expression::*;
+pub(crate) use jani_type::*;
+pub(crate) use property::*;
+pub(crate) use variable_declaration::*;
 
 pub(crate) type Identifier = String;
 /// L-values (for assignment left-hand sides)
@@ -48,12 +50,13 @@ pub(crate) struct Model {
     /// the model's automata network composition expression, note that one automaton
     /// can appear multiple times (= in multiple instances)
     pub(crate) system: Composition,
+    /// the properties to check
+    pub(crate) properties: Vec<Property>,
     // TODO
     // "?restrict-initial": { // restricts the initial values of the global variables
     //   "exp": Expression, // the initial states expression, type bool, must not reference transient variables
     //   "?comment": String // an optional comment
     // },
-    // "?properties": Array.of(Property), // the properties to check
 }
 
 #[derive(Deserialize)]

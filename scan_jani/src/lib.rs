@@ -4,9 +4,9 @@ mod builder;
 mod parser;
 
 use anyhow::Context;
-use builder::{build, JaniModelData};
+use builder::{JaniModelData, build};
 use log::info;
-use parser::{Model, Sync};
+use parser::Model;
 use rand::SeedableRng;
 use scan_core::CsModel;
 use std::{fs::File, path::Path};
