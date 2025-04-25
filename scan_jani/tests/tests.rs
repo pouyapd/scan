@@ -33,7 +33,7 @@ fn ij_3() {
 }
 
 fn test(path: &Path) {
-    let mut model = scan_jani::parse(path).unwrap().0.channel_system().clone();
+    let mut model = scan_jani::load(path).unwrap().0.channel_system().clone();
     let mut steps = 0;
     assert!(model.possible_transitions().count() > 0);
     while let Some((pg_id, action, post)) = model

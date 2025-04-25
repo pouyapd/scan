@@ -2,16 +2,22 @@
 
 mod builder;
 mod parser;
+mod tracer;
 
 use anyhow::Context;
-use builder::{JaniModelData, build};
+pub use builder::JaniModelData;
+use builder::build;
 use log::info;
 use parser::Model;
-use rand::SeedableRng;
-use scan_core::CsModel;
+use scan_core::MtlOracle;
+use scan_core::program_graph::{Action, PgError};
+use scan_core::{PgModel, Scan};
 use std::{fs::File, path::Path};
+pub use tracer::TracePrinter;
 
-pub fn parse(path: &Path) -> anyhow::Result<(CsModel<rand::rngs::SmallRng>, JaniModelData)> {
+pub type JaniScan = Scan<Action, PgError, PgModel, MtlOracle>;
+
+pub fn load(path: &Path) -> anyhow::Result<(JaniScan, JaniModelData)> {
     info!(target: "parser", "parsing JANI model file '{}'", path.display());
     let reader = File::open(path)
         .with_context(|| format!("failed to create reader from file '{}'", path.display()))?;
@@ -22,5 +28,8 @@ pub fn parse(path: &Path) -> anyhow::Result<(CsModel<rand::rngs::SmallRng>, Jani
         )
     })?;
 
-    build(jani_model, rand::rngs::SmallRng::from_os_rng())
+    let (pg_model, oracle, jani_info) = build(jani_model)?;
+    let scan = Scan::new(pg_model, oracle);
+
+    Ok((scan, jani_info))
 }

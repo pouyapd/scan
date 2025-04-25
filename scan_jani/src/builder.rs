@@ -1,28 +1,30 @@
 use super::Model;
 use crate::parser::{
     self, Automaton, BoolOp, ConstantDeclaration, Edge, Expression, Guard, Location, NumCompOp,
-    Sync, VariableDeclaration,
+    PropertyExpression, Sync, VariableDeclaration,
 };
 use anyhow::{Context, anyhow, bail};
-use rand::{Rng, SeedableRng};
+use either::Either;
+use rand::{SeedableRng, rngs::SmallRng};
 use scan_core::{
-    CsModel, CsModelBuilder, Integer, Type, TypeError, Val,
-    channel_system::{self, ChannelSystemBuilder, CsExpression, PgId, Var},
+    Mtl, MtlOracle, PgModel, Type, TypeError, Val,
+    program_graph::{self, Action, PgExpression, ProgramGraphBuilder, Var},
 };
-use std::{collections::HashMap, f64, ops::Not};
+use std::{collections::HashMap, ops::Not};
 
 #[derive(Clone)]
-pub struct JaniModelData {}
+pub struct JaniModelData {
+    pub actions: HashMap<Action, String>,
+    pub ports: Vec<(String, Type)>,
+    pub guarantees: Vec<String>,
+}
 
-pub(crate) fn build<R: Rng + SeedableRng + 'static>(
-    mut jani_model: Model,
-    rng: R,
-) -> anyhow::Result<(CsModel<R>, JaniModelData)> {
+pub(crate) fn build(mut jani_model: Model) -> anyhow::Result<(PgModel, MtlOracle, JaniModelData)> {
     let mut builder = JaniBuilder::default();
     normalize(&mut jani_model);
-    let cs_model = builder.build(&jani_model, rng)?;
+    let (pg_model, oracle) = builder.build(&jani_model)?;
     let data = builder.data();
-    Ok((cs_model, data))
+    Ok((pg_model, oracle, data))
 }
 
 // An action in JANI doesn not carry effects,
@@ -35,9 +37,11 @@ pub(crate) fn build<R: Rng + SeedableRng + 'static>(
 fn normalize(jani_model: &mut Model) {
     // index is global so there is no risk of name-clash
     let mut idx = 0;
+    let rng = Expression::Identifier(String::from("__rng__"));
     for automaton in &mut jani_model.automata {
         let mut new_edges = Vec::new();
         for edge in &mut automaton.edges {
+            let orig_action = edge.action.clone();
             let mut prob = Expression::ConstantValue(parser::ConstantValue::NumberReal(0f64));
             for dest in &mut edge.destinations {
                 // If edge has assignments, create new action
@@ -48,7 +52,7 @@ fn normalize(jani_model: &mut Model) {
                         idx += 1;
                     }
                     // Can be silent action or whatever
-                    edge.action.to_owned()
+                    edge.action.clone()
                 } else {
                     let new_action =
                         edge.action.clone().unwrap_or_default() + "__auto_gen__" + &idx.to_string();
@@ -59,31 +63,19 @@ fn normalize(jani_model: &mut Model) {
                 let mut guard_exp = edge.guard.as_ref().map(|guard| guard.exp.clone());
                 if let Some(p) = dest.probability.as_ref() {
                     let lower_bound = Expression::NumComp {
-                        op: NumCompOp::Less,
-                        left: Box::new(Expression::IntOp {
-                            op: parser::IntOp::Mult,
-                            left: Box::new(Expression::ConstantValue(
-                                parser::ConstantValue::NumberReal(100f64),
-                            )),
-                            right: Box::new(prob.clone()),
-                        }),
-                        right: Box::new(Expression::Identifier(String::from("__rng__"))),
+                        op: NumCompOp::Leq,
+                        left: Box::new(prob.clone()),
+                        right: Box::new(rng.clone()),
                     };
                     prob = Expression::IntOp {
                         op: parser::IntOp::Plus,
-                        left: Box::new(prob.clone()),
+                        left: Box::new(prob),
                         right: Box::new(p.exp.clone()),
                     };
                     let upper_bound = Expression::NumComp {
                         op: NumCompOp::Less,
-                        left: Box::new(Expression::Identifier(String::from("__rng__"))),
-                        right: Box::new(Expression::IntOp {
-                            op: parser::IntOp::Mult,
-                            left: Box::new(Expression::ConstantValue(
-                                parser::ConstantValue::NumberReal(100f64),
-                            )),
-                            right: Box::new(prob.clone()),
-                        }),
+                        left: Box::new(rng.clone()),
+                        right: Box::new(prob.clone()),
                     };
                     guard_exp = guard_exp.map_or(
                         Some(Expression::Bool {
@@ -118,21 +110,23 @@ fn normalize(jani_model: &mut Model) {
 
                 // Update syncs with new action (has to synchronise like original one)
                 // NOTE: you cannot synchronise the silent action!
-                if let Some(ref orig_action) = edge.action {
-                    for (e, _) in jani_model
+                if let Some(ref orig_action) = orig_action {
+                    for i in jani_model
                         .system
                         .elements
                         .iter()
                         .enumerate()
-                        .filter(|(_, e)| e.automaton == automaton.name)
+                        .filter_map(|(i, e)| (e.automaton == automaton.name).then_some(i))
                     {
                         let mut to_add = Vec::new();
                         for sync in &jani_model.system.syncs {
-                            if sync.synchronise[e] == Some(orig_action.clone()) {
+                            if sync.synchronise[i].as_ref() == Some(orig_action) {
                                 let mut synchronise = sync.synchronise.clone();
-                                synchronise[e] = action.clone();
+                                synchronise[i] = action.clone();
                                 // Generate new unique result action
-                                let new_result = String::from("__auto_gen__") + &idx.to_string();
+                                let new_result = sync.result.clone().unwrap_or_default()
+                                    + "__auto_gen__"
+                                    + &idx.to_string();
                                 idx += 1;
                                 to_add.push(Sync {
                                     synchronise,
@@ -143,13 +137,16 @@ fn normalize(jani_model: &mut Model) {
                         }
                         // If original action did not appear in syncs it means that it does not sync between automata.
                         // We still want to keep track of it esplicitely.
-                        if to_add.is_empty() {
+                        if to_add.is_empty() && action.is_some() {
                             let mut synchronise = vec![None; jani_model.system.elements.len()];
-                            synchronise[e] = action.clone();
+                            synchronise[i] = action.clone();
+                            // ensure result is unique
+                            let new_result = action.clone().unwrap_or_default()
+                                + "__auto_gen__"
+                                + &idx.to_string();
                             to_add.push(Sync {
                                 synchronise,
-                                // By taking `action` as result we ensure name is unique
-                                result: action.clone(),
+                                result: Some(new_result),
                                 comment: String::new(),
                             });
                         }
@@ -166,30 +163,15 @@ fn normalize(jani_model: &mut Model) {
 
 #[derive(Default)]
 struct JaniBuilder {
-    cs_locations: HashMap<String, channel_system::Location>,
-    system_actions: HashMap<String, channel_system::Action>,
+    locations: HashMap<String, program_graph::Location>,
+    system_actions: HashMap<String, program_graph::Action>,
     global_vars: HashMap<String, (Var, Type)>,
     global_constants: HashMap<String, Val>,
-    // Maps an action of the system and an automaton's name into the corresponding automaton's action
-    // Reconstructed from model.system
-    // automata_actions: HashMap<String, Vec<(String, Option<String>)>>,
-    // system_epsilon: Vec<(String, Option<String>)>,
-    // sync_actions: Vec<channel_system::Action>,
 }
 
 impl JaniBuilder {
-    pub(crate) fn build<R: Rng + SeedableRng + 'static>(
-        &mut self,
-        jani_model: &Model,
-        rng: R,
-    ) -> anyhow::Result<CsModel<R>> {
-        let mut csb = ChannelSystemBuilder::new_with_rng(rng);
-        let pg_id = csb.new_program_graph();
-        let rng = csb
-            .new_var(pg_id, CsExpression::RandInt(0, Integer::MAX))
-            .expect("variable");
-        self.global_vars
-            .insert(String::from("__rng__"), (rng, Type::Integer));
+    pub(crate) fn build(&mut self, jani_model: &Model) -> anyhow::Result<(PgModel, MtlOracle)> {
+        let mut pgb = ProgramGraphBuilder::new();
 
         jani_model
             .system
@@ -198,21 +180,16 @@ impl JaniBuilder {
             .flat_map(|sync| &sync.result)
             .for_each(|action| {
                 if !self.system_actions.contains_key(action) {
-                    let action_id = csb.new_action(pg_id).expect("new action");
+                    let action_id = pgb.new_action();
                     let prev = self.system_actions.insert(action.clone(), action_id);
                     assert!(prev.is_none(), "checked by above if condition");
                 }
             });
 
-        for action in self.system_actions.values() {
-            csb.add_effect(pg_id, *action, rng, CsExpression::RandInt(0, 100))
-                .expect("add randomizing effect");
-        }
-
         jani_model
             .variables
             .iter()
-            .try_for_each(|var| self.add_global_var(&mut csb, pg_id, var))?;
+            .try_for_each(|var| self.add_global_var(&mut pgb, var))?;
         jani_model
             .constants
             .iter()
@@ -225,38 +202,69 @@ impl JaniBuilder {
                 .iter()
                 .find(|a| a.name == *id)
                 .ok_or(anyhow!("element '{id}' is not a known automaton"))?;
-            self.build_automaton(jani_model, &mut csb, pg_id, automaton, e_idx)
+            self.build_automaton(jani_model, &mut pgb, automaton, e_idx)
                 .with_context(|| format!("failed to build automaton '{id}'"))?;
         }
 
-        // Finalize, build and return everything
-        let cs = csb.build();
-        let cs_model_builder = CsModelBuilder::new(cs);
-
         // Add properties
-        for property in jani_model.properties.iter() {
-            let exp = self.build_expression(&property.expression, &HashMap::new())?;
-            todo!();
+        let properties = jani_model
+            .properties
+            .iter()
+            .map(|p| {
+                self.build_property(&p.expression)
+                    .map(|p| p.right_or_else(Mtl::Atom))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        fn extract_predicates(prop: &Mtl<PgExpression>) -> Vec<PgExpression> {
+            match prop {
+                Mtl::Atom(pred) => vec![pred.clone()],
+                Mtl::Until(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
+            }
         }
+        fn extract_mtl(prop: &Mtl<PgExpression>, idx: &mut usize) -> Mtl<usize> {
+            match prop {
+                Mtl::Atom(_) => {
+                    let prop = Mtl::Atom(*idx);
+                    *idx += 1;
+                    prop
+                }
+                Mtl::Until(_, _) => {
+                    let prop = Mtl::Until(*idx, *idx + 1);
+                    *idx += 2;
+                    prop
+                }
+            }
+        }
+        let mut idx = 0;
+        let mut oracle = MtlOracle::default();
+        properties
+            .iter()
+            .map(|p| extract_mtl(p, &mut idx))
+            .for_each(|mtl| oracle.add_guarantee(mtl));
+        let predicates = properties
+            .into_iter()
+            .flat_map(|prop| extract_predicates(&prop).into_iter())
+            .collect::<Vec<_>>();
 
-        let cs_model = cs_model_builder.build();
-        Ok(cs_model)
+        // Finalize, build and return everything
+        let pg = pgb.build();
+        let pg_model = PgModel::new(pg, SmallRng::from_os_rng(), predicates);
+
+        Ok((pg_model, oracle))
     }
 
-    fn add_global_var<R: Rng + 'static>(
+    fn add_global_var(
         &mut self,
-        // jani_model: &Model,
-        csb: &mut ChannelSystemBuilder<R>,
-        pg_id: PgId,
+        pgb: &mut ProgramGraphBuilder,
         var: &VariableDeclaration,
     ) -> anyhow::Result<()> {
         // TODO WARN FIXME: in JANI initial values are random?
         let init = var
             .initial_value
             .as_ref()
-            .and_then(|expr| self.build_expression(expr, &HashMap::new()).ok())
+            .and_then(|expr| self.build_expression(expr, &HashMap::new(), None).ok())
             .unwrap_or_else(|| {
-                CsExpression::Const(match &var.r#type {
+                PgExpression::Const(match &var.r#type {
                     parser::Type::Basic(basic_type) => match basic_type {
                         parser::BasicType::Bool => scan_core::Val::Boolean(false),
                         parser::BasicType::Int => scan_core::Val::Integer(0),
@@ -268,7 +276,7 @@ impl JaniBuilder {
                 })
             });
         let t = init.r#type()?;
-        let var_id = csb.new_var(pg_id, init)?;
+        let var_id = pgb.new_var(init)?;
         self.global_vars.insert(var.name.clone(), (var_id, t));
         Ok(())
     }
@@ -278,9 +286,9 @@ impl JaniBuilder {
         let val = c
             .value
             .as_ref()
-            .and_then(|expr| self.build_expression(expr, &HashMap::new()).ok())
+            .and_then(|expr| self.build_expression(expr, &HashMap::new(), None).ok())
             .unwrap_or_else(|| {
-                CsExpression::Const(match &c.r#type {
+                PgExpression::Const(match &c.r#type {
                     parser::Type::Basic(basic_type) => match basic_type {
                         parser::BasicType::Bool => scan_core::Val::Boolean(false),
                         parser::BasicType::Int => scan_core::Val::Integer(0),
@@ -296,10 +304,9 @@ impl JaniBuilder {
         Ok(())
     }
 
-    fn add_local_var<R: Rng + 'static>(
+    fn add_local_var(
         &self,
-        csb: &mut ChannelSystemBuilder<R>,
-        pg_id: PgId,
+        pgb: &mut ProgramGraphBuilder,
         var: &VariableDeclaration,
         local_vars: &mut HashMap<String, (Var, Type)>,
     ) -> anyhow::Result<()> {
@@ -307,9 +314,9 @@ impl JaniBuilder {
         let init = var
             .initial_value
             .as_ref()
-            .and_then(|expr| self.build_expression(expr, local_vars).ok())
+            .and_then(|expr| self.build_expression(expr, local_vars, None).ok())
             .unwrap_or_else(|| {
-                CsExpression::Const(match &var.r#type {
+                PgExpression::Const(match &var.r#type {
                     parser::Type::Basic(basic_type) => match basic_type {
                         parser::BasicType::Bool => scan_core::Val::Boolean(false),
                         parser::BasicType::Int => scan_core::Val::Integer(0),
@@ -321,49 +328,55 @@ impl JaniBuilder {
                 })
             });
         let t = init.r#type()?;
-        let var_id = csb.new_var(pg_id, init)?;
+        let var_id = pgb.new_var(init)?;
         local_vars.insert(var.name.clone(), (var_id, t));
         Ok(())
     }
 
     fn data(self) -> JaniModelData {
-        JaniModelData {}
+        JaniModelData {
+            actions: self
+                .system_actions
+                .into_iter()
+                .map(|(name, action)| (action, name))
+                .collect::<HashMap<_, _>>(),
+            ports: Vec::new(),
+            guarantees: Vec::new(),
+        }
     }
 
-    fn build_automaton<R: Rng + 'static>(
+    fn build_automaton(
         &mut self,
         jani_model: &Model,
-        csb: &mut ChannelSystemBuilder<R>,
-        pg_id: PgId,
+        pgb: &mut ProgramGraphBuilder,
         automaton: &Automaton,
         e_idx: usize,
     ) -> anyhow::Result<()> {
         let mut local_vars: HashMap<String, (Var, Type)> = HashMap::new();
+        let rng = pgb.new_var(PgExpression::RandFloat(0., 1.))?;
         automaton
             .variables
             .iter()
-            .try_for_each(|var| self.add_local_var(csb, pg_id, var, &mut local_vars))
+            .try_for_each(|var| self.add_local_var(pgb, var, &mut local_vars))
             .context("failed adding local variables")?;
         // Add locations
         for location in &automaton.locations {
-            self.build_location(jani_model, csb, pg_id, location, e_idx)
+            self.build_location(jani_model, pgb, location, e_idx)
                 .with_context(|| format!("failed building location: {}", &location.name))?;
         }
         // Connect initial location of PG with initial location(s) of the JANI model
-        let cs_initial = csb
-            .new_initial_location(pg_id)
-            .expect("pg initial location");
+        let pg_initial = pgb.new_initial_location();
         for initial in &automaton.initial_locations {
             let jani_initial = *self
-                .cs_locations
+                .locations
                 .get(initial)
                 .ok_or_else(|| anyhow!("missing initial location {}", initial))?;
-            csb.add_autonomous_transition(pg_id, cs_initial, jani_initial, None)
+            pgb.add_autonomous_transition(pg_initial, jani_initial, None)
                 .expect("add transition");
         }
         // Add edges
         for edge in &automaton.edges {
-            self.build_edge(jani_model, csb, pg_id, edge, e_idx, &local_vars)
+            self.build_edge(jani_model, pgb, edge, e_idx, &local_vars, rng)
                 .with_context(|| {
                     format!(
                         "failed building edge for action: {}",
@@ -374,53 +387,50 @@ impl JaniBuilder {
         Ok(())
     }
 
-    fn build_location<R: Rng + 'static>(
+    fn build_location(
         &mut self,
         jani_model: &Model,
-        csb: &mut ChannelSystemBuilder<R>,
-        pg_id: PgId,
+        pgb: &mut ProgramGraphBuilder,
         location: &Location,
         e_idx: usize,
     ) -> anyhow::Result<()> {
-        let loc = csb.new_location(pg_id)?;
-        self.cs_locations.insert(location.name.clone(), loc);
+        let loc = pgb.new_location();
+        assert!(self.locations.insert(location.name.clone(), loc).is_none());
         // For every action that is **NOT** synchronised on this automaton,
         // allow action with no change in state.
         for sync in jani_model
             .system
             .syncs
             .iter()
-            .filter(|s| s.synchronise[e_idx].is_none())
+            .filter(|sync| sync.synchronise[e_idx].is_none())
         {
             if let Some(ref action) = sync.result {
                 let action_id = self.system_actions.get(action).unwrap();
-                csb.add_transition(pg_id, loc, *action_id, loc, None)
-                    .unwrap();
+                pgb.add_transition(loc, *action_id, loc, None).unwrap();
             } else {
-                csb.add_autonomous_transition(pg_id, loc, loc, None)
-                    .unwrap();
+                pgb.add_autonomous_transition(loc, loc, None).unwrap();
             }
         }
         Ok(())
     }
 
-    fn build_edge<R: Rng + 'static>(
+    fn build_edge(
         &mut self,
         jani_model: &Model,
-        csb: &mut ChannelSystemBuilder<R>,
-        pg_id: PgId,
+        pgb: &mut ProgramGraphBuilder,
         edge: &Edge,
         e_idx: usize,
         local_vars: &HashMap<String, (Var, Type)>,
+        rng: Var,
     ) -> anyhow::Result<()> {
-        let pre = *self.cs_locations.get(&edge.location).ok_or(anyhow!(
+        let pre = *self.locations.get(&edge.location).ok_or(anyhow!(
             "pre-transition location {} not found",
             edge.location
         ))?;
         let guard = edge
             .guard
             .as_ref()
-            .map(|guard| self.build_expression(&guard.exp, local_vars))
+            .map(|guard| self.build_expression(&guard.exp, local_vars, Some(rng)))
             .transpose()
             .with_context(|| {
                 format!(
@@ -431,28 +441,42 @@ impl JaniBuilder {
         // There must be only one destination per edge!
         if let [dest] = edge.destinations.as_slice() {
             let post = &dest.location;
-            let post = *self.cs_locations.get(post).ok_or(anyhow!(
+            let post = *self.locations.get(post).ok_or(anyhow!(
                 "post-transition location {} not found",
                 edge.location
             ))?;
-            for sync in jani_model.system.syncs.iter().filter(|s| {
-                s.synchronise[e_idx]
-                    .as_ref()
-                    .is_some_and(|a| edge.action.as_ref().is_some_and(|e| a == e))
+            for sync in jani_model.system.syncs.iter().filter(|sync| {
+                sync.synchronise[e_idx].as_ref().is_some_and(|sync_action| {
+                    edge.action
+                        .as_ref()
+                        .is_some_and(|edge_action| sync_action == edge_action)
+                })
             }) {
                 if let Some(ref action) = sync.result {
                     let action = self.system_actions.get(action).unwrap();
-                    for assignment in dest.assignments.iter() {
+                    // TODO: check to do this only once per action
+                    pgb.add_effect(*action, rng, PgExpression::RandFloat(0., 1.))
+                        .expect("effect");
+                    for assignment in &dest.assignments {
                         let (var, _) = local_vars
                             .get(&assignment.r#ref)
                             .or_else(|| self.global_vars.get(&assignment.r#ref))
                             .ok_or_else(|| anyhow!("unknown id `{}`", &assignment.r#ref))?;
-                        let expr = self.build_expression(&assignment.value, local_vars)?;
-                        csb.add_effect(pg_id, *action, *var, expr)?;
+                        let expr = self
+                            .build_expression(&assignment.value, local_vars, Some(rng))
+                            .context("failed building expression")?;
+                        pgb.add_effect(*action, *var, expr)
+                            .context("failed adding effect to action")?;
                     }
-                    csb.add_transition(pg_id, pre, *action, post, guard.clone())?;
+                    pgb.add_transition(pre, *action, post, guard.clone())
+                        .context("failed adding transition")?;
                 } else {
-                    csb.add_autonomous_transition(pg_id, pre, post, guard.clone())?;
+                    assert!(
+                        dest.assignments.is_empty(),
+                        "silent action has no assignments"
+                    );
+                    pgb.add_autonomous_transition(pre, post, guard.clone())
+                        .context("failed adding autonomous transition")?;
                 }
             }
         } else {
@@ -465,26 +489,30 @@ impl JaniBuilder {
         &self,
         expr: &Expression,
         local_vars: &HashMap<String, (Var, Type)>,
-    ) -> anyhow::Result<CsExpression> {
+        rng: Option<Var>,
+    ) -> anyhow::Result<PgExpression> {
         match expr {
             Expression::ConstantValue(constant_value) => match constant_value {
-                parser::ConstantValue::Boolean(b) => Ok(CsExpression::from(*b)),
+                parser::ConstantValue::Boolean(b) => Ok(PgExpression::from(*b)),
                 parser::ConstantValue::Constant(constant) => match constant {
-                    parser::Constant::Euler => Ok(CsExpression::from(f64::consts::E)),
-                    parser::Constant::Pi => Ok(CsExpression::from(f64::consts::PI)),
+                    parser::Constant::Euler => Ok(PgExpression::from(std::f64::consts::E)),
+                    parser::Constant::Pi => Ok(PgExpression::from(std::f64::consts::PI)),
                 },
-                parser::ConstantValue::NumberReal(num) => Ok(CsExpression::from(*num)),
-                parser::ConstantValue::NumberInt(num) => Ok(CsExpression::from(*num)),
+                parser::ConstantValue::NumberReal(num) => Ok(PgExpression::from(*num)),
+                parser::ConstantValue::NumberInt(num) => Ok(PgExpression::from(*num)),
             },
+            Expression::Identifier(id) if id == "__rng__" => rng
+                .ok_or_else(|| anyhow!("rng not available"))
+                .map(|rng| PgExpression::Var(rng, Type::Float)),
             Expression::Identifier(id) => local_vars
                 .get(id)
                 .or_else(|| self.global_vars.get(id))
-                .map(|(var, t)| CsExpression::Var(*var, t.clone()))
+                .map(|(var, t)| PgExpression::Var(*var, t.clone()))
                 .or_else(|| {
                     self.global_constants
                         .get(id)
                         .cloned()
-                        .map(CsExpression::Const)
+                        .map(PgExpression::Const)
                 })
                 .ok_or_else(|| anyhow!("unknown id `{id}`")),
             Expression::IfThenElse {
@@ -493,37 +521,38 @@ impl JaniBuilder {
                 then,
                 r#else,
             } => {
-                let _if = self.build_expression(r#if, local_vars)?;
-                let _then = self.build_expression(then, local_vars)?;
-                let _else = self.build_expression(r#else, local_vars)?;
+                let _if = self.build_expression(r#if, local_vars, rng)?;
+                let _then = self.build_expression(then, local_vars, rng)?;
+                let _else = self.build_expression(r#else, local_vars, rng)?;
                 match op {
                     parser::IteOp::Ite => todo!(),
                 }
             }
             Expression::Bool { op, left, right } => {
-                let left = self.build_expression(left, local_vars)?;
-                let right = self.build_expression(right, local_vars)?;
+                let left = self.build_expression(left, local_vars, rng)?;
+                let right = self.build_expression(right, local_vars, rng)?;
                 match op {
-                    BoolOp::And => CsExpression::and(vec![left, right]).map_err(|err| err.into()),
-                    BoolOp::Or => CsExpression::or(vec![left, right]).map_err(|err| err.into()),
+                    BoolOp::And => PgExpression::and(vec![left, right]),
+                    BoolOp::Or => PgExpression::or(vec![left, right]),
                 }
+                .map_err(|err| err.into())
             }
             Expression::Neg { op, exp } => {
-                let exp = self.build_expression(exp, local_vars)?;
+                let exp = self.build_expression(exp, local_vars, rng)?;
                 match op {
-                    parser::NegOp::Neg => CsExpression::not(exp).map_err(|err| err.into()),
+                    parser::NegOp::Neg => PgExpression::not(exp).map_err(|err| err.into()),
                 }
             }
             Expression::EqComp { op, left, right } => {
-                let left = self.build_expression(left, local_vars)?;
-                let right = self.build_expression(right, local_vars)?;
+                let left = self.build_expression(left, local_vars, rng)?;
+                let right = self.build_expression(right, local_vars, rng)?;
                 if left.r#type()? == right.r#type()?
                     || (matches!(left.r#type()?, Type::Integer | Type::Float)
                         && matches!(right.r#type()?, Type::Integer | Type::Float))
                 {
                     match op {
-                        parser::EqCompOp::Eq => Ok(CsExpression::Equal(Box::new((left, right)))),
-                        parser::EqCompOp::Neq => CsExpression::Equal(Box::new((left, right)))
+                        parser::EqCompOp::Eq => Ok(PgExpression::Equal(Box::new((left, right)))),
+                        parser::EqCompOp::Neq => PgExpression::Equal(Box::new((left, right)))
                             .not()
                             .map_err(|err| err.into()),
                     }
@@ -532,39 +561,36 @@ impl JaniBuilder {
                 }
             }
             Expression::NumComp { op, left, right } => {
-                let left = self.build_expression(left, local_vars)?;
-                let right = self.build_expression(right, local_vars)?;
+                let left = self.build_expression(left, local_vars, rng)?;
+                let right = self.build_expression(right, local_vars, rng)?;
                 if matches!(left.r#type()?, Type::Integer | Type::Float)
                     && matches!(right.r#type()?, Type::Integer | Type::Float)
                 {
-                    match op {
-                        parser::NumCompOp::Less => Ok(CsExpression::Less(Box::new((left, right)))),
-                        parser::NumCompOp::Leq => Ok(CsExpression::LessEq(Box::new((left, right)))),
+                    Ok(match op {
+                        parser::NumCompOp::Less => PgExpression::Less(Box::new((left, right))),
+                        parser::NumCompOp::Leq => PgExpression::LessEq(Box::new((left, right))),
                         parser::NumCompOp::Greater => {
-                            Ok(CsExpression::Greater(Box::new((left, right))))
+                            PgExpression::Greater(Box::new((left, right)))
                         }
-                        parser::NumCompOp::Geq => {
-                            Ok(CsExpression::GreaterEq(Box::new((left, right))))
-                        }
-                    }
+                        parser::NumCompOp::Geq => PgExpression::GreaterEq(Box::new((left, right))),
+                    })
                 } else {
                     bail!(TypeError::TypeMismatch)
                 }
             }
-
             Expression::IntOp { op, left, right } => {
-                let left = self.build_expression(left, local_vars)?;
-                let right = self.build_expression(right, local_vars)?;
+                let left = self.build_expression(left, local_vars, rng)?;
+                let right = self.build_expression(right, local_vars, rng)?;
                 if matches!(left.r#type()?, Type::Integer | Type::Float)
                     && matches!(right.r#type()?, Type::Integer | Type::Float)
                 {
                     match op {
-                        parser::IntOp::Plus => Ok(CsExpression::Sum(vec![left, right])),
-                        parser::IntOp::Minus => Ok(CsExpression::Sum(vec![
+                        parser::IntOp::Plus => Ok(PgExpression::Sum(vec![left, right])),
+                        parser::IntOp::Minus => Ok(PgExpression::Sum(vec![
                             left,
-                            CsExpression::Opposite(Box::new(right)),
+                            PgExpression::Opposite(Box::new(right)),
                         ])),
-                        parser::IntOp::Mult => Ok(CsExpression::Mult(vec![left, right])),
+                        parser::IntOp::Mult => Ok(PgExpression::Mult(vec![left, right])),
                         parser::IntOp::IntDiv => todo!(),
                     }
                 } else {
@@ -572,15 +598,11 @@ impl JaniBuilder {
                 }
             }
             Expression::RealOp { op, left, right } => {
-                let left = self.build_expression(left, local_vars)?;
-                let right = self.build_expression(right, local_vars)?;
+                let left = self.build_expression(left, local_vars, rng)?;
+                let right = self.build_expression(right, local_vars, rng)?;
                 if matches!(left.r#type()?, Type::Float) && matches!(right.r#type()?, Type::Float) {
                     match op {
                         parser::RealOp::Div => todo!(),
-                        // Ok(CsExpression::Mult(vec![
-                        //     left,
-                        //     CsExpression::Inv(Box::new(right)),
-                        // ])),
                         parser::RealOp::Pow => todo!(),
                         parser::RealOp::Log => todo!(),
                     }
@@ -589,7 +611,7 @@ impl JaniBuilder {
                 }
             }
             Expression::Real2IntOp { op, exp } => {
-                let _exp = self.build_expression(exp, local_vars)?;
+                let _exp = self.build_expression(exp, local_vars, rng)?;
                 if matches!(_exp.r#type()?, Type::Float) {
                     match op {
                         parser::Real2IntOp::Floor => todo!(),
@@ -598,6 +620,136 @@ impl JaniBuilder {
                 } else {
                     bail!(TypeError::TypeMismatch)
                 }
+            }
+        }
+    }
+
+    fn build_property(
+        &self,
+        prop: &PropertyExpression,
+    ) -> anyhow::Result<Either<PgExpression, Mtl<PgExpression>>> {
+        match prop {
+            PropertyExpression::ConstantValue(constant_value) => {
+                Ok(Either::Left(match constant_value {
+                    parser::ConstantValue::Boolean(b) => PgExpression::from(*b),
+                    parser::ConstantValue::Constant(constant) => match constant {
+                        parser::Constant::Euler => PgExpression::from(std::f64::consts::E),
+                        parser::Constant::Pi => PgExpression::from(std::f64::consts::PI),
+                    },
+                    parser::ConstantValue::NumberReal(num) => PgExpression::from(*num),
+                    parser::ConstantValue::NumberInt(num) => PgExpression::from(*num),
+                }))
+            }
+            PropertyExpression::Identifier(id) => self
+                .global_vars
+                .get(id)
+                .map(|(var, t)| PgExpression::Var(*var, t.clone()))
+                .or_else(|| {
+                    self.global_constants
+                        .get(id)
+                        .cloned()
+                        .map(PgExpression::Const)
+                })
+                .map(Either::Left)
+                .ok_or_else(|| anyhow!("unknown id `{id}`")),
+            PropertyExpression::IfThenElse {
+                op,
+                r#if,
+                then,
+                r#else,
+            } => todo!(),
+            PropertyExpression::Bool { op, left, right } => {
+                let left = self.build_property(left)?.left().expect("expression");
+                let right = self.build_property(right)?.left().expect("expression");
+                match op {
+                    BoolOp::And => PgExpression::and(vec![left, right]).map_err(|err| err.into()),
+                    BoolOp::Or => PgExpression::or(vec![left, right]).map_err(|err| err.into()),
+                }
+                .map(Either::Left)
+            }
+            PropertyExpression::Neg { op, exp } => {
+                let exp = self.build_property(exp)?.left().expect("expression");
+                match op {
+                    parser::NegOp::Neg => PgExpression::not(exp).map_err(|err| err.into()),
+                }
+                .map(Either::Left)
+            }
+            PropertyExpression::EqComp { op, left, right } => {
+                let left = self.build_property(left)?.left().expect("expression");
+                let right = self.build_property(right)?.left().expect("expression");
+                if left.r#type()? == right.r#type()?
+                    || (matches!(left.r#type()?, Type::Integer | Type::Float)
+                        && matches!(right.r#type()?, Type::Integer | Type::Float))
+                {
+                    match op {
+                        parser::EqCompOp::Eq => Ok(PgExpression::Equal(Box::new((left, right)))),
+                        parser::EqCompOp::Neq => PgExpression::Equal(Box::new((left, right)))
+                            .not()
+                            .map_err(|err| err.into()),
+                    }
+                    .map(Either::Left)
+                } else {
+                    bail!(TypeError::TypeMismatch)
+                }
+            }
+            PropertyExpression::NumComp { op, left, right } => {
+                let left = self.build_property(left)?.left().expect("expression");
+                let right = self.build_property(right)?.left().expect("expression");
+                if matches!(left.r#type()?, Type::Integer | Type::Float)
+                    && matches!(right.r#type()?, Type::Integer | Type::Float)
+                {
+                    Ok(Either::Left(match op {
+                        parser::NumCompOp::Less => PgExpression::Less(Box::new((left, right))),
+                        parser::NumCompOp::Leq => PgExpression::LessEq(Box::new((left, right))),
+                        parser::NumCompOp::Greater => {
+                            PgExpression::Greater(Box::new((left, right)))
+                        }
+                        parser::NumCompOp::Geq => PgExpression::GreaterEq(Box::new((left, right))),
+                    }))
+                } else {
+                    bail!(TypeError::TypeMismatch)
+                }
+            }
+            PropertyExpression::IntOp { op, left, right } => {
+                let left = self.build_property(left)?.left().expect("expression");
+                let right = self.build_property(right)?.left().expect("expression");
+                if matches!(left.r#type()?, Type::Integer | Type::Float)
+                    && matches!(right.r#type()?, Type::Integer | Type::Float)
+                {
+                    match op {
+                        parser::IntOp::Plus => Ok(PgExpression::Sum(vec![left, right])),
+                        parser::IntOp::Minus => Ok(PgExpression::Sum(vec![
+                            left,
+                            PgExpression::Opposite(Box::new(right)),
+                        ])),
+                        parser::IntOp::Mult => Ok(PgExpression::Mult(vec![left, right])),
+                        parser::IntOp::IntDiv => todo!(),
+                    }
+                    .map(Either::Left)
+                } else {
+                    bail!(TypeError::TypeMismatch)
+                }
+            }
+            PropertyExpression::RealOp { op, left, right } => todo!(),
+            PropertyExpression::Real2IntOp { op, exp } => todo!(),
+            PropertyExpression::Until {
+                op,
+                left,
+                right,
+                time_bounds,
+            } => {
+                let left = self
+                    .build_property(left)?
+                    .left()
+                    .ok_or(anyhow!("unsupported property"))?;
+                let right = self
+                    .build_property(right)?
+                    .left()
+                    .ok_or(anyhow!("unsupported property"))?;
+                Ok(Either::Right(match op {
+                    parser::UntilOp::Until => Mtl::Until(left, right),
+                    parser::UntilOp::WeakUntil => todo!(),
+                }))
             }
         }
     }

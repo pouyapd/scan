@@ -212,6 +212,27 @@
                 }
             },
             "name": "stable"
+        },
+        {
+        
+            "expression": {
+                "left": true,
+                "op": "U",
+                "right": {
+                    "left": {
+                        "left": {
+                            "left": "q1",
+                            "op": "+",
+                            "right": "q2"
+                        },
+                        "op": "+",
+                        "right": "q3"
+                    },
+                    "op": "=",
+                    "right": 1
+                }
+            },
+            "name": "mod-stable"
         }
     ],
     "restrict-initial": {
