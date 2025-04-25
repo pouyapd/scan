@@ -663,7 +663,7 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
             Expression::Mult(exprs) => {
                 let exprs: Vec<FnExpression<_, _>> = exprs.into_iter().map(Self::from).collect();
                 Box::new(move |vars, rng| {
-                    exprs.iter().fold(Val::Integer(0), |val, expr| match val {
+                    exprs.iter().fold(Val::Integer(1), |val, expr| match val {
                         Val::Integer(acc) => match expr.eval(vars, rng) {
                             Val::Integer(i) => Val::Integer(acc * i),
                             Val::Float(f) => Val::Float(OrderedFloat::from(acc) * f),
