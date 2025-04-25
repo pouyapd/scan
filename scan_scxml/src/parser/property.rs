@@ -1,10 +1,10 @@
-use super::{ecmascript, ATTR_EVENT, ATTR_EXPR, ATTR_PARAM};
-use crate::parser::{attrs, ParserError, ATTR_ID, ATTR_TARGET, ATTR_TYPE};
-use anyhow::{anyhow, bail, Context};
+use super::{ATTR_EVENT, ATTR_EXPR, ATTR_PARAM, ecmascript};
+use crate::parser::{ATTR_ID, ATTR_TARGET, ATTR_TYPE, ParserError, attrs};
+use anyhow::{Context, anyhow, bail};
 use boa_ast::scope::Scope;
 use boa_interner::Interner;
 use log::{error, info, trace};
-use quick_xml::{events::Event, Reader};
+use quick_xml::{Reader, events::Event};
 use scan_core::Pmtl;
 use std::{collections::HashMap, io::BufRead};
 

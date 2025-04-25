@@ -163,7 +163,7 @@ fn normalize(jani_model: &mut Model) {
 
 #[derive(Default)]
 struct JaniBuilder {
-    locations: HashMap<String, program_graph::Location>,
+    locations: HashMap<(String, usize), program_graph::Location>,
     system_actions: HashMap<String, program_graph::Action>,
     global_vars: HashMap<String, (Var, Type)>,
     global_constants: HashMap<String, Val>,
@@ -286,20 +286,21 @@ impl JaniBuilder {
         let val = c
             .value
             .as_ref()
-            .and_then(|expr| self.build_expression(expr, &HashMap::new(), None).ok())
-            .unwrap_or_else(|| {
-                PgExpression::Const(match &c.r#type {
-                    parser::Type::Basic(basic_type) => match basic_type {
-                        parser::BasicType::Bool => scan_core::Val::Boolean(false),
-                        parser::BasicType::Int => scan_core::Val::Integer(0),
-                        parser::BasicType::Real => scan_core::Val::Float(0f64),
-                    },
-                    parser::Type::Bounded(_bounded_type) => todo!(),
-                    parser::Type::Clock(_) => todo!(),
-                    parser::Type::Continuous(_) => todo!(),
-                })
+            .and_then(|expr| {
+                self.build_expression(expr, &HashMap::new(), None)
+                    .and_then(|e| e.eval_constant().map_err(|err| anyhow!(err)))
+                    .ok()
             })
-            .eval_constant()?;
+            .unwrap_or_else(|| match &c.r#type {
+                parser::Type::Basic(basic_type) => match basic_type {
+                    parser::BasicType::Bool => scan_core::Val::Boolean(false),
+                    parser::BasicType::Int => scan_core::Val::Integer(0),
+                    parser::BasicType::Real => scan_core::Val::Float(0f64),
+                },
+                parser::Type::Bounded(_bounded_type) => todo!(),
+                parser::Type::Clock(_) => todo!(),
+                parser::Type::Continuous(_) => todo!(),
+            });
         self.global_constants.insert(c.name.clone(), val);
         Ok(())
     }
@@ -369,7 +370,7 @@ impl JaniBuilder {
         for initial in &automaton.initial_locations {
             let jani_initial = *self
                 .locations
-                .get(initial)
+                .get(&(initial.clone(), e_idx))
                 .ok_or_else(|| anyhow!("missing initial location {}", initial))?;
             pgb.add_autonomous_transition(pg_initial, jani_initial, None)
                 .expect("add transition");
@@ -395,7 +396,11 @@ impl JaniBuilder {
         e_idx: usize,
     ) -> anyhow::Result<()> {
         let loc = pgb.new_location();
-        assert!(self.locations.insert(location.name.clone(), loc).is_none());
+        assert!(
+            self.locations
+                .insert((location.name.clone(), e_idx), loc)
+                .is_none()
+        );
         // For every action that is **NOT** synchronised on this automaton,
         // allow action with no change in state.
         for sync in jani_model
@@ -423,10 +428,13 @@ impl JaniBuilder {
         local_vars: &HashMap<String, (Var, Type)>,
         rng: Var,
     ) -> anyhow::Result<()> {
-        let pre = *self.locations.get(&edge.location).ok_or(anyhow!(
-            "pre-transition location {} not found",
-            edge.location
-        ))?;
+        let pre = *self
+            .locations
+            .get(&(edge.location.clone(), e_idx))
+            .ok_or(anyhow!(
+                "pre-transition location {} not found",
+                edge.location
+            ))?;
         let guard = edge
             .guard
             .as_ref()
@@ -440,11 +448,13 @@ impl JaniBuilder {
             })?;
         // There must be only one destination per edge!
         if let [dest] = edge.destinations.as_slice() {
-            let post = &dest.location;
-            let post = *self.locations.get(post).ok_or(anyhow!(
-                "post-transition location {} not found",
-                edge.location
-            ))?;
+            let post = *self
+                .locations
+                .get(&(dest.location.clone(), e_idx))
+                .ok_or(anyhow!(
+                    "post-transition location {} not found",
+                    edge.location
+                ))?;
             for sync in jani_model.system.syncs.iter().filter(|sync| {
                 sync.synchronise[e_idx].as_ref().is_some_and(|sync_action| {
                     edge.action

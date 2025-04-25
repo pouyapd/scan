@@ -16,9 +16,10 @@ pub(crate) enum BasicType {
     Real,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum BoundedTypeKind {
+    #[default]
     Bounded,
 }
 
@@ -27,6 +28,7 @@ pub(crate) enum BoundedTypeKind {
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct BoundedType {
+    #[serde(default)]
     kind: BoundedTypeKind,
     base: BasicType,
     /// smallest value allowed by the type; constant expression of the base type

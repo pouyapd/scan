@@ -3,9 +3,9 @@ use scan_core::channel_system::{Event, EventType};
 use scan_core::{RunOutcome, Time, Tracer, Val};
 use std::{
     env::current_dir,
-    fs::{create_dir, create_dir_all, exists, remove_file, rename, File},
+    fs::{File, create_dir, create_dir_all, exists, remove_file, rename},
     path::PathBuf,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{Arc, atomic::AtomicU32},
 };
 
 #[derive(Debug)]

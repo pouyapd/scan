@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail};
-use chumsky::{prelude::*, select, IterParser, Parser};
+use chumsky::{IterParser, Parser, prelude::*, select};
 use logos::Logos;
 use scan_core::{Pmtl, Time};
 

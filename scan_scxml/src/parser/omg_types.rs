@@ -3,17 +3,16 @@ use std::{collections::HashMap, io::BufRead};
 use anyhow::anyhow;
 use log::{error, info, trace, warn};
 use quick_xml::{
-    events::{
-        self,
-        attributes::{AttrError, Attribute},
-        Event,
-    },
     Reader,
+    events::{
+        self, Event,
+        attributes::{AttrError, Attribute},
+    },
 };
 use std::str;
 
-use crate::parser::{ConvinceTag, ParserError, ATTR_TYPE, TAG_FIELD};
 use crate::parser::{ATTR_ID, TAG_DATA_TYPE_LIST, TAG_ENUMERATION, TAG_LABEL, TAG_STRUCT};
+use crate::parser::{ATTR_TYPE, ConvinceTag, ParserError, TAG_FIELD};
 
 #[derive(Debug, Clone)]
 pub enum OmgType {

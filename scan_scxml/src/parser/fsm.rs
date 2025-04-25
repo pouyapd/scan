@@ -1,12 +1,12 @@
 use super::{ecmascript, vocabulary::*};
-use crate::parser::{attrs, ParserError};
-use anyhow::{anyhow, bail, Context};
-use boa_ast::scope::Scope;
+use crate::parser::{ParserError, attrs};
+use anyhow::{Context, anyhow, bail};
 use boa_ast::Expression as BoaExpression;
+use boa_ast::scope::Scope;
 use boa_interner::Interner;
 use log::{error, info, trace};
 use quick_xml::events::Event;
-use quick_xml::{events, Reader};
+use quick_xml::{Reader, events};
 use scan_core::Time;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -379,7 +379,9 @@ pub(super) fn parse<R: BufRead>(
                                 if let Some(ScxmlTag::Scxml(fsm)) = stack.last_mut() {
                                     fsm.datamodel.extend_from_slice(&datamodel);
                                 } else {
-                                    unreachable!("tag '{TAG_DATAMODEL}' must be a child of tag '{TAG_SCXML}'");
+                                    unreachable!(
+                                        "tag '{TAG_DATAMODEL}' must be a child of tag '{TAG_SCXML}'"
+                                    );
                                 }
                             }
                             ScxmlTag::State(state)
