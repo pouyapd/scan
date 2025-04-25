@@ -11,11 +11,12 @@ pub use print_trace::TracePrinter;
 use rand::rngs::SmallRng;
 pub use scan_core;
 use scan_core::{
-    CsModel, Scan,
+    CsModel, PmtlOracle, Scan,
     channel_system::{CsError, Event},
 };
 
-pub fn load(path: &Path) -> anyhow::Result<(Scan<Event, CsError, CsModel<SmallRng>>, ScxmlModel)> {
+pub type ScxmlScan = Scan<Event, CsError, CsModel<SmallRng>, PmtlOracle>;
+pub fn load(path: &Path) -> anyhow::Result<(ScxmlScan, ScxmlModel)> {
     let parser = parser::Parser::parse(path)?;
     let (cs, oracle, model) = builder::ModelBuilder::build(parser)?;
     let scan = Scan::new(cs, oracle);
