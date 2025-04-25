@@ -1,7 +1,6 @@
 use clap::{Parser, ValueEnum};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use scan_fmt_xml::TracePrinter;
-use scan_fmt_xml::scan_core::{Scan, adaptive_bound, okamoto_bound};
+use scan_core::{Oracle, Scan, adaptive_bound, okamoto_bound};
 use std::{path::PathBuf, sync::Arc};
 
 /// Supported model specification formats
@@ -29,9 +28,9 @@ pub struct Cli {
     /// Precision or half-width parameter
     #[arg(short, long, default_value = "0.01")]
     precision: f64,
-    /// Max length of execution trace
-    #[arg(short, long, default_value = "1000000")]
-    length: usize,
+    // /// Max length of execution trace
+    // #[arg(short, long, default_value = "1000000")]
+    // length: usize,
     /// Max duration of execution (in model-time)
     #[arg(short, long, default_value = "10000")]
     duration: u32,
@@ -52,11 +51,13 @@ impl Cli {
     }
 
     fn run_scxml(&self) -> anyhow::Result<()> {
-        let (scan, scxml_model) = scan_fmt_xml::load(&self.path)?;
+        use scan_scxml::*;
+
+        let (scan, scxml_model) = load(&self.path)?;
         let scxml_model = Arc::new(scxml_model);
         let confidence = self.confidence;
         let precision = self.precision;
-        let length = self.length;
+        // let length = self.length;
         let duration = self.duration;
         let tracer = if self.traces {
             Some(TracePrinter::new(scxml_model.clone()))
@@ -73,28 +74,33 @@ impl Cli {
     fn run_jani(&self) -> anyhow::Result<()> {
         use scan_jani::*;
 
-        let (cs_model, _model) = parse(&self.path)?;
+        let (scan, jani_model) = load(&self.path)?;
         let confidence = self.confidence;
         let precision = self.precision;
-        let length = self.length;
+        // let length = self.length;
         let duration = self.duration;
-        // let bar_state = Arc::clone(&cs_model.run_status());
         // TODO: JANI needs a tracer too
-        let tracer: Option<TracePrinter> = None;
-        let check = std::thread::spawn(move || {
-            // cs_model.par_adaptive(confidence, precision, length, duration, tracer);
-        });
-        // self.print_progress_bar(&[], bar_state);
-        check.join().expect("terminate bar process");
+        let jani_model = Arc::new(jani_model);
+        let tracer = if self.traces {
+            Some(TracePrinter::new(jani_model))
+        } else {
+            None
+        };
+        scan.adaptive(confidence, precision, duration, tracer);
+        self.print_progress_bar(&[], &scan);
 
         Ok(())
     }
 
-    fn print_progress_bar<E, Err, Ts>(&self, guarantee_names: &[String], scan: &Scan<E, Err, Ts>)
-    where
-        Ts: scan_fmt_xml::scan_core::TransitionSystem<E, Err> + 'static,
+    fn print_progress_bar<E, Err, Ts, O>(
+        &self,
+        guarantee_names: &[String],
+        scan: &Scan<E, Err, Ts, O>,
+    ) where
+        Ts: scan_core::TransitionSystem<E, Err> + 'static,
         Err: std::error::Error + Send + Sync,
         E: Send + Sync,
+        O: Oracle + 'static,
     {
         const FINE_BAR: &str = "█▉▊▋▌▍▎▏  ";
         const ASCII_BAR: &str = "#--";
