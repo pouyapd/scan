@@ -1,4 +1,4 @@
-use crate::{PmtlOracle, RunOutcome, Time, Val};
+use crate::{Oracle, RunOutcome, Time, Val};
 use log::trace;
 use std::{
     error::Error,
@@ -34,11 +34,11 @@ pub trait TransitionSystem<Event, Err: Error>: Clone + Send + Sync {
 
     fn state(&self) -> impl Iterator<Item = &Val>;
 
-    fn experiment<P>(
+    fn experiment<P, O: Oracle>(
         mut self,
         // max_length: usize,
         duration: Time,
-        mut oracle: PmtlOracle,
+        mut oracle: O,
         mut tracer: Option<P>,
         running: Arc<AtomicBool>,
     ) -> Result<RunOutcome, Err>
@@ -60,7 +60,7 @@ pub trait TransitionSystem<Event, Err: Error>: Clone + Send + Sync {
                 if let Some(tracer) = tracer.as_mut() {
                     tracer.trace(&event, time, self.state());
                 }
-                oracle = oracle.update(&labels, time);
+                oracle.update(&labels, time);
                 if !running.load(Ordering::Relaxed) {
                     trace!("run stopped");
                     return Ok(RunOutcome::Incomplete);
@@ -70,10 +70,13 @@ pub trait TransitionSystem<Event, Err: Error>: Clone + Send + Sync {
                 } else if let Some(i) = oracle.output_guarantees() {
                     trace!("run fails");
                     break RunOutcome::Fail(i);
-                    // } else if current_len >= max_length {
-                    //     trace!("run exceeds maximum lenght");
-                    //     return Ok(RunOutcome::Incomplete);
                 }
+            } else if oracle.final_output_assumes().is_some() {
+                trace!("run undetermined");
+                break RunOutcome::Incomplete;
+            } else if let Some(i) = oracle.final_output_guarantees() {
+                trace!("run fails");
+                break RunOutcome::Fail(i);
             } else {
                 trace!("run succeeds");
                 break RunOutcome::Success;

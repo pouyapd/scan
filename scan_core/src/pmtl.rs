@@ -1,6 +1,6 @@
 mod numset;
 
-use crate::Time;
+use crate::{Oracle, Time};
 use numset::NumSet;
 use std::collections::HashSet;
 use std::{hash::Hash, sync::Arc};
@@ -317,8 +317,10 @@ impl PmtlOracle {
     fn formula_output(&self, formula: usize) -> bool {
         self.outputs[formula].contains(self.time)
     }
+}
 
-    pub(crate) fn output_assumes(&self) -> Option<usize> {
+impl Oracle for PmtlOracle {
+    fn output_assumes(&self) -> Option<usize> {
         self.assumes
             .iter()
             .enumerate()
@@ -326,7 +328,7 @@ impl PmtlOracle {
             .map(|(i, _)| i)
     }
 
-    pub(crate) fn output_guarantees(&self) -> Option<usize> {
+    fn output_guarantees(&self) -> Option<usize> {
         self.guarantees
             .iter()
             .enumerate()
@@ -334,7 +336,7 @@ impl PmtlOracle {
             .map(|(i, _)| i)
     }
 
-    pub(crate) fn update(mut self, state: &[bool], time: Time) -> Self {
+    fn update(&mut self, state: &[bool], time: Time) {
         assert!(self.time.0 <= time);
         let new_time = (time, self.time.1 + 1);
         self.buf_valuations.clear();
@@ -539,16 +541,8 @@ impl PmtlOracle {
                 }
             }
         }
-        Self {
-            time: new_time,
-            assumes: self.assumes,
-            guarantees: self.guarantees,
-            subformulae: self.subformulae,
-            valuations: self.buf_valuations,
-            outputs: self.outputs,
-            // Reuse allocated memory
-            buf_valuations: self.valuations,
-        }
+        self.time = new_time;
+        std::mem::swap(&mut self.valuations, &mut self.buf_valuations);
     }
 }
 
@@ -614,17 +608,17 @@ mod tests {
     fn since_1() {
         let formula = Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(1))), 0, Time::MAX);
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&[false, true], 0);
+        state.update(&[false, true], 0);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[false, true], 1);
+        state.update(&[false, true], 1);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[true, true], 2);
+        state.update(&[true, true], 2);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, true], 3);
+        state.update(&[true, true], 3);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 4);
+        state.update(&[true, false], 4);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[false, false], 5);
+        state.update(&[false, false], 5);
         assert!(state.output_guarantees().is_some());
     }
 
@@ -632,17 +626,17 @@ mod tests {
     fn since_2() {
         let formula = Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(1))), 0, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&[false, true], 0);
+        state.update(&[false, true], 0);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[false, true], 1);
+        state.update(&[false, true], 1);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[true, true], 2);
+        state.update(&[true, true], 2);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 3);
+        state.update(&[true, false], 3);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 4);
+        state.update(&[true, false], 4);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 5);
+        state.update(&[true, false], 5);
         assert!(state.output_guarantees().is_some());
     }
 
@@ -650,17 +644,17 @@ mod tests {
     fn since_3() {
         let formula = Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(1))), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&[false, true], 0);
+        state.update(&[false, true], 0);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[false, true], 1);
+        state.update(&[false, true], 1);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[true, true], 2);
+        state.update(&[true, true], 2);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 3);
+        state.update(&[true, false], 3);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 4);
+        state.update(&[true, false], 4);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 5);
+        state.update(&[true, false], 5);
         assert!(state.output_guarantees().is_some());
     }
 
@@ -668,19 +662,19 @@ mod tests {
     fn since_4() {
         let formula = Pmtl::Since(Box::new((Pmtl::Atom(0), Pmtl::Atom(1))), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&[false, true], 0);
+        state.update(&[false, true], 0);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[false, true], 1);
+        state.update(&[false, true], 1);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[false, true], 2);
+        state.update(&[false, true], 2);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[true, true], 2);
+        state.update(&[true, true], 2);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[true, false], 3);
+        state.update(&[true, false], 3);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 4);
+        state.update(&[true, false], 4);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true, false], 5);
+        state.update(&[true, false], 5);
         assert!(state.output_guarantees().is_some());
     }
 
@@ -688,19 +682,19 @@ mod tests {
     fn historically() {
         let formula = Pmtl::Historically(Box::new(Pmtl::Atom(0)), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&[false], 0);
+        state.update(&[false], 0);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[false], 0);
+        state.update(&[false], 0);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true], 1);
+        state.update(&[true], 1);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[true], 2);
+        state.update(&[true], 2);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[true], 3);
+        state.update(&[true], 3);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[false], 3);
+        state.update(&[false], 3);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true], 4);
+        state.update(&[true], 4);
         assert!(state.output_guarantees().is_some());
     }
 
@@ -708,19 +702,19 @@ mod tests {
     fn previously() {
         let formula = Pmtl::Once(Box::new(Pmtl::Atom(0)), 1, 2);
         let mut state = PmtlOracle::new(&[], &[formula]);
-        state = state.update(&[false], 0);
+        state.update(&[false], 0);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[false], 0);
+        state.update(&[false], 0);
         assert!(state.output_guarantees().is_some());
-        state = state.update(&[true], 1);
+        state.update(&[true], 1);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[false], 2);
+        state.update(&[false], 2);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[false], 3);
+        state.update(&[false], 3);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[false], 3);
+        state.update(&[false], 3);
         assert!(state.output_guarantees().is_none());
-        state = state.update(&[true], 4);
+        state.update(&[true], 4);
         assert!(state.output_guarantees().is_none());
     }
 }

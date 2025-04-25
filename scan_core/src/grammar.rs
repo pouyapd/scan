@@ -132,6 +132,8 @@ where
     RandBool(f64),
     /// A random integer between a lower bound (included) and an upper bound (excluded).
     RandInt(Integer, Integer),
+    /// A random float between a lower bound (included) and an upper bound (excluded).
+    RandFloat(Float, Float),
     // -----------------
     // Logical operators
     // -----------------
@@ -251,22 +253,19 @@ where
             Expression::Equal(exprs) => {
                 let type_0 = exprs.0.r#type()?;
                 let type_1 = exprs.1.r#type()?;
-                if matches!(type_0, Type::Integer | Type::Boolean) && type_0 == type_1 {
+                if (matches!(type_0, Type::Boolean) && matches!(type_1, Type::Boolean))
+                    || (matches!(type_0, Type::Integer | Type::Float)
+                        && matches!(type_1, Type::Integer | Type::Float))
+                {
                     Ok(Type::Boolean)
                 } else {
                     Err(TypeError::TypeMismatch)
                 }
             }
-            Expression::GreaterEq(exprs) | Expression::LessEq(exprs) => {
-                let type_0 = exprs.0.r#type()?;
-                let type_1 = exprs.1.r#type()?;
-                if matches!(type_0, Type::Integer) && matches!(type_1, Type::Integer) {
-                    Ok(Type::Boolean)
-                } else {
-                    Err(TypeError::TypeMismatch)
-                }
-            }
-            Expression::Greater(exprs) | Expression::Less(exprs) => {
+            Expression::GreaterEq(exprs)
+            | Expression::LessEq(exprs)
+            | Expression::Greater(exprs)
+            | Expression::Less(exprs) => {
                 if matches!(exprs.0.r#type()?, Type::Integer | Type::Float)
                     && matches!(exprs.1.r#type()?, Type::Integer | Type::Float)
                 {
@@ -327,6 +326,8 @@ where
             Expression::RandBool(_) => Err(TypeError::BadProbability),
             Expression::RandInt(l, u) if l < u => Ok(Type::Integer),
             Expression::RandInt(_, _) => Err(TypeError::BadBounds),
+            Expression::RandFloat(l, u) if l < u => Ok(Type::Float),
+            Expression::RandFloat(_, _) => Err(TypeError::BadBounds),
         }
     }
 
@@ -407,6 +408,7 @@ where
             Expression::Component(_, expression) => todo!(),
             Expression::RandBool(_) => todo!(),
             Expression::RandInt(_, _) => todo!(),
+            Expression::RandFloat(_, _) => todo!(),
             Expression::Mod(_) => todo!(),
             Expression::Equal(_) => todo!(),
             Expression::Greater(_) => todo!(),
@@ -432,7 +434,10 @@ where
                     Err(TypeError::UnknownVar)
                 }
             }
-            Expression::Const(_) | Expression::RandBool(_) | Expression::RandInt(_, _) => Ok(()),
+            Expression::Const(_)
+            | Expression::RandBool(_)
+            | Expression::RandInt(_, _)
+            | Expression::RandFloat(_, _) => Ok(()),
             Expression::Tuple(tuple)
             | Expression::And(tuple)
             | Expression::Or(tuple)
@@ -774,7 +779,7 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
             Expression::Mult(exprs) => {
                 let exprs: Vec<FnExpression<_, _>> = exprs.into_iter().map(Self::from).collect();
                 Box::new(move |vars, rng| {
-                    exprs.iter().fold(Val::Integer(0), |val, expr| match val {
+                    exprs.iter().fold(Val::Integer(1), |val, expr| match val {
                         Val::Integer(acc) => match expr.eval(vars, rng) {
                             Val::Integer(i) => Val::Integer(acc * i),
                             Val::Float(f) => Val::Float(f64::from(acc) * f),
@@ -796,6 +801,9 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
                 Box::new(
                     move |vars, rng| match (lhs.eval(vars, rng), rhs.eval(vars, rng)) {
                         (Val::Integer(lhs), Val::Integer(rhs)) => Val::Boolean(lhs == rhs),
+                        (Val::Integer(lhs), Val::Float(rhs)) => Val::Boolean(lhs as Float == rhs),
+                        (Val::Float(lhs), Val::Integer(rhs)) => Val::Boolean(lhs == rhs as Float),
+                        (Val::Float(lhs), Val::Float(rhs)) => Val::Boolean(lhs == rhs),
                         (Val::Boolean(lhs), Val::Boolean(rhs)) => Val::Boolean(lhs == rhs),
                         _ => panic!("type mismatch"),
                     },
@@ -823,14 +831,18 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
                 let (lhs, rhs) = *exprs;
                 let lhs = FnExpression::from(lhs);
                 let rhs = FnExpression::from(rhs);
-                Box::new(move |vars, rng| {
-                    if let (Val::Integer(lhs), Val::Integer(rhs)) =
-                        (lhs.eval(vars, rng), rhs.eval(vars, rng))
-                    {
-                        Val::Boolean(lhs >= rhs)
-                    } else {
-                        panic!("type mismatch");
-                    }
+                Box::new(move |vars, rng| match lhs.eval(vars, rng) {
+                    Val::Integer(lhs) => match rhs.eval(vars, rng) {
+                        Val::Integer(rhs) => Val::Boolean(lhs >= rhs),
+                        Val::Float(rhs) => Val::Boolean(f64::from(lhs) >= rhs),
+                        _ => panic!("type mismatch"),
+                    },
+                    Val::Float(lhs) => match rhs.eval(vars, rng) {
+                        Val::Integer(rhs) => Val::Boolean(lhs >= f64::from(rhs)),
+                        Val::Float(rhs) => Val::Boolean(lhs >= rhs),
+                        _ => panic!("type mismatch"),
+                    },
+                    _ => panic!("type mismatch"),
                 })
             }
             Expression::Less(exprs) => {
@@ -855,14 +867,18 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
                 let (source_lhs, source_rhs) = *exprs;
                 let lhs = FnExpression::from(source_lhs);
                 let rhs = FnExpression::from(source_rhs);
-                Box::new(move |vars, rng| {
-                    if let (Val::Integer(lhs), Val::Integer(rhs)) =
-                        (lhs.eval(vars, rng), rhs.eval(vars, rng))
-                    {
-                        Val::Boolean(lhs <= rhs)
-                    } else {
-                        panic!("type mismatch");
-                    }
+                Box::new(move |vars, rng| match lhs.eval(vars, rng) {
+                    Val::Integer(lhs) => match rhs.eval(vars, rng) {
+                        Val::Integer(rhs) => Val::Boolean(lhs <= rhs),
+                        Val::Float(rhs) => Val::Boolean(f64::from(lhs) <= rhs),
+                        _ => panic!("type mismatch"),
+                    },
+                    Val::Float(lhs) => match rhs.eval(vars, rng) {
+                        Val::Integer(rhs) => Val::Boolean(lhs <= f64::from(rhs)),
+                        Val::Float(rhs) => Val::Boolean(lhs <= rhs),
+                        _ => panic!("type mismatch"),
+                    },
+                    _ => panic!("type mismatch"),
                 })
             }
             Expression::Append(exprs) => {
@@ -925,6 +941,9 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
             Expression::RandBool(p) => Box::new(move |_, rng| Val::Boolean(rng.random_bool(p))),
             Expression::RandInt(l, u) => {
                 Box::new(move |_, rng| Val::Integer(rng.random_range(l..u)))
+            }
+            Expression::RandFloat(l, u) => {
+                Box::new(move |_, rng| Val::Float(rng.random_range(l..u)))
             }
         })
     }

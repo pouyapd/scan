@@ -298,7 +298,6 @@ impl ProgramGraphBuilder {
     /// Adds a new location to the PG and returns its [`Location`] indexing object.
     #[inline(always)]
     pub fn new_initial_location(&mut self) -> Location {
-        assert!(self.initial_states.is_empty());
         self.new_initial_timed_location(Vec::new())
             .expect("new untimed location")
     }

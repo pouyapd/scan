@@ -2,8 +2,8 @@ use super::{
     Action, Channel, ChannelSystem, ChannelSystemDef, Clock, CsError, Location, Message, PgError,
     PgExpression, PgId, ProgramGraph, ProgramGraphBuilder, TimeConstraint, Var,
 };
-use crate::grammar::Type;
 use crate::Expression;
+use crate::grammar::Type;
 use log::info;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -99,6 +99,7 @@ impl TryFrom<(PgId, CsExpression)> for PgExpression {
             )))),
             Expression::RandBool(p) => Ok(Expression::RandBool(p)),
             Expression::RandInt(l, u) => Ok(Expression::RandInt(l, u)),
+            Expression::RandFloat(l, u) => Ok(Expression::RandFloat(l, u)),
         }
     }
 }

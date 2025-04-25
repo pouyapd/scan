@@ -80,7 +80,7 @@ mod builder;
 
 use crate::{DummyRng, Time, grammar::*};
 pub use builder::*;
-use rand::Rng;
+use rand::{Rng, seq::IteratorRandom};
 use smallvec::SmallVec;
 use std::{collections::BTreeSet, sync::Arc};
 use thiserror::Error;
@@ -552,6 +552,37 @@ impl<R: Rng> ProgramGraph<R> {
         } else {
             Err(PgError::UnsatisfiedGuard)
         }
+    }
+
+    pub(crate) fn eval(&self, expr: &FnExpression<Var, DummyRng>) -> Val {
+        expr.eval(
+            &|v: Var| self.vars.get(v.0 as usize).unwrap().clone(),
+            &mut DummyRng,
+        )
+    }
+
+    pub(crate) fn vars(&self) -> impl Iterator<Item = &Val> {
+        self.vars.iter()
+    }
+
+    pub(crate) fn montecarlo(&mut self, rng: &mut R) -> Option<Action> {
+        if let Some((action, post_states)) = self
+            .possible_transitions()
+            .filter_map(|(action, post_state)| {
+                post_state
+                    .map(|locs| locs.choose(rng))
+                    .collect::<Option<SmallVec<[Location; 4]>>>()
+                    .map(|loc| (action, loc))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .choose(rng)
+        {
+            self.transition(action, post_states.as_slice(), rng)
+                .expect("successful transition");
+            return Some(action);
+        }
+        None
     }
 }
 

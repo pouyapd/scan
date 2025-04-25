@@ -3,12 +3,14 @@
 //!
 //! [^1]: Baier, C., & Katoen, J. (2008). *Principles of model checking*. MIT Press.
 
-#![warn(missing_docs)]
+// #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod channel_system;
 mod grammar;
 mod model;
+mod mtl;
+mod pg_model;
 mod pmtl;
 pub mod program_graph;
 mod smc;
@@ -17,6 +19,8 @@ mod transition_system;
 pub use grammar::*;
 use log::{info, warn};
 pub use model::*;
+pub use mtl::*;
+pub use pg_model::PgModel;
 pub use pmtl::*;
 use rand::RngCore;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -67,13 +71,30 @@ pub enum RunOutcome {
     Fail(usize),
 }
 
-pub struct Scan<Event, Err, Ts>
+pub trait Oracle: Clone + Send + Sync {
+    fn update(&mut self, state: &[bool], time: Time);
+
+    fn output_assumes(&self) -> Option<usize>;
+
+    fn output_guarantees(&self) -> Option<usize>;
+
+    fn final_output_assumes(&self) -> Option<usize> {
+        self.output_assumes()
+    }
+
+    fn final_output_guarantees(&self) -> Option<usize> {
+        self.output_guarantees()
+    }
+}
+
+pub struct Scan<Event, Err, Ts, O>
 where
     Err: Error,
     Ts: TransitionSystem<Event, Err>,
+    O: Oracle,
 {
     ts: Arc<Ts>,
-    oracle: Arc<PmtlOracle>,
+    oracle: Arc<O>,
     running: Arc<AtomicBool>,
     successes: Arc<AtomicU16>,
     failures: Arc<AtomicU16>,
@@ -82,13 +103,14 @@ where
     _err: PhantomData<Err>,
 }
 
-impl<Event, Err, T> Scan<Event, Err, T>
+impl<Event, Err, T, O> Scan<Event, Err, T, O>
 where
     Event: Sync,
     Err: Error + Sync,
     T: TransitionSystem<Event, Err> + 'static,
+    O: Oracle + 'static,
 {
-    pub fn new(ts: T, oracle: PmtlOracle) -> Self {
+    pub fn new(ts: T, oracle: O) -> Self {
         Self {
             ts: Arc::new(ts),
             oracle: Arc::new(oracle),
