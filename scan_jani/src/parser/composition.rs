@@ -10,10 +10,11 @@ pub(crate) struct Composition {
     pub(crate) syncs: Vec<Sync>,
     /// an optional comment
     #[serde(skip)]
-    pub(crate) comment: String,
+    pub(crate) _comment: String,
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Element {
     /// the name of an automaton
@@ -24,7 +25,7 @@ pub(crate) struct Element {
     pub(crate) input_enable: Vec<Identifier>,
     /// an optional comment
     #[serde(skip)]
-    pub(crate) comment: String,
+    pub(crate) _comment: String,
 }
 
 #[derive(Deserialize)]
@@ -37,5 +38,5 @@ pub(crate) struct Sync {
     pub(crate) result: Option<Identifier>,
     /// an optional comment
     #[serde(skip)]
-    pub(crate) comment: String,
+    pub(crate) _comment: String,
 }

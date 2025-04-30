@@ -21,6 +21,7 @@ pub(crate) type Identifier = String;
 pub(crate) type LValue = Identifier;
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Model {
     /// the jani-model version of this model
@@ -45,18 +46,17 @@ pub(crate) struct Model {
     /// the model's global variables
     #[serde(default)]
     pub(crate) variables: Vec<VariableDeclaration>,
+    // restricts the initial values of the global variables
+    #[serde(default)]
+    pub(crate) restrict_initial: Option<RestrictInitial>,
+    /// the properties to check
+    #[serde(default)]
+    pub(crate) properties: Vec<Property>,
     /// the model's automata; at least one
     pub(crate) automata: Vec<Automaton>,
     /// the model's automata network composition expression, note that one automaton
     /// can appear multiple times (= in multiple instances)
     pub(crate) system: Composition,
-    /// the properties to check
-    pub(crate) properties: Vec<Property>,
-    // TODO
-    // "?restrict-initial": { // restricts the initial values of the global variables
-    //   "exp": Expression, // the initial states expression, type bool, must not reference transient variables
-    //   "?comment": String // an optional comment
-    // },
 }
 
 #[derive(Deserialize)]
@@ -65,12 +65,13 @@ pub(crate) struct Metadata {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct Action {
     /// the action's name, unique among all actions
     pub(crate) name: Identifier,
     /// an optional comment
     #[serde(skip)]
-    pub(crate) comment: String,
+    pub(crate) _comment: String,
 }
 
 #[derive(Deserialize)]
@@ -127,4 +128,15 @@ pub(crate) enum ModelType {
     Pha,
     /// SHA: a stochastic hybrid automaton (timed)
     Sha,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[allow(dead_code)]
+pub(crate) struct RestrictInitial {
+    /// the initial states expression, type bool, must not reference transient variables
+    pub(crate) exp: Expression,
+    /// an optional comment
+    #[serde(skip)]
+    pub(crate) _comment: String,
 }

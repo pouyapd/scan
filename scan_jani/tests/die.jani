@@ -2,11 +2,14 @@
 	"jani-version": 1,
 	"name": "die.jani",
 	"type": "dtmc",
-	"features": [ "derived-operators" ],
+	"features": [
+		"derived-operators"
+	],
 	"variables": [
 		{
 			"name": "s",
-			"type": "int"
+			"type": "int",
+			"initial-value": 0
 		},
 		{
 			"name": "d",
@@ -18,45 +21,19 @@
 		{
 			"name": "Probability to throw a six",
 			"expression": {
-				"op": "filter",
-				"fun": "max",
-				"states": { "op": "initial" },
-				"values": {
-					"op": "Pmin",
-					"exp": {
-						"op": "U",
-						"left": true,
-						"right": {
-							"op": "∧",
-							"left": {
-								"op": "=",
-								"left": "s",
-								"right": 7
-							},
-							"right": {
-								"op": "=",
-								"left": "d",
-								"right": 6
-							}
-						}
-					}
-				}
-			}
-		},
-		{
-			"name": "Expected number of coin flips",
-			"expression": {
-				"op": "filter",
-				"fun": "max",
-				"states": { "op": "initial" },
-				"values": {
-					"op": "Emin",
-					"accumulate": [ "steps" ],
-					"exp": 1,
-					"reach": {
+				"op": "U",
+				"left": true,
+				"right": {
+					"op": "∧",
+					"left": {
 						"op": "=",
 						"left": "s",
 						"right": 7
+					},
+					"right": {
+						"op": "=",
+						"left": "d",
+						"right": 6
 					}
 				}
 			}
@@ -65,8 +42,14 @@
 	"automata": [
 		{
 			"name": "die",
-			"locations": [{ "name": "l" }],
-			"initial-locations": ["l"],
+			"locations": [
+				{
+					"name": "l"
+				}
+			],
+			"initial-locations": [
+				"l"
+			],
 			"edges": [
 				{
 					"location": "l",
@@ -80,7 +63,9 @@
 					"destinations": [
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -90,7 +75,9 @@
 						},
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -112,7 +99,9 @@
 					"destinations": [
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -122,7 +111,9 @@
 						},
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -144,7 +135,9 @@
 					"destinations": [
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -154,7 +147,9 @@
 						},
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -176,7 +171,9 @@
 					"destinations": [
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 }, 
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -186,7 +183,9 @@
 						},
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -212,7 +211,9 @@
 					"destinations": [
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -226,7 +227,9 @@
 						},
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -252,7 +255,9 @@
 					"destinations": [
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -266,7 +271,9 @@
 						},
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -292,7 +299,9 @@
 					"destinations": [
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -302,7 +311,9 @@
 						},
 						{
 							"location": "l",
-							"probability": { "exp": 0.5 },
+							"probability": {
+								"exp": 0.5
+							},
 							"assignments": [
 								{
 									"ref": "s",
@@ -338,10 +349,13 @@
 					]
 				}
 			]
-			
 		}
-	], 
+	],
 	"system": {
-		"elements": [ { "automaton": "die" } ]
+		"elements": [
+			{
+				"automaton": "die"
+			}
+		]
 	}
 }

@@ -227,7 +227,7 @@ impl JaniBuilder {
                                 )),
                                 right: Box::new(prob.clone()),
                             },
-                            comment: String::new(),
+                            _comment: String::new(),
                         });
                     }
                     let action;
@@ -244,10 +244,10 @@ impl JaniBuilder {
                         action: Some(action.clone()),
                         guard: guard_exp.map(|exp| Guard {
                             exp,
-                            comment: String::new(),
+                            _comment: String::new(),
                         }),
                         destinations: vec![dest.clone()],
-                        comment: String::new(),
+                        _comment: String::new(),
                     });
 
                     // Update syncs with new action (has to synchronise like original one)
@@ -275,7 +275,7 @@ impl JaniBuilder {
                                         Sync {
                                             synchronise,
                                             result: Some(result),
-                                            comment: String::new(),
+                                            _comment: String::new(),
                                         }
                                     })
                                     .collect::<Vec<_>>();
@@ -297,7 +297,7 @@ impl JaniBuilder {
                                 jani_model.system.syncs.push(Sync {
                                     synchronise,
                                     result: Some(result),
-                                    comment: String::new(),
+                                    _comment: String::new(),
                                 });
                             }
                         }
@@ -318,20 +318,19 @@ impl JaniBuilder {
         let init = var
             .initial_value
             .as_ref()
-            .ok_or_else(|| anyhow!("missing initial value"))
-            .and_then(|expr| self.build_expression(expr, &HashMap::new(), None))?;
-        // .unwrap_or_else(|| {
-        //     PgExpression::Const(match &var.r#type {
-        //         parser::Type::Basic(basic_type) => match basic_type {
-        //             parser::BasicType::Bool => scan_core::Val::Boolean(false),
-        //             parser::BasicType::Int => scan_core::Val::Integer(0),
-        //             parser::BasicType::Real => scan_core::Val::Float(0f64),
-        //         },
-        //         parser::Type::Bounded(_bounded_type) => todo!(),
-        //         parser::Type::Clock(_) => todo!(),
-        //         parser::Type::Continuous(_) => todo!(),
-        //     })
-        // });
+            .and_then(|expr| self.build_expression(expr, &HashMap::new(), None).ok())
+            .unwrap_or_else(|| {
+                PgExpression::Const(match &var.r#type {
+                    parser::Type::Basic(basic_type) => match basic_type {
+                        parser::BasicType::Bool => scan_core::Val::Boolean(false),
+                        parser::BasicType::Int => scan_core::Val::Integer(0),
+                        parser::BasicType::Real => scan_core::Val::Float(0f64),
+                    },
+                    parser::Type::Bounded(_bounded_type) => todo!(),
+                    parser::Type::Clock(_) => todo!(),
+                    parser::Type::Continuous(_) => todo!(),
+                })
+            });
         let t = init.r#type()?;
         let var_id = pgb.new_var(init)?;
         self.global_vars.insert(var.name.clone(), (var_id, t));
@@ -349,16 +348,6 @@ impl JaniBuilder {
                     .ok()
             })
             .ok_or_else(|| anyhow!("missing initial value"))?;
-        // .unwrap_or_else(|| match &c.r#type {
-        //     parser::Type::Basic(basic_type) => match basic_type {
-        //         parser::BasicType::Bool => scan_core::Val::Boolean(false),
-        //         parser::BasicType::Int => scan_core::Val::Integer(0),
-        //         parser::BasicType::Real => scan_core::Val::Float(0f64),
-        //     },
-        //     parser::Type::Bounded(_bounded_type) => todo!(),
-        //     parser::Type::Clock(_) => todo!(),
-        //     parser::Type::Continuous(_) => todo!(),
-        // });
         self.global_constants.insert(c.name.clone(), val);
         Ok(())
     }
@@ -374,19 +363,19 @@ impl JaniBuilder {
             .initial_value
             .as_ref()
             .and_then(|expr| self.build_expression(expr, local_vars, None).ok())
-            .ok_or_else(|| anyhow!("missing initial value"))?;
-        // .unwrap_or_else(|| {
-        //     PgExpression::Const(match &var.r#type {
-        //         parser::Type::Basic(basic_type) => match basic_type {
-        //             parser::BasicType::Bool => scan_core::Val::Boolean(false),
-        //             parser::BasicType::Int => scan_core::Val::Integer(0),
-        //             parser::BasicType::Real => scan_core::Val::Float(0f64),
-        //         },
-        //         parser::Type::Bounded(_bounded_type) => todo!(),
-        //         parser::Type::Clock(_) => todo!(),
-        //         parser::Type::Continuous(_) => todo!(),
-        //     })
-        // });
+            // .ok_or_else(|| anyhow!("missing initial value"))?;
+            .unwrap_or_else(|| {
+                PgExpression::Const(match &var.r#type {
+                    parser::Type::Basic(basic_type) => match basic_type {
+                        parser::BasicType::Bool => scan_core::Val::Boolean(false),
+                        parser::BasicType::Int => scan_core::Val::Integer(0),
+                        parser::BasicType::Real => scan_core::Val::Float(0f64),
+                    },
+                    parser::Type::Bounded(_bounded_type) => todo!(),
+                    parser::Type::Clock(_) => todo!(),
+                    parser::Type::Continuous(_) => todo!(),
+                })
+            });
         let t = init.r#type()?;
         let var_id = pgb.new_var(init)?;
         local_vars.insert(var.name.clone(), (var_id, t));
@@ -832,12 +821,12 @@ impl JaniBuilder {
                     bail!(TypeError::TypeMismatch)
                 }
             }
-            PropertyExpression::Real2IntOp { op, exp } => todo!(),
+            PropertyExpression::Real2IntOp { op: _, exp: _ } => todo!(),
             PropertyExpression::Until {
                 op,
                 left,
                 right,
-                time_bounds,
+                time_bounds: _,
             } => {
                 let left = self
                     .build_property(left)?

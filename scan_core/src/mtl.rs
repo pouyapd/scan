@@ -23,7 +23,7 @@ impl MtlOracle {
 }
 
 impl Oracle for MtlOracle {
-    fn update(&mut self, state: &[bool], time: Time) {
+    fn update(&mut self, state: &[bool], _time: Time) {
         self.guarantees
             .iter_mut()
             .chain(self.assumes.iter_mut())

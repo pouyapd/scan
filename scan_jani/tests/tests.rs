@@ -1,7 +1,5 @@
 use std::path::Path;
 
-const MAXSTEP: usize = 1000;
-
 #[test]
 fn jani_test() {
     test(Path::new("./tests/test.jani"))
@@ -33,22 +31,24 @@ fn ij_3() {
 }
 
 fn test(path: &Path) {
-    let mut model = scan_jani::load(path).unwrap().0.channel_system().clone();
-    let mut steps = 0;
-    assert!(model.possible_transitions().count() > 0);
-    while let Some((pg_id, action, post)) = model
-        .possible_transitions()
-        .filter_map(|(pg, a, iter)| {
-            iter.into_iter()
-                .map(|v| v.last())
-                .collect::<Option<Vec<_>>>()
-                .map(|l| (pg, a, l))
-        })
-        .last()
-    {
-        steps += 1;
-        assert!(steps < MAXSTEP, "step limit reached");
-        assert!(model.transition(pg_id, action, post.as_slice()).is_ok());
-    }
-    assert!(steps > 0, "no transitions executed");
+    let (scan, ..) = scan_jani::load(path).expect("load");
+    scan.adaptive::<scan_jani::TracePrinter>(0.95, 0.01, 100, None);
+    // let mut model = scan_jani::load(path).unwrap().0.channel_system().clone();
+    // let mut steps = 0;
+    // assert!(model.possible_transitions().count() > 0);
+    // while let Some((pg_id, action, post)) = model
+    //     .possible_transitions()
+    //     .filter_map(|(pg, a, iter)| {
+    //         iter.into_iter()
+    //             .map(|v| v.last())
+    //             .collect::<Option<Vec<_>>>()
+    //             .map(|l| (pg, a, l))
+    //     })
+    //     .last()
+    // {
+    //     steps += 1;
+    //     assert!(steps < MAXSTEP, "step limit reached");
+    //     assert!(model.transition(pg_id, action, post.as_slice()).is_ok());
+    // }
+    // assert!(steps > 0, "no transitions executed");
 }

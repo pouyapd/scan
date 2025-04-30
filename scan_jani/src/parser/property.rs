@@ -13,7 +13,7 @@ pub(crate) struct Property {
     pub(crate) expression: PropertyExpression,
     /// an optional comment
     #[serde(skip)]
-    pub(crate) comment: String,
+    pub(crate) _comment: String,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +90,7 @@ pub(crate) enum PropertyExpression {
         right: Box<PropertyExpression>,
     },
     /// floor / ceiling: computes ⌊exp⌋ / ⌈exp⌉
+    #[allow(dead_code)]
     Real2IntOp {
         /// result type is int
         op: Real2IntOp,
@@ -97,6 +98,7 @@ pub(crate) enum PropertyExpression {
         exp: Box<PropertyExpression>,
     },
     /// until / weak until
+    #[allow(dead_code)]
     Until {
         /// result type is bool
         op: UntilOp,
@@ -116,6 +118,7 @@ pub(crate) enum PropertyExpression {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct PropertyInterval {
     /// constant expression, must be present if upper is omitted

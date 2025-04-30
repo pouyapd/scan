@@ -128,7 +128,7 @@ impl Tracer<Action> for TracePrinter {
         new_path.pop();
         match outcome {
             RunOutcome::Success => new_path.push(Self::SUCCESSES),
-            RunOutcome::Fail(violation) => {
+            RunOutcome::Fail(_violation) => {
                 new_path.push(Self::FAILURES);
                 // new_path.push(self.model.guarantees.get(violation).unwrap());
                 // This path might not exist yet

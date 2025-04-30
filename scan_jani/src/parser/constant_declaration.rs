@@ -2,6 +2,7 @@ use super::{Expression, Identifier, Type};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct ConstantDeclaration {
     /// the constant's name, unique among all constants and variables
@@ -16,5 +17,5 @@ pub(crate) struct ConstantDeclaration {
     pub(crate) value: Option<Expression>,
     /// an optional comment
     #[serde(skip)]
-    pub(crate) comment: String,
+    pub(crate) _comment: String,
 }
