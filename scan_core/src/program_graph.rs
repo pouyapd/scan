@@ -80,7 +80,7 @@ mod builder;
 
 use crate::{DummyRng, Time, grammar::*};
 pub use builder::*;
-use rand::{Rng, seq::IteratorRandom};
+use rand::{Rng, SeedableRng, rngs::SmallRng, seq::IteratorRandom};
 use smallvec::SmallVec;
 use std::{collections::BTreeSet, sync::Arc};
 use thiserror::Error;
@@ -192,7 +192,6 @@ type Guard = FnExpression<Var, DummyRng>;
 
 type Transition = (Action, Location, Option<Guard>, Vec<TimeConstraint>);
 
-#[derive(Debug)]
 struct ProgramGraphDef<R: Rng> {
     effects: Vec<FnEffect<R>>,
     locations: Vec<(Vec<Transition>, Vec<TimeConstraint>, BTreeSet<Action>)>,
@@ -561,11 +560,14 @@ impl<R: Rng> ProgramGraph<R> {
         )
     }
 
-    pub(crate) fn vars(&self) -> impl Iterator<Item = &Val> {
-        self.vars.iter()
+    pub(crate) fn val(&self, var: Var) -> Result<&Val, PgError> {
+        self.vars
+            .get(var.0 as usize)
+            .ok_or(PgError::MissingVar(var))
     }
 
     pub(crate) fn montecarlo(&mut self, rng: &mut R) -> Option<Action> {
+        let mut rand = SmallRng::from_rng(rng);
         if let Some((action, post_states)) = self
             .possible_transitions()
             .filter_map(|(action, post_state)| {
@@ -574,9 +576,7 @@ impl<R: Rng> ProgramGraph<R> {
                     .collect::<Option<SmallVec<[Location; 4]>>>()
                     .map(|loc| (action, loc))
             })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .choose(rng)
+            .choose(&mut rand)
         {
             self.transition(action, post_states.as_slice(), rng)
                 .expect("successful transition");

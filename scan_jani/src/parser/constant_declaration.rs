@@ -2,7 +2,7 @@ use super::{Expression, Identifier, Type};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct ConstantDeclaration {
     /// the constant's name, unique among all constants and variables
     pub(crate) name: Identifier,

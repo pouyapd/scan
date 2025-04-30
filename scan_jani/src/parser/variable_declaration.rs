@@ -2,7 +2,7 @@ use super::{Expression, Identifier, Type};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct VariableDeclaration {
     /// the variable's name, unique among all constants and global variables
     /// as well as among local variables if the variable is declared within an automaton

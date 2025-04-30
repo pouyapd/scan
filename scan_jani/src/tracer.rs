@@ -105,8 +105,9 @@ impl Tracer<Action> for TracePrinter {
             .as_mut()
             .unwrap()
             .write_record(
-                [time, action_name], // .into_iter()
-                                     // .chain(ports.into_iter().map(format_val)),
+                [time, action_name]
+                    .into_iter()
+                    .chain(ports.into_iter().map(format_val)),
             )
             .expect("write record");
     }

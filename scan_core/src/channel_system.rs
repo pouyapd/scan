@@ -270,7 +270,7 @@ pub enum EventType {
     ProbeFullQueue,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ChannelSystemDef {
     channels: Vec<(Type, Option<usize>)>,
     communications: Vec<(PgAction, Channel, Message)>,

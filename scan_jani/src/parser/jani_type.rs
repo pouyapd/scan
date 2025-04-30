@@ -26,7 +26,7 @@ pub(crate) enum BoundedTypeKind {
 /// numeric if base is numeric; lower-bound or upper-bound or both must be present;
 /// assignable from those types that base is assignable from#[derive(Deserialize)]
 #[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct BoundedType {
     #[serde(default)]
     kind: BoundedTypeKind,

@@ -10,7 +10,10 @@ use scan_core::{
     Mtl, MtlOracle, PgModel, Type, TypeError, Val,
     program_graph::{self, Action, PgExpression, ProgramGraphBuilder, Var},
 };
-use std::{collections::HashMap, ops::Not};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    ops::Not,
+};
 
 #[derive(Clone)]
 pub struct JaniModelData {
@@ -19,192 +22,67 @@ pub struct JaniModelData {
     pub guarantees: Vec<String>,
 }
 
-pub(crate) fn build(mut jani_model: Model) -> anyhow::Result<(PgModel, MtlOracle, JaniModelData)> {
-    let mut builder = JaniBuilder::default();
-    normalize(&mut jani_model);
-    let (pg_model, oracle) = builder.build(&jani_model)?;
-    let data = builder.data();
-    Ok((pg_model, oracle, data))
-}
-
-// An action in JANI doesn not carry effects,
-// so we need to duplicate actions until each one has unique effects.
-// The modified model is such that:
-//
-// - Every action has a unique set of assignments.
-// - Every edge has a unique location.
-// - Syncs are updated with new actions.
-fn normalize(jani_model: &mut Model) {
-    // index is global so there is no risk of name-clash
-    let mut idx = 0;
-    let rng = Expression::Identifier(String::from("__rng__"));
-    for automaton in &mut jani_model.automata {
-        let mut new_edges = Vec::new();
-        for edge in &mut automaton.edges {
-            let orig_action = edge.action.clone();
-            let mut prob = Expression::ConstantValue(parser::ConstantValue::NumberReal(0f64));
-            for dest in &mut edge.destinations {
-                // If edge has assignments, create new action
-                let action = if dest.assignments.is_empty() {
-                    if dest.probability.is_some() && edge.action.is_none() {
-                        // Cannot be silent action because needs to randomize
-                        edge.action = Some(String::from("__auto_gen__") + &idx.to_string());
-                        idx += 1;
-                    }
-                    // Can be silent action or whatever
-                    edge.action.clone()
-                } else {
-                    let new_action =
-                        edge.action.clone().unwrap_or_default() + "__auto_gen__" + &idx.to_string();
-                    idx += 1;
-                    Some(new_action)
-                };
-                // Add probability to guard
-                let mut guard_exp = edge.guard.as_ref().map(|guard| guard.exp.clone());
-                if let Some(p) = dest.probability.as_ref() {
-                    let lower_bound = Expression::NumComp {
-                        op: NumCompOp::Leq,
-                        left: Box::new(prob.clone()),
-                        right: Box::new(rng.clone()),
-                    };
-                    prob = Expression::IntOp {
-                        op: parser::IntOp::Plus,
-                        left: Box::new(prob),
-                        right: Box::new(p.exp.clone()),
-                    };
-                    let upper_bound = Expression::NumComp {
-                        op: NumCompOp::Less,
-                        left: Box::new(rng.clone()),
-                        right: Box::new(prob.clone()),
-                    };
-                    guard_exp = guard_exp.map_or(
-                        Some(Expression::Bool {
-                            op: BoolOp::And,
-                            left: Box::new(lower_bound.clone()),
-                            right: Box::new(upper_bound.clone()),
-                        }),
-                        |g| {
-                            Some(Expression::Bool {
-                                op: BoolOp::And,
-                                left: Box::new(Expression::Bool {
-                                    op: BoolOp::And,
-                                    left: Box::new(lower_bound),
-                                    right: Box::new(upper_bound),
-                                }),
-                                right: Box::new(g),
-                            })
-                        },
-                    );
-                }
-                let new_edge = Edge {
-                    location: edge.location.clone(),
-                    action: action.clone(),
-                    guard: guard_exp.map(|exp| Guard {
-                        exp,
-                        comment: String::new(),
-                    }),
-                    destinations: vec![dest.clone()],
-                    comment: String::new(),
-                };
-                new_edges.push(new_edge);
-
-                // Update syncs with new action (has to synchronise like original one)
-                // NOTE: you cannot synchronise the silent action!
-                if let Some(ref orig_action) = orig_action {
-                    for i in jani_model
-                        .system
-                        .elements
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, e)| (e.automaton == automaton.name).then_some(i))
-                    {
-                        let mut to_add = Vec::new();
-                        for sync in &jani_model.system.syncs {
-                            if sync.synchronise[i].as_ref() == Some(orig_action) {
-                                let mut synchronise = sync.synchronise.clone();
-                                synchronise[i] = action.clone();
-                                // Generate new unique result action
-                                let new_result = sync.result.clone().unwrap_or_default()
-                                    + "__auto_gen__"
-                                    + &idx.to_string();
-                                idx += 1;
-                                to_add.push(Sync {
-                                    synchronise,
-                                    result: Some(new_result),
-                                    comment: String::new(),
-                                });
-                            }
-                        }
-                        // If original action did not appear in syncs it means that it does not sync between automata.
-                        // We still want to keep track of it esplicitely.
-                        if to_add.is_empty() && action.is_some() {
-                            let mut synchronise = vec![None; jani_model.system.elements.len()];
-                            synchronise[i] = action.clone();
-                            // ensure result is unique
-                            let new_result = action.clone().unwrap_or_default()
-                                + "__auto_gen__"
-                                + &idx.to_string();
-                            to_add.push(Sync {
-                                synchronise,
-                                result: Some(new_result),
-                                comment: String::new(),
-                            });
-                        }
-                        // Add generated syncs
-                        jani_model.system.syncs.extend(to_add);
-                    }
-                }
-            }
-        }
-        // Replace edges with new ones
-        automaton.edges = new_edges;
-    }
+pub(crate) fn build(jani_model: Model) -> anyhow::Result<(PgModel, MtlOracle, JaniModelData)> {
+    let builder = JaniBuilder::default();
+    builder.build(jani_model)
 }
 
 #[derive(Default)]
 struct JaniBuilder {
-    locations: HashMap<(String, usize), program_graph::Location>,
     system_actions: HashMap<String, program_graph::Action>,
-    global_vars: HashMap<String, (Var, Type)>,
+    global_vars: BTreeMap<String, (Var, Type)>,
     global_constants: HashMap<String, Val>,
 }
 
 impl JaniBuilder {
-    pub(crate) fn build(&mut self, jani_model: &Model) -> anyhow::Result<(PgModel, MtlOracle)> {
+    const RNG: &str = "__RNG__";
+    const GEN: &str = "__GEN__";
+
+    pub(crate) fn build(
+        mut self,
+        mut jani_model: Model,
+    ) -> anyhow::Result<(PgModel, MtlOracle, JaniModelData)> {
+        // WARN Necessary "normalization" process
+        self.normalize(&mut jani_model);
+
         let mut pgb = ProgramGraphBuilder::new();
 
-        jani_model
-            .system
-            .syncs
-            .iter()
-            .flat_map(|sync| &sync.result)
-            .for_each(|action| {
-                if !self.system_actions.contains_key(action) {
-                    let action_id = pgb.new_action();
-                    let prev = self.system_actions.insert(action.clone(), action_id);
-                    assert!(prev.is_none(), "checked by above if condition");
-                }
-            });
+        jani_model.system.syncs.iter().for_each(|sync| {
+            let result = sync.result.as_ref().expect("no silent actions");
+            if !self.system_actions.contains_key(result) {
+                let action = pgb.new_action();
+                let prev = self.system_actions.insert(result.clone(), action);
+                assert!(prev.is_none(), "checked by above if condition");
+            }
+        });
 
-        jani_model
-            .variables
-            .iter()
-            .try_for_each(|var| self.add_global_var(&mut pgb, var))?;
         jani_model
             .constants
             .iter()
             .try_for_each(|c| self.add_global_constant(c))?;
+        jani_model
+            .variables
+            .iter()
+            .try_for_each(|var| self.add_global_var(&mut pgb, var))?;
 
-        for (e_idx, element) in jani_model.system.elements.iter().enumerate() {
-            let id = &element.automaton;
-            let automaton = jani_model
-                .automata
-                .iter()
-                .find(|a| a.name == *id)
-                .ok_or(anyhow!("element '{id}' is not a known automaton"))?;
-            self.build_automaton(jani_model, &mut pgb, automaton, e_idx)
-                .with_context(|| format!("failed to build automaton '{id}'"))?;
-        }
+        let init = pgb.new_action();
+        jani_model
+            .system
+            .elements
+            .iter()
+            .enumerate()
+            .try_for_each(|(e_idx, element)| {
+                let automaton = jani_model
+                    .automata
+                    .iter()
+                    .find(|a| a.name == element.automaton)
+                    .ok_or(anyhow!(
+                        "element '{}' is not a known automaton",
+                        element.automaton
+                    ))?;
+                self.build_automaton(&jani_model, &mut pgb, automaton, init, e_idx)
+                    .with_context(|| format!("failed to build automaton '{}'", element.automaton))
+            })?;
 
         // Add properties
         let properties = jani_model
@@ -245,12 +123,190 @@ impl JaniBuilder {
             .into_iter()
             .flat_map(|prop| extract_predicates(&prop).into_iter())
             .collect::<Vec<_>>();
+        let global_vars = self
+            .global_vars
+            .values()
+            .map(|(var, _)| var)
+            .copied()
+            .collect();
 
         // Finalize, build and return everything
         let pg = pgb.build();
-        let pg_model = PgModel::new(pg, SmallRng::from_os_rng(), predicates);
+        let pg_model = PgModel::new(pg, SmallRng::from_os_rng(), global_vars, predicates);
+        let data = self.data(jani_model);
 
-        Ok((pg_model, oracle))
+        Ok((pg_model, oracle, data))
+    }
+
+    // An action in JANI doesn not carry effects,
+    // so we need to duplicate actions until each one has unique effects.
+    // The modified model is such that:
+    //
+    // - Every action has a unique set of assignments (duplicates actions).
+    // - Every edge has a unique destination (because destinations are tied to assignments).
+    // - Syncs are updated with new actions
+    //   (if action a is duplicated to a', all syncs containing a are duplicated with a' and a new result
+    //   so that result corresponds to a unique set of assignments, union of all the assignments of each of its actions).
+    // - Probability is encoded in guard
+    fn normalize(&mut self, jani_model: &mut Model) {
+        // index is global so there is no risk of name-clash
+        let mut idx = 0;
+        let rng = Expression::Identifier(String::from(Self::RNG));
+        for automaton in &mut jani_model.automata {
+            let mut new_edges = Vec::new();
+            for edge in &mut automaton.edges {
+                // Avoid silent actions
+                if edge.action.is_none() {
+                    edge.action = Some(Self::GEN.to_string() + &idx.to_string());
+                    idx += 1;
+                }
+                let edge_action = edge.action.clone().expect("no silent action");
+                assert!(!edge_action.is_empty());
+                let mut prob: Option<Expression> = None;
+                for dest in &mut edge.destinations {
+                    // Add probability to guard
+                    let mut guard_exp = edge.guard.as_ref().map(|guard| guard.exp.clone());
+                    if let Some(ref p) = dest.probability {
+                        // First probability case has no lower bound
+                        if let Some(ref prob) = prob {
+                            let lower_bound = Expression::NumComp {
+                                op: NumCompOp::Leq,
+                                left: Box::new(prob.clone()),
+                                right: Box::new(rng.clone()),
+                            };
+                            guard_exp = guard_exp
+                                .map(|g| Expression::Bool {
+                                    op: BoolOp::And,
+                                    left: Box::new(lower_bound.clone()),
+                                    right: Box::new(g),
+                                })
+                                .or(Some(lower_bound));
+                        }
+                        let upper_prob = prob.map_or_else(
+                            || p.exp.clone(),
+                            |prob| Expression::IntOp {
+                                op: parser::IntOp::Plus,
+                                left: Box::new(prob),
+                                right: Box::new(p.exp.clone()),
+                            },
+                        );
+                        let upper_bound = Expression::NumComp {
+                            op: NumCompOp::Less,
+                            left: Box::new(rng.clone()),
+                            right: Box::new(upper_prob.clone()),
+                        };
+                        guard_exp = guard_exp
+                            .map(|g| Expression::Bool {
+                                op: BoolOp::And,
+                                left: Box::new(upper_bound.clone()),
+                                right: Box::new(g),
+                            })
+                            .or(Some(upper_bound));
+                        // Update accumulated probability
+                        prob = Some(upper_prob);
+                    } else if let Some(ref prob) = prob {
+                        // Last probability could be left implicit
+                        let lower_bound = Expression::NumComp {
+                            op: NumCompOp::Leq,
+                            left: Box::new(prob.clone()),
+                            right: Box::new(rng.clone()),
+                        };
+                        guard_exp = guard_exp
+                            .map(|g| Expression::Bool {
+                                op: BoolOp::And,
+                                left: Box::new(lower_bound.clone()),
+                                right: Box::new(g),
+                            })
+                            .or(Some(lower_bound));
+                        // Need to remember this had a probability
+                        dest.probability = Some(parser::Probability {
+                            exp: Expression::IntOp {
+                                op: parser::IntOp::Minus,
+                                left: Box::new(Expression::ConstantValue(
+                                    parser::ConstantValue::NumberReal(1.),
+                                )),
+                                right: Box::new(prob.clone()),
+                            },
+                            comment: String::new(),
+                        });
+                    }
+                    let action;
+                    if dest.assignments.is_empty() {
+                        // If there are no assignments we don't need a new name.
+                        action = edge_action.clone();
+                    } else {
+                        action = edge_action.clone() + Self::GEN + &idx.to_string();
+                        idx += 1;
+                    }
+
+                    new_edges.push(Edge {
+                        location: edge.location.clone(),
+                        action: Some(action.clone()),
+                        guard: guard_exp.map(|exp| Guard {
+                            exp,
+                            comment: String::new(),
+                        }),
+                        destinations: vec![dest.clone()],
+                        comment: String::new(),
+                    });
+
+                    // Update syncs with new action (has to synchronise like original one)
+                    for e_idx in 0..jani_model.system.elements.len() {
+                        if jani_model.system.elements[e_idx].automaton == automaton.name {
+                            // Only add new syncs if new action was generated
+                            if action != edge_action {
+                                let to_add = jani_model
+                                    .system
+                                    .syncs
+                                    .iter()
+                                    .filter(|sync| {
+                                        sync.synchronise[e_idx]
+                                            .as_ref()
+                                            .is_some_and(|a| *a == edge_action)
+                                    })
+                                    .map(|sync| {
+                                        let mut synchronise = sync.synchronise.clone();
+                                        let _ = synchronise[e_idx].insert(action.clone());
+                                        // Generate new unique result action
+                                        let result = sync.result.clone().unwrap_or_default()
+                                            + Self::GEN
+                                            + &idx.to_string();
+                                        idx += 1;
+                                        Sync {
+                                            synchronise,
+                                            result: Some(result),
+                                            comment: String::new(),
+                                        }
+                                    })
+                                    .collect::<Vec<_>>();
+                                jani_model.system.syncs.extend(to_add);
+                            }
+
+                            // If original action did not appear in syncs it means that it does not sync between automata.
+                            // We still want to keep track of it esplicitely.
+                            if jani_model.system.syncs.iter().all(|sync| {
+                                sync.synchronise[e_idx]
+                                    .as_ref()
+                                    .is_none_or(|a| *a != edge_action)
+                            }) {
+                                let mut synchronise = vec![None; jani_model.system.elements.len()];
+                                synchronise[e_idx] = Some(action.clone());
+                                // ensure result is unique
+                                let result = action.clone() + Self::GEN + &idx.to_string();
+                                idx += 1;
+                                jani_model.system.syncs.push(Sync {
+                                    synchronise,
+                                    result: Some(result),
+                                    comment: String::new(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            // Replace edges with new ones
+            automaton.edges = new_edges;
+        }
     }
 
     fn add_global_var(
@@ -262,19 +318,20 @@ impl JaniBuilder {
         let init = var
             .initial_value
             .as_ref()
-            .and_then(|expr| self.build_expression(expr, &HashMap::new(), None).ok())
-            .unwrap_or_else(|| {
-                PgExpression::Const(match &var.r#type {
-                    parser::Type::Basic(basic_type) => match basic_type {
-                        parser::BasicType::Bool => scan_core::Val::Boolean(false),
-                        parser::BasicType::Int => scan_core::Val::Integer(0),
-                        parser::BasicType::Real => scan_core::Val::Float(0f64),
-                    },
-                    parser::Type::Bounded(_bounded_type) => todo!(),
-                    parser::Type::Clock(_) => todo!(),
-                    parser::Type::Continuous(_) => todo!(),
-                })
-            });
+            .ok_or_else(|| anyhow!("missing initial value"))
+            .and_then(|expr| self.build_expression(expr, &HashMap::new(), None))?;
+        // .unwrap_or_else(|| {
+        //     PgExpression::Const(match &var.r#type {
+        //         parser::Type::Basic(basic_type) => match basic_type {
+        //             parser::BasicType::Bool => scan_core::Val::Boolean(false),
+        //             parser::BasicType::Int => scan_core::Val::Integer(0),
+        //             parser::BasicType::Real => scan_core::Val::Float(0f64),
+        //         },
+        //         parser::Type::Bounded(_bounded_type) => todo!(),
+        //         parser::Type::Clock(_) => todo!(),
+        //         parser::Type::Continuous(_) => todo!(),
+        //     })
+        // });
         let t = init.r#type()?;
         let var_id = pgb.new_var(init)?;
         self.global_vars.insert(var.name.clone(), (var_id, t));
@@ -291,16 +348,17 @@ impl JaniBuilder {
                     .and_then(|e| e.eval_constant().map_err(|err| anyhow!(err)))
                     .ok()
             })
-            .unwrap_or_else(|| match &c.r#type {
-                parser::Type::Basic(basic_type) => match basic_type {
-                    parser::BasicType::Bool => scan_core::Val::Boolean(false),
-                    parser::BasicType::Int => scan_core::Val::Integer(0),
-                    parser::BasicType::Real => scan_core::Val::Float(0f64),
-                },
-                parser::Type::Bounded(_bounded_type) => todo!(),
-                parser::Type::Clock(_) => todo!(),
-                parser::Type::Continuous(_) => todo!(),
-            });
+            .ok_or_else(|| anyhow!("missing initial value"))?;
+        // .unwrap_or_else(|| match &c.r#type {
+        //     parser::Type::Basic(basic_type) => match basic_type {
+        //         parser::BasicType::Bool => scan_core::Val::Boolean(false),
+        //         parser::BasicType::Int => scan_core::Val::Integer(0),
+        //         parser::BasicType::Real => scan_core::Val::Float(0f64),
+        //     },
+        //     parser::Type::Bounded(_bounded_type) => todo!(),
+        //     parser::Type::Clock(_) => todo!(),
+        //     parser::Type::Continuous(_) => todo!(),
+        // });
         self.global_constants.insert(c.name.clone(), val);
         Ok(())
     }
@@ -316,33 +374,42 @@ impl JaniBuilder {
             .initial_value
             .as_ref()
             .and_then(|expr| self.build_expression(expr, local_vars, None).ok())
-            .unwrap_or_else(|| {
-                PgExpression::Const(match &var.r#type {
-                    parser::Type::Basic(basic_type) => match basic_type {
-                        parser::BasicType::Bool => scan_core::Val::Boolean(false),
-                        parser::BasicType::Int => scan_core::Val::Integer(0),
-                        parser::BasicType::Real => scan_core::Val::Float(0f64),
-                    },
-                    parser::Type::Bounded(_bounded_type) => todo!(),
-                    parser::Type::Clock(_) => todo!(),
-                    parser::Type::Continuous(_) => todo!(),
-                })
-            });
+            .ok_or_else(|| anyhow!("missing initial value"))?;
+        // .unwrap_or_else(|| {
+        //     PgExpression::Const(match &var.r#type {
+        //         parser::Type::Basic(basic_type) => match basic_type {
+        //             parser::BasicType::Bool => scan_core::Val::Boolean(false),
+        //             parser::BasicType::Int => scan_core::Val::Integer(0),
+        //             parser::BasicType::Real => scan_core::Val::Float(0f64),
+        //         },
+        //         parser::Type::Bounded(_bounded_type) => todo!(),
+        //         parser::Type::Clock(_) => todo!(),
+        //         parser::Type::Continuous(_) => todo!(),
+        //     })
+        // });
         let t = init.r#type()?;
         let var_id = pgb.new_var(init)?;
         local_vars.insert(var.name.clone(), (var_id, t));
         Ok(())
     }
 
-    fn data(self) -> JaniModelData {
+    fn data(self, jani_model: Model) -> JaniModelData {
         JaniModelData {
             actions: self
                 .system_actions
                 .into_iter()
                 .map(|(name, action)| (action, name))
                 .collect::<HashMap<_, _>>(),
-            ports: Vec::new(),
-            guarantees: Vec::new(),
+            ports: self
+                .global_vars
+                .into_iter()
+                .map(|(name, (_, t))| (name, t))
+                .collect(),
+            guarantees: jani_model
+                .properties
+                .into_iter()
+                .map(|prop| prop.name)
+                .collect(),
         }
     }
 
@@ -351,39 +418,50 @@ impl JaniBuilder {
         jani_model: &Model,
         pgb: &mut ProgramGraphBuilder,
         automaton: &Automaton,
+        init: Action,
         e_idx: usize,
     ) -> anyhow::Result<()> {
+        // Add local variables
         let mut local_vars: HashMap<String, (Var, Type)> = HashMap::new();
-        let rng = pgb.new_var(PgExpression::RandFloat(0., 1.))?;
+        let mut locations: HashMap<String, scan_core::program_graph::Location> = HashMap::new();
+        let mut rng_actions = HashSet::new();
+        let pg_initial = pgb.new_initial_location();
+        let rng = pgb.new_var(PgExpression::from(0.)).expect("new var");
+        pgb.add_effect(init, rng, PgExpression::RandFloat(0., 1.))
+            .expect("add effect");
+        // Add locations
+        for location in &automaton.locations {
+            self.build_location(jani_model, pgb, location, e_idx, &mut locations)
+                .with_context(|| format!("failed building location: {}", &location.name))?;
+        }
+        // Connect initial location of PG with initial location(s) of the JANI model
+        for initial in &automaton.initial_locations {
+            let jani_initial = locations
+                .get(initial)
+                .ok_or_else(|| anyhow!("missing initial location {}", initial))?;
+            pgb.add_transition(pg_initial, init, *jani_initial, None)
+                .expect("add transition");
+        }
+
         automaton
             .variables
             .iter()
             .try_for_each(|var| self.add_local_var(pgb, var, &mut local_vars))
             .context("failed adding local variables")?;
-        // Add locations
-        for location in &automaton.locations {
-            self.build_location(jani_model, pgb, location, e_idx)
-                .with_context(|| format!("failed building location: {}", &location.name))?;
-        }
-        // Connect initial location of PG with initial location(s) of the JANI model
-        let pg_initial = pgb.new_initial_location();
-        for initial in &automaton.initial_locations {
-            let jani_initial = *self
-                .locations
-                .get(&(initial.clone(), e_idx))
-                .ok_or_else(|| anyhow!("missing initial location {}", initial))?;
-            pgb.add_autonomous_transition(pg_initial, jani_initial, None)
-                .expect("add transition");
-        }
+
         // Add edges
-        for edge in &automaton.edges {
-            self.build_edge(jani_model, pgb, edge, e_idx, &local_vars, rng)
-                .with_context(|| {
-                    format!(
-                        "failed building edge for action: {}",
-                        edge.action.clone().unwrap_or(String::from("`silent`"))
-                    )
-                })?;
+        for (n_edge, edge) in automaton.edges.iter().enumerate() {
+            self.build_edge(
+                jani_model,
+                pgb,
+                edge,
+                e_idx,
+                &local_vars,
+                &locations,
+                &mut rng_actions,
+                rng,
+            )
+            .with_context(|| format!("failed building {n_edge}-th edge for action"))?;
         }
         Ok(())
     }
@@ -394,28 +472,22 @@ impl JaniBuilder {
         pgb: &mut ProgramGraphBuilder,
         location: &Location,
         e_idx: usize,
+        locations: &mut HashMap<String, scan_core::program_graph::Location>,
     ) -> anyhow::Result<()> {
         let loc = pgb.new_location();
-        assert!(
-            self.locations
-                .insert((location.name.clone(), e_idx), loc)
-                .is_none()
-        );
+        assert!(locations.insert(location.name.clone(), loc).is_none());
         // For every action that is **NOT** synchronised on this automaton,
         // allow action with no change in state.
-        for sync in jani_model
+        jani_model
             .system
             .syncs
             .iter()
             .filter(|sync| sync.synchronise[e_idx].is_none())
-        {
-            if let Some(ref action) = sync.result {
-                let action_id = self.system_actions.get(action).unwrap();
-                pgb.add_transition(loc, *action_id, loc, None).unwrap();
-            } else {
-                pgb.add_autonomous_transition(loc, loc, None).unwrap();
-            }
-        }
+            .for_each(|sync| {
+                let result = sync.result.as_ref().expect("result must have name");
+                let action = self.system_actions.get(result).expect("system action");
+                pgb.add_transition(loc, *action, loc, None).unwrap();
+            });
         Ok(())
     }
 
@@ -426,15 +498,14 @@ impl JaniBuilder {
         edge: &Edge,
         e_idx: usize,
         local_vars: &HashMap<String, (Var, Type)>,
+        locations: &HashMap<String, scan_core::program_graph::Location>,
+        rng_actions: &mut HashSet<Action>,
         rng: Var,
     ) -> anyhow::Result<()> {
-        let pre = *self
-            .locations
-            .get(&(edge.location.clone(), e_idx))
-            .ok_or(anyhow!(
-                "pre-transition location {} not found",
-                edge.location
-            ))?;
+        let pre = locations.get(&edge.location).ok_or(anyhow!(
+            "pre-transition location {} not found",
+            edge.location
+        ))?;
         let guard = edge
             .guard
             .as_ref()
@@ -448,25 +519,28 @@ impl JaniBuilder {
             })?;
         // There must be only one destination per edge!
         if let [dest] = edge.destinations.as_slice() {
-            let post = *self
-                .locations
-                .get(&(dest.location.clone(), e_idx))
-                .ok_or(anyhow!(
-                    "post-transition location {} not found",
-                    edge.location
-                ))?;
-            for sync in jani_model.system.syncs.iter().filter(|sync| {
-                sync.synchronise[e_idx].as_ref().is_some_and(|sync_action| {
-                    edge.action
-                        .as_ref()
-                        .is_some_and(|edge_action| sync_action == edge_action)
+            let post = locations.get(&dest.location).ok_or(anyhow!(
+                "post-transition location {} not found",
+                dest.location
+            ))?;
+            jani_model
+                .system
+                .syncs
+                .iter()
+                .filter(|sync| {
+                    sync.synchronise[e_idx].as_ref().is_some_and(|sync_action| {
+                        *edge.action.as_ref().expect("no silent action") == *sync_action
+                    })
                 })
-            }) {
-                if let Some(ref action) = sync.result {
-                    let action = self.system_actions.get(action).unwrap();
-                    // TODO: check to do this only once per action
-                    pgb.add_effect(*action, rng, PgExpression::RandFloat(0., 1.))
-                        .expect("effect");
+                .try_for_each(|sync| {
+                    let result = sync.result.as_ref().expect("no silent actions generated");
+                    let action = self.system_actions.get(result).unwrap();
+                    // checks to do this only once per action
+                    if dest.probability.is_some() && !rng_actions.contains(action) {
+                        pgb.add_effect(*action, rng, PgExpression::RandFloat(0., 1.))
+                            .expect("effect");
+                        rng_actions.insert(*action);
+                    }
                     for assignment in &dest.assignments {
                         let (var, _) = local_vars
                             .get(&assignment.r#ref)
@@ -478,17 +552,9 @@ impl JaniBuilder {
                         pgb.add_effect(*action, *var, expr)
                             .context("failed adding effect to action")?;
                     }
-                    pgb.add_transition(pre, *action, post, guard.clone())
-                        .context("failed adding transition")?;
-                } else {
-                    assert!(
-                        dest.assignments.is_empty(),
-                        "silent action has no assignments"
-                    );
-                    pgb.add_autonomous_transition(pre, post, guard.clone())
-                        .context("failed adding autonomous transition")?;
-                }
-            }
+                    pgb.add_transition(*pre, *action, *post, guard.clone())
+                        .context("failed adding transition")
+                })?;
         } else {
             panic!("edges should be normalized");
         }
@@ -511,7 +577,7 @@ impl JaniBuilder {
                 parser::ConstantValue::NumberReal(num) => Ok(PgExpression::from(*num)),
                 parser::ConstantValue::NumberInt(num) => Ok(PgExpression::from(*num)),
             },
-            Expression::Identifier(id) if id == "__rng__" => rng
+            Expression::Identifier(id) if id == Self::RNG => rng
                 .ok_or_else(|| anyhow!("rng not available"))
                 .map(|rng| PgExpression::Var(rng, Type::Float)),
             Expression::Identifier(id) => local_vars
@@ -610,9 +676,11 @@ impl JaniBuilder {
             Expression::RealOp { op, left, right } => {
                 let left = self.build_expression(left, local_vars, rng)?;
                 let right = self.build_expression(right, local_vars, rng)?;
-                if matches!(left.r#type()?, Type::Float) && matches!(right.r#type()?, Type::Float) {
+                if matches!(left.r#type()?, Type::Integer | Type::Float)
+                    && matches!(right.r#type()?, Type::Integer | Type::Float)
+                {
                     match op {
-                        parser::RealOp::Div => todo!(),
+                        parser::RealOp::Div => Ok(PgExpression::Div(Box::new((left, right)))),
                         parser::RealOp::Pow => todo!(),
                         parser::RealOp::Log => todo!(),
                     }

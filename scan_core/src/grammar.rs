@@ -156,6 +156,8 @@ where
     Mult(Vec<Expression<V>>),
     /// Mod operation
     Mod(Box<(Expression<V>, Expression<V>)>),
+    /// Div operation
+    Div(Box<(Expression<V>, Expression<V>)>),
     // ------------
     // (In)Equality
     // ------------
@@ -322,6 +324,15 @@ where
                     Err(TypeError::TypeMismatch)
                 }
             }
+            Expression::Div(exprs) => {
+                if matches!(exprs.0.r#type()?, Type::Integer | Type::Float)
+                    && matches!(exprs.1.r#type()?, Type::Integer | Type::Float)
+                {
+                    Ok(Type::Float)
+                } else {
+                    Err(TypeError::TypeMismatch)
+                }
+            }
             Expression::RandBool(p) if 0f64 <= *p && *p <= 1f64 => Ok(Type::Boolean),
             Expression::RandBool(_) => Err(TypeError::BadProbability),
             Expression::RandInt(l, u) if l < u => Ok(Type::Integer),
@@ -405,6 +416,23 @@ where
                     _ => Err(TypeError::TypeMismatch),
                 }
             }),
+            Expression::Div(exprs) => {
+                let num = exprs.0.eval_constant()?;
+                let den = exprs.1.eval_constant()?;
+                match (num, den) {
+                    (Val::Integer(num), Val::Integer(den)) if den != 0 => {
+                        Ok(Val::Float(num as f64 / den as f64))
+                    }
+                    (Val::Integer(num), Val::Float(den)) if den != 0. => {
+                        Ok(Val::Float(num as f64 / den))
+                    }
+                    (Val::Float(num), Val::Integer(den)) if den != 0 => {
+                        Ok(Val::Float(num / den as f64))
+                    }
+                    (Val::Float(num), Val::Float(den)) if den != 0. => Ok(Val::Float(num / den)),
+                    _ => Err(TypeError::TypeMismatch),
+                }
+            }
             Expression::Component(_, expression) => todo!(),
             Expression::RandBool(_) => todo!(),
             Expression::RandInt(_, _) => todo!(),
@@ -455,6 +483,7 @@ where
             | Expression::Less(exprs)
             | Expression::LessEq(exprs)
             | Expression::Mod(exprs)
+            | Expression::Div(exprs)
             | Expression::Append(exprs) => {
                 exprs.0.context(vars).and_then(|_| exprs.1.context(vars))
             }
@@ -935,6 +964,28 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
                         Val::Integer(lhs % rhs)
                     } else {
                         panic!("type mismatch");
+                    }
+                })
+            }
+            Expression::Div(exprs) => {
+                let (lhs, rhs) = *exprs;
+                let lhs = FnExpression::from(lhs);
+                let rhs = FnExpression::from(rhs);
+                Box::new(move |vars, rng| {
+                    let num = lhs.eval(vars, rng);
+                    let den = rhs.eval(vars, rng);
+                    match (num, den) {
+                        (Val::Integer(num), Val::Integer(den)) if den != 0 => {
+                            Val::Float(num as f64 / den as f64)
+                        }
+                        (Val::Integer(num), Val::Float(den)) if den != 0. => {
+                            Val::Float(num as f64 / den)
+                        }
+                        (Val::Float(num), Val::Integer(den)) if den != 0 => {
+                            Val::Float(num / den as f64)
+                        }
+                        (Val::Float(num), Val::Float(den)) if den != 0. => Val::Float(num / den),
+                        _ => panic!("type mismatch"),
                     }
                 })
             }

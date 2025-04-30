@@ -51,7 +51,7 @@ enum EcmaObj<V: Clone> {
 }
 
 /// Builder turning a [`Parser`] into a [`ChannelSystem`].
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ModelBuilder {
     cs: ChannelSystemBuilder<SmallRng>,
     // Associates a type's id with both its OMG type and SCAN type.

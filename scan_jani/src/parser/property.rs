@@ -5,7 +5,7 @@ use super::{
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct Property {
     /// the property's name, unique among all the properties of the model
     pub(crate) name: Identifier,
@@ -116,7 +116,7 @@ pub(crate) enum PropertyExpression {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct PropertyInterval {
     /// constant expression, must be present if upper is omitted
     lower: Option<Expression>,

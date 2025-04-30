@@ -97,6 +97,10 @@ impl TryFrom<(PgId, CsExpression)> for PgExpression {
                 (pg_id, comps.0).try_into()?,
                 (pg_id, comps.1).try_into()?,
             )))),
+            Expression::Div(comps) => Ok(Expression::Div(Box::new((
+                (pg_id, comps.0).try_into()?,
+                (pg_id, comps.1).try_into()?,
+            )))),
             Expression::RandBool(p) => Ok(Expression::RandBool(p)),
             Expression::RandInt(l, u) => Ok(Expression::RandInt(l, u)),
             Expression::RandFloat(l, u) => Ok(Expression::RandFloat(l, u)),
@@ -105,7 +109,7 @@ impl TryFrom<(PgId, CsExpression)> for PgExpression {
 }
 
 /// The object used to define and build a CS.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChannelSystemBuilder<R: Rng> {
     program_graphs: Vec<ProgramGraphBuilder>,
     channels: Vec<(Type, Option<usize>)>,

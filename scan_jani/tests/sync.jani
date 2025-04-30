@@ -2,36 +2,35 @@
 	"jani-version": 1,
 	"name": "sync.jani",
 	"type": "lts",
-	"actions": [ { "name": "step" }],
-  "variables": [
-    {
-      "initial-value": true,
-      "name": "q1",
-      "type": "bool"
-    }
-  ],
+	"actions": [
+		{
+			"name": "step"
+		}
+	],
+	"variables": [],
+	"properties": [],
 	"automata": [
 		{
 			"name": "automaton_1",
-			"locations": [{ "name": "l" } , { "name": "o" }],
+			"locations": [
+				{
+					"name": "l"
+				},
+				{
+					"name": "o"
+				}
+			],
 			"variables": [],
-			"initial-locations": ["l"],
+			"initial-locations": [
+				"l"
+			],
 			"edges": [
 				{
 					"location": "l",
 					"action": "step_1",
-					"guard": {
-						"exp": "q1"
-					},
 					"destinations": [
 						{
-							"location": "o",
-							"assignments": [
-								{
-	                "ref": "q1",
-	                "value": false
-								}
-							]
+							"location": "o"
 						}
 					]
 				},
@@ -48,38 +47,74 @@
 		},
 		{
 			"name": "automaton_2",
-			"locations": [{ "name": "l" } , { "name": "o" }],
+			"locations": [
+				{
+					"name": "l'"
+				},
+				{
+					"name": "o'"
+				}
+			],
 			"variables": [],
-			"initial-locations": ["l"],
+			"initial-locations": [
+				"l'"
+			],
 			"edges": [
 				{
-					"location": "l",
+					"location": "l'",
 					"action": "step_2",
 					"destinations": [
 						{
-							"location": "o"
+							"location": "o'"
 						}
 					]
 				},
 				{
-					"location": "o",
+					"location": "o'",
 					"action": "step_2",
 					"destinations": [
 						{
-							"location": "l"
+							"location": "l'"
 						}
 					]
 				}
 			]
+		},
+		{
+			"name": "automaton_3",
+			"locations": [
+				{
+					"name": "l''"
+				}
+			],
+			"variables": [],
+			"initial-locations": [
+				"l''"
+			],
+			"edges": []
 		}
 	],
 	"system": {
-		"elements": [ { "automaton": "automaton_1" }, { "automaton": "automaton_2" } ],
+		"elements": [
+			{
+				"automaton": "automaton_1"
+			},
+			{
+				"automaton": "automaton_2"
+			},
+			{
+				"automaton": "automaton_3"
+			}
+		],
 		"syncs": [
-		  {
-  		  "synchronise": ["step_1",  "step_2"],
-  		  "result": "step"
-		  }
+			{
+				"synchronise": [
+					"step_1",
+					"step_2",
+					null
+				],
+				"result": "step"
+			}
 		]
 	}
 }

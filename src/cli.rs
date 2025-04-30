@@ -59,14 +59,14 @@ impl Cli {
         let precision = self.precision;
         // let length = self.length;
         let duration = self.duration;
+        let guarantees = scxml_model.guarantees.clone();
         let tracer = if self.traces {
-            Some(TracePrinter::new(scxml_model.clone()))
+            Some(TracePrinter::new(scxml_model))
         } else {
             None
         };
         scan.adaptive(confidence, precision, duration, tracer);
-        self.print_progress_bar(&scxml_model.guarantees, &scan);
-        // check.join().expect("terminate bar process");
+        self.print_progress_bar(&guarantees, &scan);
 
         Ok(())
     }
@@ -79,7 +79,7 @@ impl Cli {
         let precision = self.precision;
         // let length = self.length;
         let duration = self.duration;
-        // TODO: JANI needs a tracer too
+        let guarantees = jani_model.guarantees.clone();
         let jani_model = Arc::new(jani_model);
         let tracer = if self.traces {
             Some(TracePrinter::new(jani_model))
@@ -87,7 +87,7 @@ impl Cli {
             None
         };
         scan.adaptive(confidence, precision, duration, tracer);
-        self.print_progress_bar(&[], &scan);
+        self.print_progress_bar(&guarantees, &scan);
 
         Ok(())
     }
@@ -211,7 +211,7 @@ impl Cli {
                 for (i, bar) in bars_guarantees.iter().enumerate() {
                     let violations = violations.get(i).copied().unwrap_or(0);
                     overall_fails += violations;
-                    let pos = runs - violations as u64;
+                    let pos = runs.checked_sub(violations as u64).unwrap_or_default();
                     bar.set_position(pos);
                     bar.set_length(runs);
                     if violations > 0 {
@@ -221,7 +221,7 @@ impl Cli {
                 }
 
                 // Overall property bar
-                let pos = runs - overall_fails as u64;
+                let pos = runs.checked_sub(overall_fails as u64).unwrap_or_default();
                 overall_bar.set_position(pos);
                 overall_bar.set_length(runs);
                 if overall_fails > 0 {

@@ -36,7 +36,7 @@ impl<R: Rng + 'static> From<Effect> for FnEffect<R> {
 type TransitionBuilder = (Action, Location, Option<PgExpression>, Vec<TimeConstraint>);
 
 /// Defines and builds a PG.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProgramGraphBuilder {
     initial_states: Vec<Location>,
     // Effects are indexed by actions
@@ -536,11 +536,8 @@ impl ProgramGraphBuilder {
         self.initial_states.sort_unstable();
         self.initial_states.shrink_to_fit();
         // Initialize buf
-        let mut buf = BTreeSet::from_iter(
-            (0..self.initial_states.len() as u16)
-                .map(Action)
-                .chain([EPSILON]),
-        );
+        let mut buf =
+            BTreeSet::from_iter((0..def.effects.len() as u16).map(Action).chain([EPSILON]));
         for loc in &self.initial_states {
             buf = &buf & &def.locations[loc.0 as usize].2
         }

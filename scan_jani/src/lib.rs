@@ -9,9 +9,8 @@ pub use builder::JaniModelData;
 use builder::build;
 use log::info;
 use parser::Model;
-use scan_core::MtlOracle;
 use scan_core::program_graph::{Action, PgError};
-use scan_core::{PgModel, Scan};
+use scan_core::{MtlOracle, PgModel, Scan};
 use std::{fs::File, path::Path};
 pub use tracer::TracePrinter;
 

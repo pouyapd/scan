@@ -17,7 +17,7 @@ mod smc;
 mod transition_system;
 
 pub use grammar::*;
-use log::{info, warn};
+use log::{info, trace, warn};
 pub use model::*;
 pub use mtl::*;
 pub use pg_model::PgModel;
@@ -32,6 +32,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU16, Ordering},
     },
+    time::Instant,
 };
 pub use transition_system::*;
 
@@ -152,7 +153,6 @@ where
     ) where
         P: Tracer<Event> + 'static,
     {
-        info!("verification starting");
         self.successes.store(0, Ordering::Relaxed);
         self.failures.store(0, Ordering::Relaxed);
         self.violations.lock().unwrap().clear();
@@ -167,6 +167,9 @@ where
 
         // WARN FIXME TODO: Implement algorithm for 2.4 Distributed sample generation in Budde et al.
         std::thread::spawn(move || {
+            info!("verification starting");
+            let start_time = Instant::now();
+
             (0..usize::MAX)
                 .into_par_iter()
                 .take_any_while(|_| {
@@ -190,7 +193,7 @@ where
                                     local_successes = successes.fetch_add(1, Ordering::Relaxed);
                                     local_failures = failures.load(Ordering::Relaxed);
                                     // If all guarantees are satisfied, the execution is successful
-                                    info!("runs: {} successes", local_successes);
+                                    trace!("runs: {} successes", local_successes);
                                 }
                                 RunOutcome::Fail(guarantee) => {
                                     local_successes = successes.load(Ordering::Relaxed);
@@ -199,7 +202,7 @@ where
                                     violations.resize(violations.len().max(guarantee + 1), 0);
                                     violations[guarantee] += 1;
                                     // If guarantee is violated, we have found a counter-example!
-                                    info!("runs: {} failures", local_failures);
+                                    trace!("runs: {} failures", local_failures);
                                 }
                                 RunOutcome::Incomplete => return true,
                             }
@@ -225,7 +228,11 @@ where
                     }
                 })
                 .count();
+
+            let elapsed = start_time.elapsed();
+            info!("Verification time elapsed: {elapsed:0.2?}");
+            info!("verification terminating");
         });
-        info!("verification terminating");
+
     }
 }
