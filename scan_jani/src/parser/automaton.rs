@@ -13,12 +13,9 @@ pub(crate) struct Automaton {
     pub(crate) variables: Vec<VariableDeclaration>,
     /// the locations that make up the automaton; at least one
     pub(crate) locations: Vec<Location>,
-    // TODO
-    // "?restrict-initial": { // restricts the initial values of the local variables of this automaton (i.e. it has no
-    //                        // effect on the initial values of global variables or local variables of other automata)
-    //   "exp": Expression, // the initial states expression; type bool, must not reference transient variables
-    //   "?comment": String // an optional comment
-    // },
+    /// restricts the initial values of the local variables of this automaton (i.e. it has no
+    /// effect on the initial values of global variables or local variables of other automata)
+    pub(crate) restrict_initial: Option<RestrictInitial>,
     /// the automaton's initial locations
     pub(crate) initial_locations: Vec<Identifier>,
     /// the edges connecting the locations
@@ -129,6 +126,16 @@ pub(crate) struct Assignment {
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct Probability {
     /// the probability expression, type real; note that this may evaluate to zero
+    pub(crate) exp: Expression,
+    /// an optional comment
+    #[serde(skip)]
+    pub(crate) comment: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct RestrictInitial {
+    /// the initial states expression; type bool, must not reference transient variables
     pub(crate) exp: Expression,
     /// an optional comment
     #[serde(skip)]
