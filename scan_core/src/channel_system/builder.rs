@@ -104,6 +104,11 @@ impl TryFrom<(PgId, CsExpression)> for PgExpression {
             Expression::RandBool(p) => Ok(Expression::RandBool(p)),
             Expression::RandInt(l, u) => Ok(Expression::RandInt(l, u)),
             Expression::RandFloat(l, u) => Ok(Expression::RandFloat(l, u)),
+            Expression::Ite(exprs) => Ok(Expression::Ite(Box::new((
+                (pg_id, exprs.0).try_into()?,
+                (pg_id, exprs.1).try_into()?,
+                (pg_id, exprs.2).try_into()?,
+            )))),
         }
     }
 }

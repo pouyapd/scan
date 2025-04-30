@@ -597,11 +597,11 @@ impl JaniBuilder {
                 then,
                 r#else,
             } => {
-                let _if = self.build_expression(r#if, local_vars, rng)?;
-                let _then = self.build_expression(then, local_vars, rng)?;
-                let _else = self.build_expression(r#else, local_vars, rng)?;
+                let r#if = self.build_expression(r#if, local_vars, rng)?;
+                let then = self.build_expression(then, local_vars, rng)?;
+                let r#else = self.build_expression(r#else, local_vars, rng)?;
                 match op {
-                    parser::IteOp::Ite => todo!(),
+                    parser::IteOp::Ite => Ok(PgExpression::Ite(Box::new((r#if, then, r#else)))),
                 }
             }
             Expression::Bool { op, left, right } => {
@@ -735,7 +735,15 @@ impl JaniBuilder {
                 r#if,
                 then,
                 r#else,
-            } => todo!(),
+            } => {
+                let r#if = self.build_property(r#if)?.left().expect("expression");
+                let then = self.build_property(then)?.left().expect("expression");
+                let r#else = self.build_property(r#else)?.left().expect("expression");
+                match op {
+                    parser::IteOp::Ite => Ok(PgExpression::Ite(Box::new((r#if, then, r#else)))),
+                }
+                .map(Either::Left)
+            }
             PropertyExpression::Bool { op, left, right } => {
                 let left = self.build_property(left)?.left().expect("expression");
                 let right = self.build_property(right)?.left().expect("expression");
@@ -808,7 +816,22 @@ impl JaniBuilder {
                     bail!(TypeError::TypeMismatch)
                 }
             }
-            PropertyExpression::RealOp { op, left, right } => todo!(),
+            PropertyExpression::RealOp { op, left, right } => {
+                let left = self.build_property(left)?.left().expect("expression");
+                let right = self.build_property(right)?.left().expect("expression");
+                if matches!(left.r#type()?, Type::Integer | Type::Float)
+                    && matches!(right.r#type()?, Type::Integer | Type::Float)
+                {
+                    match op {
+                        parser::RealOp::Div => Ok(PgExpression::Div(Box::new((left, right)))),
+                        parser::RealOp::Pow => todo!(),
+                        parser::RealOp::Log => todo!(),
+                    }
+                    .map(Either::Left)
+                } else {
+                    bail!(TypeError::TypeMismatch)
+                }
+            }
             PropertyExpression::Real2IntOp { op, exp } => todo!(),
             PropertyExpression::Until {
                 op,

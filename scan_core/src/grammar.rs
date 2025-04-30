@@ -182,6 +182,10 @@ where
     Len(Box<Expression<V>>),
     // /// The component of a tuple.
     // Entry(Box<(Expression<V>, Expression<V>)>),
+    // -----
+    // Flow
+    // -----
+    Ite(Box<(Expression<V>, Expression<V>, Expression<V>)>),
 }
 
 impl<V> Expression<V>
@@ -339,6 +343,16 @@ where
             Expression::RandInt(_, _) => Err(TypeError::BadBounds),
             Expression::RandFloat(l, u) if l < u => Ok(Type::Float),
             Expression::RandFloat(_, _) => Err(TypeError::BadBounds),
+            Expression::Ite(exprs) => {
+                let r#if = exprs.0.r#type()?;
+                let then = exprs.1.r#type()?;
+                let r#else = exprs.2.r#type()?;
+                if matches!(r#if, Type::Boolean) && then == r#else {
+                    Ok(then)
+                } else {
+                    Err(TypeError::TypeMismatch)
+                }
+            }
         }
     }
 
@@ -433,7 +447,7 @@ where
                     _ => Err(TypeError::TypeMismatch),
                 }
             }
-            Expression::Component(_, expression) => todo!(),
+            Expression::Component(_, _expression) => todo!(),
             Expression::RandBool(_) => todo!(),
             Expression::RandInt(_, _) => todo!(),
             Expression::RandFloat(_, _) => todo!(),
@@ -444,8 +458,9 @@ where
             Expression::Less(_) => todo!(),
             Expression::LessEq(_) => todo!(),
             Expression::Append(_) => todo!(),
-            Expression::Truncate(expression) => todo!(),
-            Expression::Len(expression) => todo!(),
+            Expression::Truncate(_expression) => todo!(),
+            Expression::Len(_expression) => todo!(),
+            Expression::Ite(_) => todo!(),
         }
     }
 
@@ -487,6 +502,11 @@ where
             | Expression::Append(exprs) => {
                 exprs.0.context(vars).and_then(|_| exprs.1.context(vars))
             }
+            Expression::Ite(exprs) => exprs
+                .0
+                .context(vars)
+                .and_then(|_| exprs.1.context(vars))
+                .and_then(|_| exprs.2.context(vars)),
         }
     }
 
@@ -995,6 +1015,23 @@ impl<V: Clone + Send + Sync + 'static, R: Rng + 'static> From<Expression<V>>
             }
             Expression::RandFloat(l, u) => {
                 Box::new(move |_, rng| Val::Float(rng.random_range(l..u)))
+            }
+            Expression::Ite(exprs) => {
+                let r#if = FnExpression::from(exprs.0);
+                let then = FnExpression::from(exprs.1);
+                let r#else = FnExpression::from(exprs.2);
+                Box::new(move |vars, rng| {
+                    let r#if = r#if.eval(vars, rng);
+                    if let Val::Boolean(r#if) = r#if {
+                        if r#if {
+                            then.eval(vars, rng)
+                        } else {
+                            r#else.eval(vars, rng)
+                        }
+                    } else {
+                        panic!("type mismatch");
+                    }
+                })
             }
         })
     }
