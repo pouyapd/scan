@@ -30,7 +30,7 @@ use std::{
     marker::PhantomData,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU16, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Instant,
 };
@@ -97,9 +97,9 @@ where
     ts: Arc<Ts>,
     oracle: Arc<O>,
     running: Arc<AtomicBool>,
-    successes: Arc<AtomicU16>,
-    failures: Arc<AtomicU16>,
-    violations: Arc<Mutex<Vec<u16>>>,
+    successes: Arc<AtomicU32>,
+    failures: Arc<AtomicU32>,
+    violations: Arc<Mutex<Vec<u32>>>,
     _event: PhantomData<Event>,
     _err: PhantomData<Err>,
 }
@@ -116,8 +116,8 @@ where
             ts: Arc::new(ts),
             oracle: Arc::new(oracle),
             running: Arc::new(AtomicBool::new(false)),
-            successes: Arc::new(AtomicU16::new(0)),
-            failures: Arc::new(AtomicU16::new(0)),
+            successes: Arc::new(AtomicU32::new(0)),
+            failures: Arc::new(AtomicU32::new(0)),
             violations: Arc::new(Mutex::new(Vec::new())),
             _event: PhantomData,
             _err: PhantomData,
@@ -128,15 +128,15 @@ where
         self.running.load(Ordering::Relaxed)
     }
 
-    pub fn successes(&self) -> u16 {
+    pub fn successes(&self) -> u32 {
         self.successes.load(Ordering::Relaxed)
     }
 
-    pub fn failures(&self) -> u16 {
+    pub fn failures(&self) -> u32 {
         self.failures.load(Ordering::Relaxed)
     }
 
-    pub fn violations(&self) -> Vec<u16> {
+    pub fn violations(&self) -> Vec<u32> {
         self.violations.lock().expect("lock").clone()
     }
 
@@ -233,6 +233,5 @@ where
             info!("Verification time elapsed: {elapsed:0.2?}");
             info!("verification terminating");
         });
-
     }
 }
