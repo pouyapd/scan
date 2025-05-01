@@ -3,6 +3,10 @@ name = "scan_jani"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "scan_jani"  # The name of the target.
+crate-type = ["lib"]   # The crate types to generate.
+
 [dependencies]
 anyhow = { workspace = true }
 log = { workspace = true }
