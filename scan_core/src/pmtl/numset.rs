@@ -1,6 +1,6 @@
 use super::DenseTime;
 use crate::Time;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 #[derive(Debug, Clone)]
 pub(super) struct NumSet(SmallVec<[(DenseTime, bool); 16]>);

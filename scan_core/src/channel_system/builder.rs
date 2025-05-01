@@ -1,10 +1,9 @@
 use super::{
-    Action, Channel, ChannelSystem, Clock, CsError, Location, Message, PgError, PgExpression, PgId,
-    ProgramGraph, ProgramGraphBuilder, TimeConstraint, Var,
+    Action, Channel, ChannelSystem, ChannelSystemDef, Clock, CsError, Location, Message, PgError,
+    PgExpression, PgId, ProgramGraph, ProgramGraphBuilder, TimeConstraint, Var,
 };
-use crate::channel_system::ChannelSystemDef;
-use crate::grammar::Type;
 use crate::Expression;
+use crate::grammar::Type;
 use log::info;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -98,14 +97,24 @@ impl TryFrom<(PgId, CsExpression)> for PgExpression {
                 (pg_id, comps.0).try_into()?,
                 (pg_id, comps.1).try_into()?,
             )))),
+            Expression::Div(comps) => Ok(Expression::Div(Box::new((
+                (pg_id, comps.0).try_into()?,
+                (pg_id, comps.1).try_into()?,
+            )))),
             Expression::RandBool(p) => Ok(Expression::RandBool(p)),
             Expression::RandInt(l, u) => Ok(Expression::RandInt(l, u)),
+            Expression::RandFloat(l, u) => Ok(Expression::RandFloat(l, u)),
+            Expression::Ite(exprs) => Ok(Expression::Ite(Box::new((
+                (pg_id, exprs.0).try_into()?,
+                (pg_id, exprs.1).try_into()?,
+                (pg_id, exprs.2).try_into()?,
+            )))),
         }
     }
 }
 
 /// The object used to define and build a CS.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChannelSystemBuilder<R: Rng> {
     program_graphs: Vec<ProgramGraphBuilder>,
     channels: Vec<(Type, Option<usize>)>,
@@ -145,18 +154,6 @@ impl<R: Rng + 'static> ChannelSystemBuilder<R> {
         let pg = ProgramGraphBuilder::new();
         self.program_graphs.push(pg);
         pg_id
-    }
-
-    /// Get the initial location of the given PG.
-    ///
-    /// It fails if the CS contains no such PG.
-    pub fn initial_location(&mut self, pg_id: PgId) -> Result<Location, CsError> {
-        let pg = self
-            .program_graphs
-            .get(pg_id.0 as usize)
-            .ok_or(CsError::MissingPg(pg_id))?;
-        let initial = Location(pg_id, pg.initial_location());
-        Ok(initial)
     }
 
     /// Add a new variable of the given type to the given PG.
@@ -322,6 +319,65 @@ impl<R: Rng + 'static> ChannelSystemBuilder<R> {
             .ok_or(CsError::MissingPg(pg_id))
             .and_then(|pg| {
                 pg.new_timed_location(invariants)
+                    .map(|loc| Location(pg_id, loc))
+                    .map_err(|err| CsError::ProgramGraph(pg_id, err))
+            })
+    }
+
+    /// Adds a new process to the given PG starting at the given location.
+    ///
+    /// It fails if the CS contains no such PG, or if the PG does not contain such location.
+    ///
+    /// See also [`ProgramGraphBuilder::new_process`].
+    pub fn new_process(&mut self, pg_id: PgId, location: Location) -> Result<(), CsError> {
+        if location.0 != pg_id {
+            Err(CsError::LocationNotInPg(location, pg_id))
+        } else {
+            self.program_graphs
+                .get_mut(pg_id.0 as usize)
+                .ok_or(CsError::MissingPg(pg_id))
+                .and_then(|pg| {
+                    pg.new_process(location.1)
+                        .map_err(|err| CsError::ProgramGraph(pg_id, err))
+                })
+        }
+    }
+
+    /// Adds a new initial location to the given PG.
+    ///
+    /// It fails if the CS contains no such PG.
+    ///
+    /// See also [`ProgramGraphBuilder::new_initial_location`].
+    pub fn new_initial_location(&mut self, pg_id: PgId) -> Result<Location, CsError> {
+        self.new_initial_timed_location(pg_id, &[])
+    }
+
+    /// Adds a new initial location to the given PG with the given time invariants,
+    /// and returns its [`Location`] indexing object.
+    ///
+    /// It fails if the CS contains no such PG.
+    ///
+    /// See also [`ProgramGraphBuilder::new_initial_timed_location`].
+    pub fn new_initial_timed_location(
+        &mut self,
+        pg_id: PgId,
+        invariants: &[TimeConstraint],
+    ) -> Result<Location, CsError> {
+        let invariants = invariants
+            .iter()
+            .map(|(c, l, u)| {
+                if c.0 == pg_id {
+                    Ok((c.1, *l, *u))
+                } else {
+                    Err(CsError::DifferentPgs(pg_id, c.0))
+                }
+            })
+            .collect::<Result<Vec<_>, CsError>>()?;
+        self.program_graphs
+            .get_mut(pg_id.0 as usize)
+            .ok_or(CsError::MissingPg(pg_id))
+            .and_then(|pg| {
+                pg.new_initial_timed_location(invariants)
                     .map(|loc| Location(pg_id, loc))
                     .map_err(|err| CsError::ProgramGraph(pg_id, err))
             })
