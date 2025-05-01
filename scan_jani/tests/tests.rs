@@ -11,44 +11,21 @@ fn jani_test2() {
 }
 
 #[test]
-fn sync() {
-    test(Path::new("./tests/sync.jani"))
+fn workflow() {
+    test(Path::new("./tests/workflow.jani"))
 }
 
 #[test]
-fn die() {
-    test(Path::new("./tests/die.jani"))
+fn brp() {
+    test(Path::new("./tests/brp.v1.jani"))
 }
 
 #[test]
-fn dining_crypt3() {
-    test(Path::new("./tests/dining_crypt3.jani"))
-}
-
-#[test]
-fn ij_3() {
-    test(Path::new("./tests/ij.3.jani"))
+fn crowds() {
+    test(Path::new("./tests/crowds.v1.jani"))
 }
 
 fn test(path: &Path) {
     let (scan, ..) = scan_jani::load(path).expect("load");
-    scan.adaptive::<scan_jani::TracePrinter>(0.95, 0.01, 100, None);
-    // let mut model = scan_jani::load(path).unwrap().0.channel_system().clone();
-    // let mut steps = 0;
-    // assert!(model.possible_transitions().count() > 0);
-    // while let Some((pg_id, action, post)) = model
-    //     .possible_transitions()
-    //     .filter_map(|(pg, a, iter)| {
-    //         iter.into_iter()
-    //             .map(|v| v.last())
-    //             .collect::<Option<Vec<_>>>()
-    //             .map(|l| (pg, a, l))
-    //     })
-    //     .last()
-    // {
-    //     steps += 1;
-    //     assert!(steps < MAXSTEP, "step limit reached");
-    //     assert!(model.transition(pg_id, action, post.as_slice()).is_ok());
-    // }
-    // assert!(steps > 0, "no transitions executed");
+    scan.adaptive::<scan_jani::TracePrinter>(0.95, 0.01, 10000, None);
 }

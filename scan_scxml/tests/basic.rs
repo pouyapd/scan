@@ -68,33 +68,5 @@ fn elif() -> anyhow::Result<()> {
 fn test(path: &Path) -> anyhow::Result<()> {
     let (scan, ..) = scan_scxml::load(path)?;
     scan.adaptive::<scan_scxml::TracePrinter>(0.95, 0.01, 100, None);
-    // let mut steps = 0;
-    // assert!(scan. possible_transitions().count() > 0);
-    // let mut pg_id;
-    // let mut post;
-    // let mut action;
-    // loop {
-    //     if let Some((pg, a, p)) = scan
-    //         .possible_transitions()
-    //         .filter_map(|(pg, a, iter)| {
-    //             iter.into_iter()
-    //                 .map(|mut v| v.next())
-    //                 .collect::<Option<Vec<_>>>()
-    //                 .map(|l| (pg, a, l))
-    //         })
-    //         .next()
-    //     {
-    //         pg_id = pg;
-    //         action = a;
-    //         post = p;
-    //         steps += 1;
-    //         if steps >= MAXSTEP {
-    //             return Err(anyhow!("step limit reached"));
-    //         }
-    //     } else {
-    //         break;
-    //     }
-    //     scan.transition(pg_id, action, &post)?;
-    // }
     Ok(())
 }

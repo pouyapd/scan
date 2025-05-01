@@ -65,8 +65,12 @@ impl Cli {
         } else {
             None
         };
-        scan.adaptive(confidence, precision, duration, tracer);
+        let send_scan = scan.clone();
+        let handle = std::thread::spawn(move || {
+            send_scan.adaptive(confidence, precision, duration, tracer);
+        });
         self.print_progress_bar(&guarantees, &scan);
+        handle.join().expect("terminate process");
 
         Ok(())
     }
@@ -86,8 +90,12 @@ impl Cli {
         } else {
             None
         };
-        scan.adaptive(confidence, precision, duration, tracer);
+        let send_scan = scan.clone();
+        let handle = std::thread::spawn(move || {
+            send_scan.adaptive(confidence, precision, duration, tracer);
+        });
         self.print_progress_bar(&guarantees, &scan);
+        handle.join().expect("terminate process");
 
         Ok(())
     }
