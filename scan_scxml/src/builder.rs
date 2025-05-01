@@ -393,7 +393,14 @@ impl ModelBuilder {
             vars.insert(data.id.to_owned(), (var, data.omg_type.to_owned()));
             // Initialize variable with `expr`, if any, by adding it as effect of `initialize` action.
             if let Some(ref expr) = data.expression {
-                let expr = self.expression(expr, interner, &vars, &None, &HashMap::new())?;
+                let expr = self.expression(
+                    expr,
+                    interner,
+                    &vars,
+                    &None,
+                    &HashMap::new(),
+                    Some(scan_type),
+                )?;
                 // Initialization has at least an effect, so we need to perform it.
                 // Create action if there was none.
                 let initialize = *initialize.get_or_insert_with(|| {
@@ -744,7 +751,16 @@ impl ModelBuilder {
                 let cond: Option<CsExpression> = transition
                     .cond
                     .as_ref()
-                    .map(|cond| self.expression(cond, interner, &vars, &exec_origin, &exec_params))
+                    .map(|cond| {
+                        self.expression(
+                            cond,
+                            interner,
+                            &vars,
+                            &exec_origin,
+                            &exec_params,
+                            Some(Type::Boolean),
+                        )
+                    })
                     .transpose()?;
 
                 // Location corresponding to checking if the transition is active.
@@ -918,8 +934,14 @@ impl ModelBuilder {
                             ));
                         }
                         Target::Expr(targetexpr) => {
-                            target_expr =
-                                Some(self.expression(targetexpr, interner, vars, &origin, params)?);
+                            target_expr = Some(self.expression(
+                                targetexpr,
+                                interner,
+                                vars,
+                                &origin,
+                                params,
+                                Some(Type::Integer),
+                            )?);
                             targets = self.events[event_idx].receivers.iter().cloned().collect();
                         }
                     }
@@ -1004,8 +1026,10 @@ impl ModelBuilder {
             }
             Executable::Assign { location, expr } => {
                 // Add a transition that perform the assignment via the effect of the `assign` action.
-                let expr = self.expression(expr, interner, vars, &origin, params)?;
-                let (var, _scan_type) = vars.get(location).ok_or(anyhow!("undefined variable"))?;
+                let (var, scan_type) = vars.get(location).ok_or(anyhow!("undefined variable"))?;
+                let scan_type = self.types.get(scan_type).expect("type").1.clone();
+                let expr =
+                    self.expression(expr, interner, vars, &origin, params, Some(scan_type))?;
                 let assign = self.cs.new_action(pg_id).expect("PG exists");
                 self.cs.add_effect(pg_id, assign, *var, expr)?;
                 let next_loc = self.cs.new_location(pg_id).unwrap();
@@ -1018,7 +1042,14 @@ impl ModelBuilder {
                 let mut curr_loc = loc;
                 for (cond, execs) in r#elif {
                     let mut next_loc = self.cs.new_location(pg_id).unwrap();
-                    let cond = self.expression(cond, interner, vars, &origin, params)?;
+                    let cond = self.expression(
+                        cond,
+                        interner,
+                        vars,
+                        &origin,
+                        params,
+                        Some(Type::Boolean),
+                    )?;
                     self.cs.add_autonomous_transition(
                         pg_id,
                         curr_loc,
@@ -1079,7 +1110,14 @@ impl ModelBuilder {
             .ok_or(anyhow!("undefined type"))?
             .1;
         // Build expression from ECMAScript expression.
-        let expr = self.expression(&param.expr, interner, vars, &origin, params)?;
+        let expr = self.expression(
+            &param.expr,
+            interner,
+            vars,
+            &origin,
+            params,
+            Some(scan_type.clone()),
+        )?;
         // Retreive or create channel for parameter passing.
         let param_chn = *self
             .parameters
@@ -1102,6 +1140,7 @@ impl ModelBuilder {
         vars: &HashMap<String, (V, String)>,
         origin: &Option<V>,
         params: &HashMap<String, (V, String)>,
+        expr_type: Option<Type>,
     ) -> anyhow::Result<Expression<V>> {
         let expr = match expr {
             boa_ast::Expression::This => todo!(),
@@ -1125,6 +1164,9 @@ impl ModelBuilder {
                 match lit {
                     Literal::String(_) => todo!(),
                     Literal::Num(f) => Expression::from(*f),
+                    Literal::Int(i) if expr_type.is_some_and(|t| matches!(t, Type::Float)) => {
+                        Expression::from(*i as f64)
+                    }
                     Literal::Int(i) => Expression::from(*i),
                     Literal::BigInt(_) => todo!(),
                     Literal::Bool(b) => Expression::from(*b),
@@ -1152,7 +1194,8 @@ impl ModelBuilder {
             }
             boa_ast::Expression::Unary(unary) => {
                 use boa_ast::expression::operator::unary::UnaryOp;
-                let expr = self.expression(unary.target(), interner, vars, origin, params)?;
+                let expr =
+                    self.expression(unary.target(), interner, vars, origin, params, expr_type)?;
                 match unary.op() {
                     UnaryOp::Minus => -expr,
                     UnaryOp::Plus => expr,
@@ -1164,40 +1207,93 @@ impl ModelBuilder {
                 use boa_ast::expression::operator::binary::{
                     ArithmeticOp, BinaryOp, LogicalOp, RelationalOp,
                 };
-                let lhs = self.expression(bin.lhs(), interner, vars, origin, params)?;
-                let rhs = self.expression(bin.rhs(), interner, vars, origin, params)?;
                 match bin.op() {
-                    BinaryOp::Arithmetic(ar_bin) => match ar_bin {
-                        ArithmeticOp::Add => lhs + rhs,
-                        ArithmeticOp::Sub => lhs + (-rhs),
-                        ArithmeticOp::Div => todo!(),
-                        ArithmeticOp::Mul => lhs * rhs,
-                        ArithmeticOp::Exp => todo!(),
-                        ArithmeticOp::Mod => Expression::Mod(Box::new((lhs, rhs))),
-                    },
-                    BinaryOp::Relational(rel_bin) => match rel_bin {
-                        RelationalOp::Equal => Expression::Equal(Box::new((lhs, rhs))),
-                        RelationalOp::NotEqual => Expression::Equal(Box::new((lhs, rhs))).not()?,
-                        RelationalOp::GreaterThan => Expression::Greater(Box::new((lhs, rhs))),
-                        RelationalOp::GreaterThanOrEqual => {
-                            Expression::GreaterEq(Box::new((lhs, rhs)))
+                    BinaryOp::Arithmetic(ar_bin) => {
+                        let lhs_hint;
+                        let rhs_hint;
+                        match ar_bin {
+                            ArithmeticOp::Add
+                            | ArithmeticOp::Sub
+                            | ArithmeticOp::Mul
+                            | ArithmeticOp::Exp => {
+                                lhs_hint = expr_type.clone();
+                                rhs_hint = expr_type;
+                            }
+                            ArithmeticOp::Div => {
+                                // WARN: Type inference is tricky: integer division could produce a float
+                                lhs_hint = None;
+                                rhs_hint = None;
+                            }
+                            ArithmeticOp::Mod => {
+                                lhs_hint = Some(Type::Integer);
+                                rhs_hint = Some(Type::Integer);
+                            }
                         }
-                        RelationalOp::LessThan => Expression::Less(Box::new((lhs, rhs))),
-                        RelationalOp::LessThanOrEqual => Expression::LessEq(Box::new((lhs, rhs))),
-                        _ => return Err(anyhow!("unimplemented operator")),
-                    },
-                    BinaryOp::Logical(op) => match op {
-                        LogicalOp::And => Expression::and(vec![lhs, rhs])?,
-                        LogicalOp::Or => Expression::or(vec![lhs, rhs])?,
-                        _ => return Err(anyhow!("unimplemented operator")),
-                    },
+                        let lhs =
+                            self.expression(bin.lhs(), interner, vars, origin, params, lhs_hint)?;
+                        let rhs =
+                            self.expression(bin.rhs(), interner, vars, origin, params, rhs_hint)?;
+                        match ar_bin {
+                            ArithmeticOp::Add => lhs + rhs,
+                            ArithmeticOp::Sub => lhs + (-rhs),
+                            ArithmeticOp::Div => Expression::Div(Box::new((lhs, rhs))),
+                            ArithmeticOp::Mul => lhs * rhs,
+                            ArithmeticOp::Exp => todo!(),
+                            ArithmeticOp::Mod => Expression::Mod(Box::new((lhs, rhs))),
+                        }
+                    }
+                    BinaryOp::Relational(rel_bin) => {
+                        // Type inference is not possible as muliple types are possible
+                        let lhs =
+                            self.expression(bin.lhs(), interner, vars, origin, params, None)?;
+                        let rhs =
+                            self.expression(bin.rhs(), interner, vars, origin, params, None)?;
+                        match rel_bin {
+                            RelationalOp::Equal => Expression::Equal(Box::new((lhs, rhs))),
+                            RelationalOp::NotEqual => {
+                                Expression::Equal(Box::new((lhs, rhs))).not()?
+                            }
+                            RelationalOp::GreaterThan => Expression::Greater(Box::new((lhs, rhs))),
+                            RelationalOp::GreaterThanOrEqual => {
+                                Expression::GreaterEq(Box::new((lhs, rhs)))
+                            }
+                            RelationalOp::LessThan => Expression::Less(Box::new((lhs, rhs))),
+                            RelationalOp::LessThanOrEqual => {
+                                Expression::LessEq(Box::new((lhs, rhs)))
+                            }
+                            _ => return Err(anyhow!("unimplemented operator")),
+                        }
+                    }
+                    BinaryOp::Logical(op) => {
+                        let lhs = self.expression(
+                            bin.lhs(),
+                            interner,
+                            vars,
+                            origin,
+                            params,
+                            Some(Type::Boolean),
+                        )?;
+                        let rhs = self.expression(
+                            bin.rhs(),
+                            interner,
+                            vars,
+                            origin,
+                            params,
+                            Some(Type::Boolean),
+                        )?;
+                        match op {
+                            LogicalOp::And => Expression::and(vec![lhs, rhs])?,
+                            LogicalOp::Or => Expression::or(vec![lhs, rhs])?,
+                            _ => return Err(anyhow!("unimplemented operator")),
+                        }
+                    }
                     BinaryOp::Comma => todo!(),
                     _ => return Err(anyhow!("unimplemented operator")),
                 }
             }
             boa_ast::Expression::Conditional(_) => todo!(),
             boa_ast::Expression::Parenthesized(par) => {
-                self.expression(par.expression(), interner, vars, origin, params)?
+                self.expression(par.expression(), interner, vars, origin, params, expr_type)?
             }
             _ => return Err(anyhow!("unimplemented expression")),
         };
@@ -1217,7 +1313,7 @@ impl ModelBuilder {
             boa_ast::Expression::Literal(lit) => {
                 use boa_ast::expression::literal::Literal;
                 match lit {
-                    Literal::Num(f) => Val::from(*f),
+                    Literal::Num(f) => Val::Float(*f),
                     Literal::Int(i) => Val::Integer(*i),
                     Literal::Bool(b) => Val::Boolean(*b),
                     _ => return Err(anyhow!("unsupported type")),
@@ -1502,6 +1598,7 @@ impl ModelBuilder {
                     .collect(),
                 &None,
                 &HashMap::new(),
+                Some(Type::Boolean),
             )?;
             self.predicates.push(predicate);
         }
