@@ -324,21 +324,40 @@ impl<R: Rng + 'static> ChannelSystemBuilder<R> {
             })
     }
 
-    /// Adds a new location to the given PG.
+    /// Adds a new process to the given PG starting at the given location.
+    ///
+    /// It fails if the CS contains no such PG, or if the PG does not contain such location.
+    ///
+    /// See also [`ProgramGraphBuilder::new_process`].
+    pub fn new_process(&mut self, pg_id: PgId, location: Location) -> Result<(), CsError> {
+        if location.0 != pg_id {
+            Err(CsError::LocationNotInPg(location, pg_id))
+        } else {
+            self.program_graphs
+                .get_mut(pg_id.0 as usize)
+                .ok_or(CsError::MissingPg(pg_id))
+                .and_then(|pg| {
+                    pg.new_process(location.1)
+                        .map_err(|err| CsError::ProgramGraph(pg_id, err))
+                })
+        }
+    }
+
+    /// Adds a new initial location to the given PG.
     ///
     /// It fails if the CS contains no such PG.
     ///
-    /// See also [`ProgramGraphBuilder::new_location`].
+    /// See also [`ProgramGraphBuilder::new_initial_location`].
     pub fn new_initial_location(&mut self, pg_id: PgId) -> Result<Location, CsError> {
         self.new_initial_timed_location(pg_id, &[])
     }
 
-    /// Adds a new location to the given PG with the given time invariants,
+    /// Adds a new initial location to the given PG with the given time invariants,
     /// and returns its [`Location`] indexing object.
     ///
     /// It fails if the CS contains no such PG.
     ///
-    /// See also [`ProgramGraphBuilder::new_timed_location`].
+    /// See also [`ProgramGraphBuilder::new_initial_timed_location`].
     pub fn new_initial_timed_location(
         &mut self,
         pg_id: PgId,

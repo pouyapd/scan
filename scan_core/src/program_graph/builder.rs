@@ -295,29 +295,39 @@ impl ProgramGraphBuilder {
         }
     }
 
-    /// Adds a new location to the PG and returns its [`Location`] indexing object.
+    /// Adds a new (synchronous) process to the PG starting from the given [`Location`].
+    pub fn new_process(&mut self, location: Location) -> Result<(), PgError> {
+        if (location.0 as usize) < self.locations.len() {
+            let (_, invariants) = self.locations.get(location.0 as usize).expect("location");
+            if invariants.iter().any(|(clock, l, u)| {
+                l.is_some_and(|l| l > clock.0 as u32) || u.is_some_and(|u| (clock.0 as u32) >= u)
+            }) {
+                Err(PgError::Invariant)
+            } else {
+                self.initial_states.push(location);
+                Ok(())
+            }
+        } else {
+            Err(PgError::MissingLocation(location))
+        }
+    }
+
+    /// Adds a new process starting at a new location to the PG and returns the [`Location`] indexing object.
     #[inline(always)]
     pub fn new_initial_location(&mut self) -> Location {
         self.new_initial_timed_location(Vec::new())
             .expect("new untimed location")
     }
 
-    /// Adds a new location to the PG with the given time invariants,
-    /// and returns its [`Location`] indexing object.
+    /// Adds a new process starting at a new location to the PG with the given time invariants,
+    /// and returns the [`Location`] indexing object.
     pub fn new_initial_timed_location(
         &mut self,
         invariants: Vec<TimeConstraint>,
     ) -> Result<Location, PgError> {
-        if let Some((clock, _, _)) = invariants.iter().find(|(c, _, _)| c.0 >= self.clocks) {
-            Err(PgError::MissingClock(*clock))
-        } else {
-            // Locations are indexed progressively
-            let idx = self.locations.len();
-            self.locations.push((Vec::new(), invariants));
-            let location = Location(idx as u16);
-            self.initial_states.push(location);
-            Ok(location)
-        }
+        let location = self.new_timed_location(invariants)?;
+        self.new_process(location)?;
+        Ok(location)
     }
 
     /// Adds a transition to the PG.
