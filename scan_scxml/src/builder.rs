@@ -397,7 +397,7 @@ impl ModelBuilder {
                     expr,
                     interner,
                     &vars,
-                    &None,
+                    None,
                     &HashMap::new(),
                     Some(scan_type),
                 )?;
@@ -756,7 +756,7 @@ impl ModelBuilder {
                             cond,
                             interner,
                             &vars,
-                            &exec_origin,
+                            exec_origin.as_ref(),
                             &exec_params,
                             Some(Type::Boolean),
                         )
@@ -938,7 +938,7 @@ impl ModelBuilder {
                                 targetexpr,
                                 interner,
                                 vars,
-                                &origin,
+                                origin.as_ref(),
                                 params,
                                 Some(Type::Integer),
                             )?);
@@ -1028,8 +1028,14 @@ impl ModelBuilder {
                 // Add a transition that perform the assignment via the effect of the `assign` action.
                 let (var, scan_type) = vars.get(location).ok_or(anyhow!("undefined variable"))?;
                 let scan_type = self.types.get(scan_type).expect("type").1.clone();
-                let expr =
-                    self.expression(expr, interner, vars, &origin, params, Some(scan_type))?;
+                let expr = self.expression(
+                    expr,
+                    interner,
+                    vars,
+                    origin.as_ref(),
+                    params,
+                    Some(scan_type),
+                )?;
                 let assign = self.cs.new_action(pg_id).expect("PG exists");
                 self.cs.add_effect(pg_id, assign, *var, expr)?;
                 let next_loc = self.cs.new_location(pg_id).unwrap();
@@ -1046,7 +1052,7 @@ impl ModelBuilder {
                         cond,
                         interner,
                         vars,
-                        &origin,
+                        origin.as_ref(),
                         params,
                         Some(Type::Boolean),
                     )?;
@@ -1114,7 +1120,7 @@ impl ModelBuilder {
             &param.expr,
             interner,
             vars,
-            &origin,
+            origin.as_ref(),
             params,
             Some(scan_type.clone()),
         )?;
@@ -1138,7 +1144,7 @@ impl ModelBuilder {
         expr: &boa_ast::Expression,
         interner: &Interner,
         vars: &HashMap<String, (V, String)>,
-        origin: &Option<V>,
+        origin: Option<&V>,
         params: &HashMap<String, (V, String)>,
         expr_type: Option<Type>,
     ) -> anyhow::Result<Expression<V>> {
@@ -1295,93 +1301,40 @@ impl ModelBuilder {
             boa_ast::Expression::Parenthesized(par) => {
                 self.expression(par.expression(), interner, vars, origin, params, expr_type)?
             }
-            _ => return Err(anyhow!("unimplemented expression")),
-        };
-        Ok(expr)
-    }
-
-    fn value(&self, expr: &boa_ast::Expression, interner: &Interner) -> anyhow::Result<Val> {
-        let expr = match expr {
-            boa_ast::Expression::This => todo!(),
-            boa_ast::Expression::Identifier(ident) => {
-                let ident = ident.to_interned_string(interner);
-                self.enums
-                    .get(&ident)
-                    .map(|i| Val::Integer(*i))
-                    .ok_or(anyhow!("unknown identifier: {ident}"))?
-            }
-            boa_ast::Expression::Literal(lit) => {
-                use boa_ast::expression::literal::Literal;
-                match lit {
-                    Literal::Num(f) => Val::Float(*f),
-                    Literal::Int(i) => Val::Integer(*i),
-                    Literal::Bool(b) => Val::Boolean(*b),
-                    _ => return Err(anyhow!("unsupported type")),
-                }
-            }
-            boa_ast::Expression::PropertyAccess(_prop_acc) => {
-                todo!()
-            }
-            boa_ast::Expression::Unary(unary) => {
-                use boa_ast::expression::operator::unary::UnaryOp;
-                let val = self.value(unary.target(), interner)?;
-                match unary.op() {
-                    UnaryOp::Minus => match val {
-                        Val::Integer(v) => Val::Integer(-v),
-                        Val::Float(v) => Val::Float(-v),
-                        _ => return Err(anyhow!("non-numeric type")),
-                    },
-                    UnaryOp::Plus => {
-                        if matches!(val, Val::Integer(_) | Val::Float(_)) {
-                            val
-                        } else {
-                            todo!()
-                        }
-                    }
-                    UnaryOp::Not => {
-                        if let Val::Boolean(b) = val {
-                            Val::Boolean(!b)
-                        } else {
-                            todo!()
-                        }
-                    }
-                    _ => return Err(anyhow!("unimplemented operator")),
-                }
-            }
-            boa_ast::Expression::Binary(bin) => {
-                use boa_ast::expression::operator::binary::{ArithmeticOp, BinaryOp};
-                match bin.op() {
-                    // TODO: Float arithmetics
-                    BinaryOp::Arithmetic(ar_bin) => {
-                        let lhs = self.value(bin.lhs(), interner)?;
-                        let rhs = self.value(bin.rhs(), interner)?;
-                        let lhs = if let Val::Integer(i) = lhs {
-                            i
-                        } else {
-                            todo!()
-                        };
-                        let rhs = if let Val::Integer(i) = rhs {
-                            i
-                        } else {
-                            todo!()
-                        };
-                        match ar_bin {
-                            ArithmeticOp::Add => Val::Integer(lhs + rhs),
-                            ArithmeticOp::Sub => Val::Integer(lhs - rhs),
-                            ArithmeticOp::Div if rhs != 0 => Val::Integer(lhs / rhs),
-                            ArithmeticOp::Mul => Val::Integer(lhs * rhs),
-                            ArithmeticOp::Exp if !rhs.is_negative() => {
-                                Val::Integer(lhs.pow(rhs as u32))
+            boa_ast::Expression::Call(call) => {
+                let fun = call.function();
+                if let boa_ast::Expression::PropertyAccess(
+                    boa_ast::expression::access::PropertyAccess::Simple(property_access),
+                ) = fun
+                {
+                    if let boa_ast::Expression::Identifier(id) = property_access.target() {
+                        let target: &str = interner
+                            .resolve(id.sym())
+                            .ok_or(anyhow!("unknown symbol {:?}", id.sym()))?
+                            .utf8()
+                            .ok_or(anyhow!("not utf8"))?;
+                        match property_access.field() {
+                            boa_ast::expression::access::PropertyAccessField::Const(sym) => {
+                                let ident: &str = interner
+                                    .resolve(*sym)
+                                    .ok_or(anyhow!("unknown symbol {:?}", sym))?
+                                    .utf8()
+                                    .ok_or(anyhow!("not utf8"))?;
+                                if ident == "random" && target == "Math" {
+                                    return Ok(Expression::RandFloat(0., 1.));
+                                } else {
+                                    return Err(anyhow!("unknown call"));
+                                }
                             }
-                            ArithmeticOp::Mod if rhs != 0 => Val::Integer(lhs % rhs),
-                            _ => return Err(anyhow!("unimplemented expression")),
+                            boa_ast::expression::access::PropertyAccessField::Expr(expression) => {
+                                return Err(anyhow!("unimplemented expression {expression:?}"));
+                            }
                         }
+                    } else {
+                        return Err(anyhow!("unknown target"));
                     }
-                    BinaryOp::Relational(_rel_bin) => {
-                        todo!()
-                    }
-                    BinaryOp::Logical(_) => todo!(),
-                    _ => unimplemented!(),
+                } else {
+                    return Err(anyhow!("unknown call"));
                 }
             }
             _ => return Err(anyhow!("unimplemented expression")),
@@ -1394,7 +1347,7 @@ impl ModelBuilder {
         expr: &boa_ast::Expression,
         interner: &Interner,
         vars: &HashMap<String, (V, String)>,
-        origin: &Option<V>,
+        origin: Option<&V>,
         params: &HashMap<String, (V, String)>,
     ) -> anyhow::Result<EcmaObj<V>> {
         match expr {
@@ -1409,7 +1362,7 @@ impl ModelBuilder {
                                 EcmaObj::PrimitiveData(
                                     Expression::Var(
                                         origin
-                                            .clone()
+                                            .cloned()
                                             .ok_or(anyhow!("missing origin of _event"))?,
                                         Type::Integer,
                                     ),
@@ -1550,7 +1503,16 @@ impl ModelBuilder {
                 .get(&port.event)
                 .ok_or(anyhow!("missing event {}", port.event))?;
             if let Some((param, init)) = &port.param {
-                let init = self.value(init, &parser.interner)?;
+                let init = self
+                    .expression::<Var>(
+                        init,
+                        &parser.interner,
+                        &HashMap::new(),
+                        None,
+                        &HashMap::new(),
+                        None,
+                    )?
+                    .eval_constant()?;
                 let channel = *self
                     .parameters
                     .get(&(origin, target, event_id, param.to_owned()))
@@ -1596,7 +1558,7 @@ impl ModelBuilder {
                         )
                     })
                     .collect(),
-                &None,
+                None,
                 &HashMap::new(),
                 Some(Type::Boolean),
             )?;
