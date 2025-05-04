@@ -704,12 +704,16 @@ impl<R: Rng + 'static> ChannelSystemBuilder<R> {
             }
             communications.push((action.1, c, m));
         }
-        communications_pg_idxs.push(communications.len() as u16);
-        let last = *communications_pg_idxs.last().unwrap();
-        communications_pg_idxs.extend(
-            (0..(program_graphs.len() as u16 + 1 - communications_pg_idxs.len() as u16))
-                .map(|_| last),
-        );
+        if !program_graphs.is_empty() {
+            communications_pg_idxs.push(communications.len() as u16);
+            let last = *communications_pg_idxs.last().unwrap();
+            communications_pg_idxs.extend(
+                (0..((program_graphs.len() + 1)
+                    .checked_sub(communications_pg_idxs.len())
+                    .unwrap_or_default()) as u16)
+                    .map(|_| last),
+            );
+        }
         assert_eq!(communications_pg_idxs.len(), program_graphs.len() + 1);
 
         let message_queue = self

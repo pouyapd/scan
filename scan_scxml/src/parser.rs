@@ -166,17 +166,28 @@ impl Parser {
     }
 
     fn parse_directory(&mut self, path: &Path) -> anyhow::Result<()> {
+        let model_found = self.parse_directory_check(path)?;
+        if model_found {
+            Ok(())
+        } else {
+            bail!("No SCXML model found in folder `{}`", path.display())
+        }
+    }
+
+    fn parse_directory_check(&mut self, path: &Path) -> anyhow::Result<bool> {
+        let mut model_found = false;
         for entry in std::fs::read_dir(path)
             .with_context(|| format!("failed to read directory '{}'", path.display()))?
         {
             let path = entry.context("failed to read directory entry")?.path();
             if path.is_dir() {
-                self.parse_directory(&path)?;
+                model_found &= self.parse_directory_check(&path)?;
             } else {
                 self.parse_file(&path)?;
+                model_found = true;
             }
         }
-        Ok(())
+        Ok(model_found)
     }
 
     fn parse_file(&mut self, path: &Path) -> anyhow::Result<()> {
