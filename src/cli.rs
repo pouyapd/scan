@@ -237,7 +237,7 @@ impl Cli {
                 mag,
             );
             if violations > 0 {
-                println!(" ({property} fails)");
+                println!(" ({violations} fails)");
             } else {
                 println!();
             }
