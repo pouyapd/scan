@@ -21,3 +21,4 @@ logos = "0.15.0"
 chumsky = "0.10.1"
 csv = { workspace = true }
 flate2 = { workspace = true }
+scan_fmt_scxml = { path = "../scan_fmt_scxml" }
