@@ -1,3 +1,4 @@
+//build parser is main function to build an Scxml class from Tree
 pub mod scxml;
 pub mod data;
 pub mod state;
