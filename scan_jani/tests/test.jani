@@ -1,0 +1,240 @@
+{
+	"jani-version": 1,
+	"name": "test.jani",
+	"type": "lts",
+	"actions": [
+		{
+			"name": "a1"
+		},
+		{
+			"name": "a2"
+		},
+		{
+			"name": "a3"
+		},
+		{
+			"name": "a4"
+		},
+		{
+			"name": "a5"
+		},
+		{
+			"name": "a6"
+		}
+	],
+	"automata": [
+		{
+			"name": "test",
+			"locations": [
+				{
+					"name": "l"
+				},
+				{
+					"name": "o"
+				},
+				{
+					"name": "c"
+				}
+			],
+			"variables": [
+				{
+					"name": "b",
+					"type": "bool",
+					"initial-value": false
+				},
+				{
+					"name": "i",
+					"type": "int",
+					"initial-value": 0
+				}
+			],
+			"initial-locations": [
+				"l"
+			],
+			"edges": [
+				{
+					"location": "l",
+					"action": "a1",
+					"guard": {
+						"exp": {
+							"op": "¬",
+							"exp": "b"
+						}
+					},
+					"destinations": [
+						{
+							"location": "o",
+							"assignments": [
+								{
+									"ref": "b",
+									"value": true
+								}
+							]
+						}
+					]
+				},
+				{
+					"location": "o",
+					"action": "a2",
+					"guard": {
+						"exp": {
+							"op": "∧",
+							"left": "b",
+							"right": {
+								"op": "=",
+								"left": "i",
+								"right": 0
+							}
+						}
+					},
+					"destinations": [
+						{
+							"location": "c",
+							"assignments": [
+								{
+									"ref": "i",
+									"value": 1
+								}
+							]
+						}
+					]
+				},
+				{
+					"location": "c",
+					"action": "a3",
+					"guard": {
+						"exp": {
+							"op": "=",
+							"left": "i",
+							"right": 1
+						}
+					},
+					"destinations": [
+						{
+							"location": "l"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "tset",
+			"locations": [
+				{
+					"name": "l"
+				},
+				{
+					"name": "o"
+				},
+				{
+					"name": "c"
+				},
+				{
+					"name": "x"
+				}
+			],
+			"variables": [
+				{
+					"name": "b",
+					"type": "bool",
+					"initial-value": false
+				},
+				{
+					"name": "i",
+					"type": "int",
+					"initial-value": 10
+				}
+			],
+			"initial-locations": [
+				"l"
+			],
+			"edges": [
+				{
+					"location": "l",
+					"action": "a4",
+					"guard": {
+						"exp": {
+							"op": ">",
+							"left": "i",
+							"right": 5
+						}
+					},
+					"destinations": [
+						{
+							"location": "o",
+							"assignments": [
+								{
+									"ref": "b",
+									"value": true
+								}
+							]
+						}
+					]
+				},
+				{
+					"location": "o",
+					"action": "a5",
+					"guard": {
+						"exp": {
+							"op": "∨",
+							"left": "b",
+							"right": {
+								"op": ">",
+								"left": 0,
+								"right": "i"
+							}
+						}
+					},
+					"destinations": [
+						{
+							"location": "c",
+							"assignments": [
+								{
+									"ref": "i",
+									"value": 0
+								},
+								{
+									"ref": "b",
+									"value": false
+								}
+							]
+						}
+					]
+				},
+				{
+					"location": "c",
+					"action": "a6",
+					"guard": {
+						"exp": {
+							"op": "∧",
+							"left": {
+								"op": "¬",
+								"exp": "b"
+							},
+							"right": {
+								"op": "<",
+								"left": "i",
+								"right": 5
+							}
+						}
+					},
+					"destinations": [
+						{
+							"location": "x"
+						}
+					]
+				}
+			]
+		}
+	],
+	"system": {
+		"elements": [
+			{
+				"automaton": "test"
+			},
+			{
+				"automaton": "tset"
+			}
+		]
+	}
+}

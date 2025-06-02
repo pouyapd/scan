@@ -1,0 +1,14 @@
+[package]
+name = "scan_fmt_scxml"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+scxml_lib = { version = "0.1.0", path = "../scxml_lib" } 
+anyhow = { workspace = true } 
+quick-xml = { workspace = true } 
+boa_ast = { workspace = true } 
+boa_interner = { workspace = true }
+boa_parser = { workspace = true }
+log = { workspace = true }
+thiserror = { workspace = true } 

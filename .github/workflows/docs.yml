@@ -1,0 +1,60 @@
+name: Docs
+  
+on:
+  # Runs on pushes targeting the default branch
+  push:
+    branches: ["main"]
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+  
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  docs-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@v4
+      - name: install-mdbook
+        run: |
+          cargo install mdbook --no-default-features --features search --vers "^0.4" --locked
+      - name: build-manual
+        run: |
+          mdbook build scan_book
+      - name: Install and Build 🔧 
+        run: |
+          cargo doc --no-deps --workspace
+          mkdir -p scan_book/book/crates
+          mv target/doc/* scan_book/book/crates
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./scan_book/book
+          
+
+  docs-deploy:
+    needs: docs-build
+    permissions:
+      pages: write      # to deploy to Pages
+      id-token: write   # to verify the deployment originates from an appropriate source
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

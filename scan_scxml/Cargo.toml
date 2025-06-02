@@ -1,0 +1,24 @@
+[package]
+name = "scan_scxml"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "scan_scxml"
+crate-type = ["lib"]
+
+[dependencies]
+scan_core = { version = "0.1.0", path="../scan_core" }
+scxml_lib = { version = "0.1.0", path="../scxml_lib" } 
+anyhow = { workspace = true }
+boa_ast = "0.20.0"
+boa_interner = "0.20.0"
+boa_parser = "0.20.0"
+log = { workspace = true }
+rand = { workspace = true }
+quick-xml = "0.37.5"
+thiserror = { workspace = true }
+logos = "0.15.0"
+chumsky = "0.10.1"
+csv = { workspace = true }
+flate2 = { workspace = true }
