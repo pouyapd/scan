@@ -1,0 +1,31 @@
+[package]
+name = "scxml_lib"
+version = "0.1.0"
+edition = "2021" # یا 2024
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# بخش [[bin]] حذف شده است (طبق پیشنهاد قبلی)
+
+[build-dependencies]
+cfgrammar = "0.13"
+lrlex = "0.13"
+lrpar = "0.13"
+
+[dependencies]
+cfgrammar = "0.13" # اگر این وابستگی ها در workspace.dependencies تعریف شده اند، از workspace = true استفاده کنید
+lrlex = "0.13"     # مثلاً cfgrammar = { workspace = true }
+lrpar = "0.13"     # lrpar = { workspace = true }
+anyhow = { workspace = true } # این وابستگی باید از workspace بیاید چون در scan-main/Cargo.toml تعریف شده
+log = { workspace = true }   # این وابستگی هم از workspace می آید
+logos = "0.15.0"   # اگر این وابستگی در workspace.dependencies تعریف شده، از workspace = true استفاده کنید
+boa_ast = "0.20.0"
+boa_interner = "0.20.0"
+boa_parser = "0.20.0"
+lazy_static = "1.5.0"
+# quick-xml = { workspace = true } # اگر scxml_lib به quick-xml نیاز دارد (برای parsing XML) و در workspace تعریف شده
+
+# این بخش [[test]] به انتهای فایل اضافه شده است
+[[test]]
+name = "tests" 
+path = "tests/tests.rs" # مسیر فایل تست شما نسبت به پوشه scxml_lib/

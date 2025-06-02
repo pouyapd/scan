@@ -1,0 +1,120 @@
+{
+	"jani-version": 1,
+	"name": "sync.jani",
+	"type": "lts",
+	"actions": [
+		{
+			"name": "step"
+		}
+	],
+	"variables": [],
+	"properties": [],
+	"automata": [
+		{
+			"name": "automaton_1",
+			"locations": [
+				{
+					"name": "l"
+				},
+				{
+					"name": "o"
+				}
+			],
+			"variables": [],
+			"initial-locations": [
+				"l"
+			],
+			"edges": [
+				{
+					"location": "l",
+					"action": "step_1",
+					"destinations": [
+						{
+							"location": "o"
+						}
+					]
+				},
+				{
+					"location": "o",
+					"action": "step_1",
+					"destinations": [
+						{
+							"location": "l"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "automaton_2",
+			"locations": [
+				{
+					"name": "l'"
+				},
+				{
+					"name": "o'"
+				}
+			],
+			"variables": [],
+			"initial-locations": [
+				"l'"
+			],
+			"edges": [
+				{
+					"location": "l'",
+					"action": "step_2",
+					"destinations": [
+						{
+							"location": "o'"
+						}
+					]
+				},
+				{
+					"location": "o'",
+					"action": "step_2",
+					"destinations": [
+						{
+							"location": "l'"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "automaton_3",
+			"locations": [
+				{
+					"name": "l''"
+				}
+			],
+			"variables": [],
+			"initial-locations": [
+				"l''"
+			],
+			"edges": []
+		}
+	],
+	"system": {
+		"elements": [
+			{
+				"automaton": "automaton_1"
+			},
+			{
+				"automaton": "automaton_2"
+			},
+			{
+				"automaton": "automaton_3"
+			}
+		],
+		"syncs": [
+			{
+				"synchronise": [
+					"step_1",
+					"step_2",
+					null
+				],
+				"result": "step"
+			}
+		]
+	}
+}
